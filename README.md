@@ -220,7 +220,7 @@ pip install -r requirements.txt
 
 ```bash
 # 把光标点进任意输入框，然后运行：
-python test/test_typing.py
+.venv/bin/python test/test_typing.py
 ```
 
 等 3 秒，输入框内会逐字打出中英文混排测试文本，并触发一次「保存」快捷键。
@@ -231,13 +231,13 @@ python test/test_typing.py
 
 ```bash
 # 终端 1 — 启动模拟器，记下打印的串口路径
-python test/simulate_device.py
+.venv/bin/python test/simulate_device.py
 # 示例输出：[sim] 虚拟串口: /dev/ttys009
 ```
 
 ```bash
 # 终端 2 — 把路径替换成上面打印的
-python -m agent.main --port /dev/ttys009
+.venv/bin/python -m agent.main --port /dev/ttys009
 ```
 
 把光标点进任意输入框，等 3 秒，文字逐字打出。
@@ -245,7 +245,7 @@ python -m agent.main --port /dev/ttys009
 **注册开机自启动：**
 
 ```bash
-python -m agent.main --install
+.venv/bin/python -m agent.main --install
 # 之后开机自动运行，无需手动启动
 ```
 
@@ -259,7 +259,7 @@ python -m agent.main --install
 
 ```bat
 # 把光标点进任意输入框，然后运行：
-python test\test_typing.py
+.venv\Scripts\python test\test_typing.py
 ```
 
 等 3 秒，输入框内会逐字打出中英文混排测试文本。
@@ -274,13 +274,13 @@ Windows 暂无虚拟串口模拟器（`pty` 是 Unix 专有）。
 
 ```bat
 # 指定串口运行 Agent（COM 口编号以设备管理器为准）
-python -m agent.main --port COM3
+.venv/bin/python -m agent.main --port COM3
 ```
 
 **注册开机自启动：**
 
 ```bat
-python -m agent.main --install
+.venv/bin/python -m agent.main --install
 ```
 
 ---
@@ -293,26 +293,26 @@ python -m agent.main --install
 
 ```bash
 # 把光标点进任意输入框，然后运行：
-python test/test_typing.py
+.venv/bin/python test/test_typing.py
 ```
 
 **第二步：完整串口联调**（与 macOS 步骤相同，Linux 同样支持 pty）
 
 ```bash
 # 终端 1
-python test/simulate_device.py
+.venv/bin/python test/simulate_device.py
 # 示例输出：[sim] 虚拟串口: /dev/pts/3
 ```
 
 ```bash
 # 终端 2
-python -m agent.main --port /dev/pts/3
+.venv/bin/python -m agent.main --port /dev/pts/3
 ```
 
 **注册开机自启动（GNOME / KDE 均支持）：**
 
 ```bash
-python -m agent.main --install
+.venv/bin/python -m agent.main --install
 # 写入 ~/.config/autostart/voice-keyboard.desktop
 ```
 
