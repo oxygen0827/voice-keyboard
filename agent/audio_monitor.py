@@ -62,14 +62,23 @@ class AudioMonitor:
         self._vad          = webrtcvad.Vad(vad_level)
         self._thread: Optional[threading.Thread] = None
         self._stop         = threading.Event()
+        self._paused       = threading.Event()  # set = 暂停 VAD
 
     def start(self):
         self._stop.clear()
+        self._paused.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="AudioMonitor")
         self._thread.start()
 
     def stop(self):
         self._stop.set()
+
+    def pause(self):
+        """编辑录音期间暂停 VAD，防止误触发。"""
+        self._paused.set()
+
+    def resume(self):
+        self._paused.clear()
 
     def _run(self):
         device = find_device(self._device_hint)
@@ -98,6 +107,15 @@ class AudioMonitor:
             ):
                 print("[audio] 开始监听，等待语音...")
                 while not self._stop.is_set():
+                    if self._paused.is_set():
+                        # 编辑录音期间：清空缓冲，重置状态
+                        del raw_buf[:]
+                        speech_frames.clear()
+                        silent_count = 0
+                        in_speech    = False
+                        time.sleep(0.05)
+                        continue
+
                     if len(raw_buf) < FRAME_BYTES:
                         time.sleep(0.005)
                         continue

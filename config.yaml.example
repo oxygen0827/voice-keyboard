@@ -46,7 +46,8 @@ audio:
   #   购买了 Voice Keyboard 硬件 → mode: vad（全程免手动，开口即唤醒）
   #   使用普通麦克风 / 内置麦克风 → mode: ptt（按住说话，避免背景噪音误触发）
   mode: ptt                 # ptt（按住说话）或 vad（常开，自动检测语音）
-  ptt_key: right_alt        # PTT 热键（right_alt / right_ctrl / right_shift / f9 等）
+  ptt_key: right_alt        # 听写热键（按住说话）
+  edit_key: right_ctrl      # 语音编辑热键（按住说修改指令，松开自动修改上一句）
   device: auto              # auto = 自动查找 ESP32 UAC 麦克风，找不到用系统默认
                             # 其他示例：
                             #   device: "MacBook"        # 内置麦克风
@@ -55,3 +56,24 @@ audio:
                             #   device: "Yeti"           # Blue Yeti USB 麦克风
                             #   device: 2                # 直接填序号（用 --list-devices 查）
   vad_aggressiveness: 2     # VAD 灵敏度 0~3（仅 mode: vad 时生效）
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LLM 文字编辑（语音修改上一句话）
+# 与 stt 可以用同一个 provider，也可以分开配置
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+llm:
+  provider: openai          # openai | aliyun（通义千问）| volcengine（豆包）
+  api_key: "sk-..."         # 与 stt 用同一个 key 即可（OpenAI 通用）
+  model: gpt-4o-mini        # 推荐 gpt-4o-mini（快且便宜）
+
+# 阿里云通义千问示例：
+# llm:
+#   provider: aliyun
+#   api_key: "sk-..."       # DashScope API Key
+#   model: qwen-turbo
+
+# 火山引擎豆包示例：
+# llm:
+#   provider: volcengine
+#   api_key: "..."          # ARK API Key
+#   model: doubao-lite-4k

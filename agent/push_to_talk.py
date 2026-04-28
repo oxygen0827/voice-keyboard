@@ -1,8 +1,9 @@
 """
-Push-to-Talk 录音模块。
+Push-to-Talk 录音模块，支持两个热键：
+  ptt_key  — 普通听写（dictation），松开后调 on_utterance
+  edit_key — 语音编辑（edit），松开后调 on_edit_utterance
 
-按住热键开始录音，松开后把 PCM 音频回调给调用方（通常是 STTClient）。
-热键默认 right_alt（macOS 右 Option，Windows/Linux 右 Alt），可在 config.yaml 配置。
+两个键互斥：一个按下时另一个无效。
 """
 
 import threading
@@ -17,34 +18,31 @@ SAMPLE_RATE = 16000
 
 
 def _parse_key(key_str: str):
-    """把配置文件里的字符串解析成 pynput Key。"""
     try:
         return getattr(kb.Key, key_str)
     except AttributeError:
-        # 单字符，如 "f"
         return kb.KeyCode.from_char(key_str)
 
 
 class PushToTalk:
-    """
-    按住热键录音，松开时把 PCM bytes 传给 on_utterance 回调。
-    STT 调用在独立线程里执行，不阻塞键盘监听。
-    """
-
     def __init__(
         self,
-        on_utterance: Callable[[bytes], None],
-        ptt_key: str = "right_alt",
-        device: Optional[str] = "auto",
+        on_utterance:      Callable[[bytes], None],
+        on_edit_utterance: Optional[Callable[[bytes], None]] = None,
+        ptt_key:           str = "right_alt",
+        edit_key:          str = "right_ctrl",
+        device:            Optional[str] = "auto",
     ):
-        self._on_utterance = on_utterance
-        self._key          = _parse_key(ptt_key)
-        self._device_hint  = device
-        self._device_idx   = None   # 延迟解析（start 时）
-        self._recording    = False
-        self._buf: list[bytes] = []
+        self._on_utterance      = on_utterance
+        self._on_edit_utterance = on_edit_utterance
+        self._ptt_key           = _parse_key(ptt_key)
+        self._edit_key          = _parse_key(edit_key) if on_edit_utterance else None
+        self._device_hint       = device
+        self._device_idx        = None
+        self._active_key        = None   # 当前正在录音用哪个键
+        self._buf: list[bytes]  = []
         self._stream: Optional[sd.RawInputStream] = None
-        self._listener: Optional[kb.Listener] = None
+        self._listener: Optional[kb.Listener]     = None
 
     def start(self):
         self._device_idx = find_device(self._device_hint)
@@ -59,7 +57,11 @@ class PushToTalk:
             on_release=self._on_release,
         )
         self._listener.start()
-        print(f"[ptt] 按住 {self._key} 说话，松开识别")
+
+        hints = [f"{self._ptt_key} 说话"]
+        if self._edit_key:
+            hints.append(f"{self._edit_key} 语音编辑")
+        print(f"[ptt] 按住 {' | '.join(hints)}")
 
     def stop(self):
         if self._listener:
@@ -69,12 +71,20 @@ class PushToTalk:
     # ── 键盘事件 ─────────────────────────────────────────────────
 
     def _on_press(self, key):
-        if key == self._key and not self._recording:
+        if self._active_key is not None:
+            return  # 已有键按下，忽略另一个
+        if key == self._ptt_key:
+            self._active_key = "dictate"
+            self._start_recording()
+        elif self._edit_key and key == self._edit_key:
+            self._active_key = "edit"
             self._start_recording()
 
     def _on_release(self, key):
-        if key == self._key and self._recording:
-            self._stop_recording()
+        if key == self._ptt_key and self._active_key == "dictate":
+            self._stop_recording(mode="dictate")
+        elif self._edit_key and key == self._edit_key and self._active_key == "edit":
+            self._stop_recording(mode="edit")
 
     # ── 录音控制 ─────────────────────────────────────────────────
 
@@ -82,7 +92,6 @@ class PushToTalk:
         self._buf.append(bytes(indata))
 
     def _start_recording(self):
-        self._recording = True
         self._buf = []
         self._stream = sd.RawInputStream(
             samplerate=SAMPLE_RATE,
@@ -93,25 +102,28 @@ class PushToTalk:
             callback=self._audio_callback,
         )
         self._stream.start()
-        print("[ptt] 录音中... ", end="\r", flush=True)
+        label = "录音中" if self._active_key == "dictate" else "编辑指令录音中"
+        print(f"[ptt] {label}... ", end="\r", flush=True)
 
-    def _stop_recording(self):
-        self._recording = False
+    def _stop_recording(self, mode: str):
+        self._active_key = None
         self._close_stream()
 
         pcm = b"".join(self._buf)
         self._buf = []
 
-        if len(pcm) < SAMPLE_RATE * 2 * 0.3:  # 少于 0.3 秒，过滤误触
+        if len(pcm) < SAMPLE_RATE * 2 * 0.3:
             print("[ptt] 录音太短，跳过    ")
             return
 
-        print("[ptt] 识别中...    ", end="\r", flush=True)
+        label    = "识别中" if mode == "dictate" else "解析编辑指令"
+        callback = self._on_utterance if mode == "dictate" else self._on_edit_utterance
+        print(f"[ptt] {label}...    ", end="\r", flush=True)
         threading.Thread(
-            target=self._on_utterance,
+            target=callback,
             args=(pcm,),
             daemon=True,
-            name="PTT-STT",
+            name=f"PTT-{mode}",
         ).start()
 
     def _close_stream(self):

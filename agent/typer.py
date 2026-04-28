@@ -113,6 +113,47 @@ def _type_via_xtest(text: str) -> None:
         time.sleep(0.012)
 
 
+def erase_last(text: str) -> None:
+    """发送退格键擦掉最近打出的文字（按 Unicode 字符数计）。"""
+    n = len(text)
+    if n == 0:
+        return
+    if _OS == "Darwin":
+        _erase_via_quartz(n)
+    elif _OS == "Windows":
+        _erase_via_sendinput(n)
+    else:
+        _erase_via_pynput(n)
+
+
+def _erase_via_quartz(n: int) -> None:
+    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+    for _ in range(n):
+        for key_down in (True, False):
+            evt = Quartz.CGEventCreateKeyboardEvent(src, 51, key_down)  # 51 = Backspace
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, evt)
+        time.sleep(0.005)
+
+
+def _erase_via_sendinput(n: int) -> None:
+    VK_BACK = 0x08
+    for _ in range(n):
+        for flags in [0, _KEYEVENTF_KEYUP]:
+            inp = _INPUT(
+                type=_INPUT_KEYBOARD,
+                ki=_KEYBDINPUT(wVk=VK_BACK, wScan=0, dwFlags=flags),
+            )
+            _user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
+        time.sleep(0.005)
+
+
+def _erase_via_pynput(n: int) -> None:
+    for _ in range(n):
+        _kb.press(Key.backspace)
+        _kb.release(Key.backspace)
+        time.sleep(0.005)
+
+
 def send_shortcut(name: str) -> bool:
     """按名称触发快捷键，返回是否找到该指令"""
     keys = _SHORTCUTS.get(name)
