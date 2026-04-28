@@ -3,23 +3,52 @@
 #
 # 快速开始（无需任何硬件）：
 #   1. cp config.yaml.example config.yaml
-#   2. 填写下方 stt.api_key
+#   2. 选择下方任意一个 provider，填写对应凭据
 #   3. python -m agent.main --no-serial
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 方案一：阿里云 NLS（中文最优，推荐）
+# 控制台：https://nls-portal.console.aliyun.com/
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 stt:
-  provider: openai          # 目前支持: openai（后续增加 aliyun）
-  api_key: "sk-..."         # OpenAI API Key，https://platform.openai.com/api-keys
-  model: whisper-1          # 语音模型（whisper-1 是当前唯一选项）
-  language: zh              # 识别语言: zh（中文）、en（英文）、auto（自动）
+  provider: aliyun
+  access_key_id: "LTAI5t..."          # 阿里云 AccessKey ID
+  access_key_secret: "..."             # 阿里云 AccessKey Secret
+  app_key: "..."                       # NLS 项目的 Appkey
+  region: cn-shanghai                  # cn-shanghai 或 cn-beijing
+  language: zh                         # zh（中文）/ en（英文）
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 方案二：火山引擎 ASR（字节跳动，中文优化）
+# 控制台：https://console.volcengine.com/speech/service/16
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# stt:
+#   provider: volcengine
+#   app_id: "..."                      # 应用 ID
+#   token: "..."                       # 访问令牌（控制台生成）
+#   cluster: volcengine_streaming_common
+#   language: zh-CN
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 方案三：OpenAI Whisper（多语言，国际场景）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# stt:
+#   provider: openai
+#   api_key: "sk-..."                  # https://platform.openai.com/api-keys
+#   model: whisper-1
+#   language: zh
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 音频设置
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 audio:
   mode: ptt                 # ptt（按住说话）或 vad（常开，自动检测语音）
-  ptt_key: right_alt        # PTT 热键（pynput Key 名称）
-                            # 常用: right_alt / right_ctrl / right_shift / f9
-  device: auto              # auto = 自动搜索 ESP32 UAC 麦克风，再退回系统默认
-                            # 填设备名称片段（如 "MacBook"）或设备序号（如 2）
-                            # 运行 python -m agent.main --list-devices 查看序号
+  ptt_key: right_alt        # PTT 热键（right_alt / right_ctrl / right_shift / f9 等）
+  device: auto              # auto = 自动查找 ESP32 UAC 麦克风，找不到用系统默认
+                            # 其他示例：
+                            #   device: "MacBook"        # 内置麦克风
+                            #   device: "Insta360"       # Insta360 麦克风
+                            #   device: "DJI"            # 大疆麦克风
+                            #   device: "Yeti"           # Blue Yeti USB 麦克风
+                            #   device: 2                # 直接填序号（用 --list-devices 查）
   vad_aggressiveness: 2     # VAD 灵敏度 0~3（仅 mode: vad 时生效）
-
-# agent:
-#   serial_port: auto       # 串口自动搜索；纯软件模式请用 --no-serial 启动

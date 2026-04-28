@@ -3,5 +3,6 @@ pynput
 sounddevice
 webrtcvad
 openai
+requests
 pyyaml
 pyobjc-framework-Quartz; sys_platform == "darwin"
