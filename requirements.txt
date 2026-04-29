@@ -1,7 +1,9 @@
 pyserial
 pynput
 sounddevice
-webrtcvad
+# webrtcvad 在 Windows 需要预编译版本（原版需要 MSVC 编译环境）
+webrtcvad-wheels; sys_platform == "win32"
+webrtcvad; sys_platform != "win32"
 openai
 requests
 pyyaml
