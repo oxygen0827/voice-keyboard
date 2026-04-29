@@ -1,20 +1,32 @@
 """
 记录 Agent 打出的文字历史，供语音编辑功能使用。
 
-只记录通过 Agent 打出去的内容，用户手动输入的内容不在此范围。
+只记录通过 Agent 打出去的内容，用户手动输入的内容不在此范围，
+但通过 keyboard_monitor 追踪 Backspace 可以实时反映用户的手动删除。
+
+cursor_uncertain 标志：
+  由 mouse_monitor 在鼠标点击时设置为 True。
+  语音编辑时若为 True，则切换到「行选择剪贴板模式」（更可靠），
+  编辑成功后清除。
 """
 
 
 class TextBuffer:
     def __init__(self, max_entries: int = 20):
-        self._entries: list[str] = []
-        self._max = max_entries
+        self._entries: list[str]  = []
+        self._max                 = max_entries
+        self.cursor_uncertain: bool = False   # 鼠标点击后置 True
+
+    # ── 写入 / 读取 ────────────────────────────────────────────────
 
     def push(self, text: str) -> None:
+        """Agent 打出一段文字后调用，加入历史。"""
         if text:
             self._entries.append(text)
             if len(self._entries) > self._max:
                 self._entries.pop(0)
+            # 新打出一段话 → 说明光标就在刚打的文字后面，位置可信
+            self.cursor_uncertain = False
 
     def pop_last(self) -> str:
         return self._entries.pop() if self._entries else ""
@@ -37,3 +49,23 @@ class TextBuffer:
 
     def __bool__(self) -> bool:
         return bool(self._entries)
+
+    # ── Backspace 同步 ─────────────────────────────────────────────
+
+    def trim_end(self, n: int) -> None:
+        """
+        用户手动按了 n 次 Backspace，从 buf 末尾截掉 n 个字符。
+
+        若 n 超过了最后一段的长度，会继续向上一段截（递归）。
+        """
+        if n <= 0 or not self._entries:
+            return
+        last = self._entries[-1]
+        if n >= len(last):
+            # 退格超过了当前最后一段，弹出整段，继续截上一段
+            overflow = n - len(last)
+            self._entries.pop()
+            if overflow > 0:
+                self.trim_end(overflow)
+        else:
+            self._entries[-1] = last[:-n]

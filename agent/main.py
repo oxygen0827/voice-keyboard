@@ -20,7 +20,7 @@ from agent.autostart import install, uninstall
 from agent.config import load as load_config
 from agent.serial_reader import SerialReader
 from agent.text_buffer import TextBuffer
-from agent.typer import erase_last, list_shortcuts, send_shortcut, type_text
+from agent.typer import erase_last, get_current_line, list_shortcuts, replace_current_line, send_shortcut, type_text
 
 
 # ── 串口回调 ───────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ def make_serial_handlers(buf: TextBuffer):
 
 # ── STT 回调 ───────────────────────────────────────────────────────
 
-def make_utterance_handler(stt_client, buf: TextBuffer):
+def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None):
     def on_utterance(pcm: bytes):
         try:
             text = stt_client.transcribe(pcm)
@@ -49,6 +49,9 @@ def make_utterance_handler(stt_client, buf: TextBuffer):
                 print(f"[stt] {text!r}")
                 type_text(text)
                 buf.push(text)
+                # 刷新退格追踪窗口：语音输出后 TRACK_TIMEOUT 秒内的退格才同步
+                if kbd_mon is not None:
+                    kbd_mon.notify_voice_output()
             else:
                 print("[stt] 识别结果为空")
         except Exception as e:
@@ -75,17 +78,39 @@ def make_edit_handler(stt_client, editor, buf: TextBuffer, vad_monitor=None):
                 vad_monitor.resume()
             return
 
-        original = buf.last
+        # 2. 决定使用哪种模式获取原文
+        #
+        #   cursor_uncertain=True → 鼠标点击过，光标位置不可靠
+        #     → 行选择剪贴板模式：Home→Shift+End→复制 读取当前行真实内容
+        #     → LLM 修改后：Home→Shift+End→打新文字 整行替换
+        #
+        #   cursor_uncertain=False → 只用了语音打字和 Backspace
+        #     → 直接用 buf.last（快，无剪贴板副作用）
+        #     → LLM 修改后：退格 + 打新文字
+
+        use_line_mode = buf.cursor_uncertain
+        original      = None
+
+        if use_line_mode:
+            print("[edit] 检测到光标位移（鼠标点击过），切换到行选择模式")
+            original = get_current_line()
+            if original is None:
+                print("[edit] 行选择读取失败，回退到 buf.last")
+                use_line_mode = False
+
+        if not use_line_mode:
+            original = buf.last
+
         if not original:
-            print("[edit] 没有可编辑的内容（还没有打过字）")
+            print("[edit] 没有可编辑的内容")
             if vad_monitor:
                 vad_monitor.resume()
             return
 
         print(f"[edit] 指令: {instruction!r}")
-        print(f"[edit] 原文: {original!r}")
+        print(f"[edit] 原文: {original!r}  (模式: {'行选择' if use_line_mode else 'buf'})")
 
-        # 2. LLM 修改
+        # 3. LLM 修改
         try:
             corrected = editor.edit(original, instruction)
         except Exception as e:
@@ -96,10 +121,20 @@ def make_edit_handler(stt_client, editor, buf: TextBuffer, vad_monitor=None):
 
         print(f"[edit] 修改后: {corrected!r}")
 
-        # 3. 擦掉原文，打入修改后的文字
-        erase_last(original)
-        type_text(corrected)
-        buf.replace_last(corrected)
+        # 4. 写回输入框并更新 buffer
+        if use_line_mode:
+            # Home → Shift+End → 打新文字（整行替换）
+            replace_current_line(corrected)
+            buf.clear()
+            buf.push(corrected)
+            buf.cursor_uncertain = False
+        else:
+            # 退格擦掉原文，打入修改后的文字
+            erase_last(original)
+            type_text(corrected)
+            buf.replace_last(corrected)
+            # 编辑完成后光标在 corrected 末尾，位置可信
+            buf.cursor_uncertain = False
 
         if vad_monitor:
             vad_monitor.resume()
@@ -109,7 +144,7 @@ def make_edit_handler(stt_client, editor, buf: TextBuffer, vad_monitor=None):
 
 # ── 音频管线 ───────────────────────────────────────────────────────
 
-def _build_audio(cfg: dict, buf: TextBuffer):
+def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
     stt_cfg = cfg.get("stt", {})
     if not stt_cfg.get("api_key"):
         print("[agent] 未配置 stt.api_key，跳过音频 STT")
@@ -143,7 +178,7 @@ def _build_audio(cfg: dict, buf: TextBuffer):
     mode      = audio_cfg.get("mode", "ptt")
     device    = audio_cfg.get("device", "auto")
 
-    on_utterance = make_utterance_handler(stt, buf)
+    on_utterance = make_utterance_handler(stt, buf, kbd_mon=kbd_monitor)
 
     if mode == "ptt":
         try:
@@ -187,14 +222,13 @@ def _build_audio(cfg: dict, buf: TextBuffer):
                 on_edit = make_edit_handler(stt, editor, buf, vad_monitor=monitor)
 
                 edit_ptt = PushToTalk(
-                    on_utterance=on_utterance,       # 备用，正常用 VAD
+                    on_utterance=on_utterance,
                     on_edit_utterance=on_edit,
                     ptt_key=audio_cfg.get("ptt_key", "right_alt"),
                     edit_key=audio_cfg.get("edit_key", "right_ctrl"),
                     device=device,
                 )
 
-                # 按下编辑键时暂停 VAD
                 _orig_press = edit_ptt._on_press
 
                 def _patched_press(key):
@@ -204,10 +238,10 @@ def _build_audio(cfg: dict, buf: TextBuffer):
                         monitor.pause()
                     _orig_press(key)
 
-                edit_ptt._listener  # will be set in start()
+                edit_ptt._listener
                 edit_ptt._on_press = _patched_press
                 edit_ptt.start()
-                return monitor  # 主对象返回 monitor
+                return monitor
             except ImportError:
                 pass
 
@@ -253,6 +287,24 @@ def main():
     buf = TextBuffer()
     print("[agent] Voice Keyboard Agent 启动")
 
+    # ── 键盘退格监听（同步 TextBuffer）─────────────────────────────
+    try:
+        from agent.keyboard_monitor import KeyboardMonitor
+        kbd_monitor = KeyboardMonitor(buf)
+        kbd_monitor.start()
+    except Exception as e:
+        print(f"[agent] 键盘监听启动失败（{e}），退格同步不可用")
+        kbd_monitor = None
+
+    # ── 鼠标点击监听（光标位移检测）───────────────────────────────
+    try:
+        from agent.mouse_monitor import MouseMonitor
+        mouse_monitor = MouseMonitor(buf)
+        mouse_monitor.start()
+    except Exception as e:
+        print(f"[agent] 鼠标监听启动失败（{e}），行选择模式不可用")
+        mouse_monitor = None
+
     # ── 串口 ─────────────────────────────────────────────────────
     reader = None
     if not args.no_serial:
@@ -263,10 +315,14 @@ def main():
         print("[agent] 串口已禁用（纯软件模式）")
 
     # ── 音频 STT + 编辑 ──────────────────────────────────────────
-    monitor = _build_audio(cfg, buf)
+    monitor = _build_audio(cfg, buf, kbd_monitor=kbd_monitor)
 
     def shutdown(sig, frame):
         print("\n[agent] 退出")
+        if kbd_monitor:
+            kbd_monitor.stop()
+        if mouse_monitor:
+            mouse_monitor.stop()
         if reader:
             reader.stop()
         if monitor:
