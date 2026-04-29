@@ -6,3 +6,10 @@ openai
 requests
 pyyaml
 pyobjc-framework-Quartz; sys_platform == "darwin"
+
+# 智谱 AI（zhipuai provider，参考 transmission_assistant 项目）
+# https://open.bigmodel.cn/
+zhipuai
+
+# .env 文件支持（可选，未安装时 config.py 内置简易解析作为回退）
+python-dotenv

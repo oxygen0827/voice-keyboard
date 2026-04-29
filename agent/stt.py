@@ -5,12 +5,19 @@ STT（语音转文字）客户端，支持多家云服务。
   openai      — OpenAI Whisper API（多语言通用）
   aliyun      — 阿里云智能语音 NLS（中文最优，支持方言）
   volcengine  — 火山引擎 ASR（字节跳动，中文优化）
+  zhipuai     — 智谱 AI GLM-4-Voice（参考 transmission_assistant 项目的集成方式）
 
 调用方只需：
     client = STTClient(cfg["stt"])
     text   = client.transcribe(pcm_bytes)   # pcm: 16kHz 16bit mono
+
+扩展新 provider：
+    1. 实现一个类，提供 transcribe(pcm: bytes) -> str 方法
+    2. 在文件末尾的 _PROVIDERS 字典中注册
+    3. 在 config.yaml / .env 中指定 provider 名称即可
 """
 
+import base64
 import io
 import time
 import uuid
@@ -139,7 +146,6 @@ class _VolcengineSTT:
         self._language = cfg.get("language", "zh-CN")
 
     def transcribe(self, pcm: bytes) -> str:
-        import base64
         wav      = _pcm_to_wav(pcm)
         audio_b64 = base64.b64encode(wav).decode()
 
@@ -184,13 +190,85 @@ class _VolcengineSTT:
         raise RuntimeError(f"火山引擎 ASR 错误: {result.get('message', result)}")
 
 
-# ── 统一入口 ──────────────────────────────────────────────────────
+# ── 智谱 AI GLM-4-Voice ───────────────────────────────────────────
+#
+# 参考：transmission_assistant 项目（github.com/wangqioo/transmission_assistant）
+# 该项目使用 zhipuai SDK 与智谱 AI 交互，此处以同样方式接入语音转写能力。
+#
+# GLM-4-Voice 通过 chat.completions 接口接收 base64 编码的音频，
+# 返回转写文字。相比其他 provider，无需额外 STT 服务，一个 API Key 全搞定。
+#
+# 所需配置：
+#   api_key  智谱 AI API Key（https://open.bigmodel.cn/）
+#   model    默认 glm-4-voice（也可指定其他支持音频的模型）
+#   language 语言提示，默认 zh（仅作为 prompt 提示，不影响 API 参数）
 
-_PROVIDERS = {
+class _ZhipuSTT:
+    """
+    智谱 AI GLM-4-Voice 语音转写。
+
+    使用 zhipuai Python SDK，与 transmission_assistant 项目的集成方式一致：
+      from zhipuai import ZhipuAI
+      client = ZhipuAI(api_key=api_key)
+
+    音频以 base64 WAV 格式通过 chat completions 发送给 GLM-4-Voice，
+    模型直接返回转写文字。
+    """
+
+    _PROMPT_ZH = "请将这段音频转录为文字。只输出转录结果，不要添加任何解释、标点说明或前缀。"
+    _PROMPT_EN = "Transcribe this audio. Output only the transcription, no explanations."
+
+    def __init__(self, cfg: dict):
+        try:
+            from zhipuai import ZhipuAI
+        except ImportError:
+            raise ImportError(
+                "使用 zhipuai provider 需要安装 zhipuai：pip install zhipuai"
+            )
+        self._client   = ZhipuAI(api_key=cfg["api_key"])
+        self._model    = cfg.get("model", "glm-4-voice")
+        self._language = cfg.get("language", "zh")
+
+    def transcribe(self, pcm: bytes) -> str:
+        wav      = _pcm_to_wav(pcm)
+        audio_b64 = base64.b64encode(wav).decode()
+
+        prompt = self._PROMPT_ZH if self._language.startswith("zh") else self._PROMPT_EN
+
+        resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data":   audio_b64,
+                            "format": "wav",
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
+                ],
+            }],
+        )
+        return resp.choices[0].message.content.strip()
+
+
+# ── 统一入口 ──────────────────────────────────────────────────────
+#
+# 注册新 provider：在此 dict 中添加 "name": ClassName 即可，
+# config.yaml / .env 中填写对应 provider 名称后自动生效。
+
+_PROVIDERS: dict[str, type] = {
     "openai":     _OpenAISTT,
     "aliyun":     _AliyunSTT,
     "volcengine": _VolcengineSTT,
+    "zhipuai":    _ZhipuSTT,
 }
+
 
 class STTClient:
     def __init__(self, cfg: dict):

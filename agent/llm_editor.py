@@ -7,6 +7,10 @@ LLM 文字编辑器。
   openai      — GPT-4o-mini（快、便宜）
   aliyun      — 通义千问 Qwen（中文优化）
   volcengine  — 豆包 Doubao（字节跳动）
+  zhipuai     — 智谱 AI GLM（参考 transmission_assistant 项目的集成方式）
+
+扩展新 provider：
+  在 __init__ 的 elif 链中添加分支，或参照 openai / zhipuai 分支实现。
 """
 
 _SYSTEM_PROMPT = """你是一个专业的文字编辑助手。
@@ -45,9 +49,25 @@ class LLMEditor:
             self._model = cfg.get("model", "doubao-lite-4k")
             self._edit  = self._openai_edit
 
+        elif provider == "zhipuai":
+            # 智谱 AI GLM，使用原生 zhipuai SDK
+            # 与 transmission_assistant 项目的集成方式一致：
+            #   from zhipuai import ZhipuAI
+            #   client = ZhipuAI(api_key=GLM_API_KEY)
+            try:
+                from zhipuai import ZhipuAI
+            except ImportError:
+                raise ImportError(
+                    "使用 zhipuai provider 需要安装 zhipuai：pip install zhipuai"
+                )
+            self._zhipu_client = ZhipuAI(api_key=cfg["api_key"])
+            self._model        = cfg.get("model", "glm-4-flash")
+            self._edit         = self._zhipu_edit
+
         else:
             raise ValueError(
-                f"未知 LLM provider: {provider!r}，支持: openai / aliyun / volcengine"
+                f"未知 LLM provider: {provider!r}，"
+                f"支持: openai / aliyun / volcengine / zhipuai"
             )
 
     def edit(self, original: str, instruction: str) -> str:
@@ -56,6 +76,18 @@ class LLMEditor:
 
     def _openai_edit(self, original: str, instruction: str) -> str:
         resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user",   "content": f"原文：{original}\n\n修改指令：{instruction}"},
+            ],
+            temperature=0.1,
+            max_tokens=2000,
+        )
+        return resp.choices[0].message.content.strip()
+
+    def _zhipu_edit(self, original: str, instruction: str) -> str:
+        resp = self._zhipu_client.chat.completions.create(
             model=self._model,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
