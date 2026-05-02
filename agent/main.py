@@ -236,9 +236,7 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
                 _orig_press = edit_ptt._on_press
 
                 def _patched_press(key):
-                    from pynput.keyboard import Key
-                    edit_key_obj = edit_ptt._edit_key
-                    if key == edit_key_obj:
+                    if key in edit_ptt._edit_keys:
                         monitor.pause()
                     _orig_press(key)
 

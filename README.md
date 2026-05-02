@@ -201,7 +201,7 @@ stt:
 - [x] 开机自启动（macOS LaunchAgent / Windows 注册表 / Linux .desktop）
 - [x] Push-to-Talk 录音（ptt_key 按住说话）
 - [x] 常开 VAD 模式（webrtcvad 检测语音边界）
-- [x] STT 接入（智谱 GLM-4-Voice / 阿里云 NLS / 火山引擎 / OpenAI Whisper）
+- [x] STT 接入（讯飞 xunfei / 阿里云 NLS / 火山引擎 / 智谱 GLM-4-Voice / OpenAI Whisper）
 - [x] LLM 语音编辑（edit_key 按住说修改指令，自动擦掉原文打入新文字）
 - [x] 多麦克风支持（任意 USB / 内置 / 蓝牙设备）
 - [x] `--no-serial` 纯软件模式
@@ -313,12 +313,19 @@ cp .env.example .env
 
 ### 启动
 
-**纯软件模式（无 ESP32 硬件）：**
+**macOS（需指定 SSL 证书，Python 官方包不读系统证书）：**
 ```bash
-.venv/bin/python -m agent.main --no-serial
+SSL_CERT_FILE=$(.venv/bin/python -c "import certifi; print(certifi.where())") \
+  .venv/bin/python -m agent.main --no-serial
 ```
 
-**有 ESP32 硬件：**
+**Windows / Linux（纯软件模式）：**
+```bash
+.venv/bin/python -m agent.main --no-serial   # Linux
+.venv\Scripts\python -m agent.main --no-serial  # Windows
+```
+
+**有 ESP32 硬件（所有平台去掉 --no-serial）：**
 ```bash
 .venv/bin/python -m agent.main
 ```
@@ -350,11 +357,6 @@ audio:
 .venv\Scripts\python -c "from pynput import keyboard; l = keyboard.Listener(on_press=lambda k: print(k)); l.start(); input()"
 ```
 
-> **macOS 启动注意**：Python 官方安装包不读系统证书，需指定 certifi 证书路径：
-> ```bash
-> SSL_CERT_FILE=$(.venv/bin/python -c "import certifi; print(certifi.where())") \
->   .venv/bin/python -m agent.main --no-serial
-> ```
 
 ### 语音快捷键
 
@@ -487,6 +489,7 @@ CMD:保存           → HID 触发 Ctrl+S（或 Cmd+S）
 | 关闭标签 | Cmd+W | Ctrl+W |
 | 回车 | Enter | Enter |
 | 删除 | Backspace | Backspace |
+| 空格 | Space | Space |
 
 ---
 
