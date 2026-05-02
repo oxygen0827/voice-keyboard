@@ -47,11 +47,13 @@ def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None):
             text = stt_client.transcribe(pcm)
             if text:
                 print(f"[stt] {text!r}")
-                type_text(text)
-                buf.push(text)
-                # 刷新退格追踪窗口：语音输出后 TRACK_TIMEOUT 秒内的退格才同步
-                if kbd_mon is not None:
-                    kbd_mon.notify_voice_output()
+                if send_shortcut(text.strip().rstrip("。，、！？,.!? ")):
+                    print(f"[stt] 触发快捷键: {text!r}")
+                else:
+                    type_text(text)
+                    buf.push(text)
+                    if kbd_mon is not None:
+                        kbd_mon.notify_voice_output()
             else:
                 print("[stt] 识别结果为空")
         except Exception as e:

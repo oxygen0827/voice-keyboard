@@ -325,24 +325,56 @@ cp .env.example .env
 
 ### 热键说明
 
-| 热键 | 默认按键 | 功能 |
-|------|---------|------|
-| `ptt_key` | 右 Alt / Option | 按住说话，松开识别打字 |
-| `edit_key` | 右 Ctrl | 按住说修改指令，松开自动修改上一句 |
+| 热键 | 功能 |
+|------|------|
+| `ptt_key` | 按住说话，松开识别打字 |
+| `edit_key` | 按住说修改指令，松开自动修改上一句 |
+
+热键支持**单个键或多个键**，多个键效果相同：
+
+```yaml
+audio:
+  ptt_key: [alt, alt_r]    # 左右 Option / Alt 都能触发
+  edit_key: [cmd, cmd_r]   # 左右 Command 都能触发
+```
 
 热键可在 `config.yaml` 中修改。硬件模式建议改为 `mode: vad`（无需按键，自动唤醒）。
 
-> **Windows 中文键盘注意**：右 Alt 在中文键盘上是 AltGr，pynput 识别名称为 `alt_gr` 而非 `right_alt`。
-> 请用以下命令检测你的实际键名，按目标键后回车退出：
-> ```bat
-> .venv\Scripts\python -c "from pynput import keyboard; l = keyboard.Listener(on_press=lambda k: print(k)); l.start(); input()"
+不确定按键名称时，运行以下命令，按目标键后查看打印的名称：
+
+```bash
+# macOS / Linux
+.venv/bin/python -c "from pynput import keyboard; l = keyboard.Listener(on_press=lambda k: print(k)); l.start(); input()"
+
+# Windows
+.venv\Scripts\python -c "from pynput import keyboard; l = keyboard.Listener(on_press=lambda k: print(k)); l.start(); input()"
+```
+
+> **macOS 启动注意**：Python 官方安装包不读系统证书，需指定 certifi 证书路径：
+> ```bash
+> SSL_CERT_FILE=$(.venv/bin/python -c "import certifi; print(certifi.where())") \
+>   .venv/bin/python -m agent.main --no-serial
 > ```
-> 然后在 `config.yaml` 中填入对应名称：
-> ```yaml
-> audio:
->   ptt_key: alt_gr   # 中文键盘右 Alt
->   edit_key: ctrl_r  # 右 Ctrl
-> ```
+
+### 语音快捷键
+
+说话内容**完全匹配**以下指令词时，直接触发对应快捷键，不打字：
+
+| 说的词 | macOS | Windows |
+|--------|-------|---------|
+| 截图 | Cmd+Shift+4 | Win+Shift+S |
+| 保存 | Cmd+S | Ctrl+S |
+| 复制 | Cmd+C | Ctrl+C |
+| 粘贴 | Cmd+V | Ctrl+V |
+| 撤销 | Cmd+Z | Ctrl+Z |
+| 全选 | Cmd+A | Ctrl+A |
+| 新标签 | Cmd+T | Ctrl+T |
+| 关闭标签 | Cmd+W | Ctrl+W |
+| 回车 | Enter | Enter |
+| 删除 | Backspace | Backspace |
+| 空格 | Space | Space |
+
+> 讯飞 STT 返回的文字自动带句号（如"保存。"），Agent 已自动去除末尾标点再匹配，无需担心。
 
 ### 语音编辑示例
 

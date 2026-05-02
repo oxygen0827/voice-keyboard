@@ -24,6 +24,13 @@ def _parse_key(key_str: str):
         return kb.KeyCode.from_char(key_str)
 
 
+def _parse_keys(key_input) -> list:
+    """支持单个字符串或字符串列表，统一返回 pynput key 列表。"""
+    if isinstance(key_input, list):
+        return [_parse_key(k) for k in key_input]
+    return [_parse_key(key_input)]
+
+
 class PushToTalk:
     def __init__(
         self,
@@ -35,11 +42,12 @@ class PushToTalk:
     ):
         self._on_utterance      = on_utterance
         self._on_edit_utterance = on_edit_utterance
-        self._ptt_key           = _parse_key(ptt_key)
-        self._edit_key          = _parse_key(edit_key) if on_edit_utterance else None
+        self._ptt_keys          = _parse_keys(ptt_key)
+        self._edit_keys         = _parse_keys(edit_key) if on_edit_utterance else []
         self._device_hint       = device
         self._device_idx        = None
         self._active_key        = None   # 当前正在录音用哪个键
+        self._active_trigger    = None   # 触发本次录音的具体按键，用于 release 配对
         self._buf: list[bytes]  = []
         self._stream: Optional[sd.RawInputStream] = None
         self._listener: Optional[kb.Listener]     = None
@@ -58,9 +66,9 @@ class PushToTalk:
         )
         self._listener.start()
 
-        hints = [f"{self._ptt_key} 说话"]
-        if self._edit_key:
-            hints.append(f"{self._edit_key} 语音编辑")
+        hints = [f"{'/'.join(str(k) for k in self._ptt_keys)} 说话"]
+        if self._edit_keys:
+            hints.append(f"{'/'.join(str(k) for k in self._edit_keys)} 语音编辑")
         print(f"[ptt] 按住 {' | '.join(hints)}")
 
     def stop(self):
@@ -73,18 +81,23 @@ class PushToTalk:
     def _on_press(self, key):
         if self._active_key is not None:
             return  # 已有键按下，忽略另一个
-        if key == self._ptt_key:
-            self._active_key = "dictate"
+        if key in self._ptt_keys:
+            self._active_key     = "dictate"
+            self._active_trigger = key
             self._start_recording()
-        elif self._edit_key and key == self._edit_key:
-            self._active_key = "edit"
+        elif self._edit_keys and key in self._edit_keys:
+            self._active_key     = "edit"
+            self._active_trigger = key
             self._start_recording()
 
     def _on_release(self, key):
-        if key == self._ptt_key and self._active_key == "dictate":
+        if key != self._active_trigger:
+            return
+        if self._active_key == "dictate":
             self._stop_recording(mode="dictate")
-        elif self._edit_key and key == self._edit_key and self._active_key == "edit":
+        elif self._active_key == "edit":
             self._stop_recording(mode="edit")
+        self._active_trigger = None
 
     # ── 录音控制 ─────────────────────────────────────────────────
 

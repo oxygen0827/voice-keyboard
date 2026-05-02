@@ -5,15 +5,49 @@
 语音打字工具。PTT 按住说话 → 讯飞 STT 识别 → 自动打字进当前输入框。
 支持纯软件模式（任意麦克风）和 ESP32-S3 硬件模式。
 
+## 平台差异
+
+| 项目 | macOS | Windows |
+|------|-------|---------|
+| 启动命令 | `cd 项目目录 && SSL_CERT_FILE=$(…) .venv/bin/python -m agent.main --no-serial` | `cd 项目目录 && .venv\Scripts\python -m agent.main --no-serial` |
+| 打字 API | Quartz `CGEventKeyboardSetUnicodeString`，绕过 IME | `SendInput + KEYEVENTF_UNICODE` 或剪贴板粘贴 |
+| 微信/钉钉 | unicode 模式可用 | 需改 `typing.method: clip`（SendInput 被 Electron 过滤） |
+| 热键名称（右 Alt） | `alt_r` | 英文键盘 `alt_r`，中文键盘 `alt_gr` |
+| 热键名称（右 Ctrl） | `ctrl_r` | `ctrl_r` |
+| 辅助功能授权 | 必须：系统设置 → 隐私与安全性 → 辅助功能 → 添加终端 | 首次运行 UAC 弹窗点"是"即可 |
+| SSL 证书 | Python 官方包无系统证书，需手动指定（见下） | 无此问题 |
+
+### macOS SSL 证书问题
+
+Python 官方安装包在 macOS 上不读系统证书，讯飞 WebSocket 握手会报 `CERTIFICATE_VERIFY_FAILED`。
+
+**解决方法**：用 certifi 提供的证书路径启动：
+
+```bash
+cd /Users/wq/voice-keyboard
+SSL_CERT_FILE=$(.venv/bin/python -c "import certifi; print(certifi.where())") \
+  .venv/bin/python -m agent.main --no-serial
+```
+
+或者一次性修复 Python 安装（如有 `/Applications/Python 3.x/Install Certificates.command`）：
+
+```bash
+/Applications/Python\ 3.x/Install\ Certificates.command
+```
+
+修复后可直接用 `.venv/bin/python -m agent.main --no-serial` 启动，无需前缀。
+
 ## 启动方式
 
 ```bash
-# 激活虚拟环境
-.venv\Scripts\activate          # Windows
-source .venv/bin/activate       # macOS / Linux
+# macOS（需指定 SSL 证书，见上方说明）
+cd /Users/wq/voice-keyboard
+SSL_CERT_FILE=$(.venv/bin/python -c "import certifi; print(certifi.where())") \
+  .venv/bin/python -m agent.main --no-serial
 
-# 纯软件模式（无 ESP32）
-python -m agent.main --no-serial
+# Windows
+cd C:\path\to\voice-keyboard
+.venv\Scripts\python -m agent.main --no-serial
 
 # 列出可用麦克风
 python -m agent.main --list-devices
@@ -56,9 +90,9 @@ typing:
 
 audio:
   mode: ptt                 # ptt=按键触发 / vad=自动检测
-  ptt_key: alt_gr           # Windows 中文键盘右Alt
-  edit_key: ctrl_r          # 右Ctrl
-  device: 1                 # 麦克风序号，auto=自动
+  ptt_key: alt_r            # macOS 右Option；Windows英文键盘 alt_r，中文键盘 alt_gr
+  edit_key: ctrl_r          # 右Ctrl（macOS / Windows 相同）
+  device: auto              # 麦克风序号，auto=自动
 ```
 
 ## 打字方式选择
