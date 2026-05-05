@@ -1,9 +1,10 @@
 """
-Push-to-Talk 录音模块，支持两个热键：
+Push-to-Talk 录音模块，支持三个热键：
   ptt_key  — 普通听写（dictation），松开后调 on_utterance
   edit_key — 语音编辑（edit），松开后调 on_edit_utterance
+  ai_key   — AI 编程指令（ai），松开后调 on_ai_utterance
 
-两个键互斥：一个按下时另一个无效。
+三个键互斥：一个按下时另两个无效。
 """
 
 import threading
@@ -36,14 +37,18 @@ class PushToTalk:
         self,
         on_utterance:      Callable[[bytes], None],
         on_edit_utterance: Optional[Callable[[bytes], None]] = None,
+        on_ai_utterance:   Optional[Callable[[bytes], None]] = None,
         ptt_key:           str = "right_alt",
         edit_key:          str = "right_ctrl",
+        ai_key:            str = "right_shift",
         device:            Optional[str] = "auto",
     ):
         self._on_utterance      = on_utterance
         self._on_edit_utterance = on_edit_utterance
+        self._on_ai_utterance   = on_ai_utterance
         self._ptt_keys          = _parse_keys(ptt_key)
         self._edit_keys         = _parse_keys(edit_key) if on_edit_utterance else []
+        self._ai_keys           = _parse_keys(ai_key)   if on_ai_utterance   else []
         self._device_hint       = device
         self._device_idx        = None
         self._active_key        = None   # 当前正在录音用哪个键
@@ -69,6 +74,8 @@ class PushToTalk:
         hints = [f"{'/'.join(str(k) for k in self._ptt_keys)} 说话"]
         if self._edit_keys:
             hints.append(f"{'/'.join(str(k) for k in self._edit_keys)} 语音编辑")
+        if self._ai_keys:
+            hints.append(f"{'/'.join(str(k) for k in self._ai_keys)} AI编程")
         print(f"[ptt] 按住 {' | '.join(hints)}")
 
     def stop(self):
@@ -89,6 +96,10 @@ class PushToTalk:
             self._active_key     = "edit"
             self._active_trigger = key
             self._start_recording()
+        elif self._ai_keys and key in self._ai_keys:
+            self._active_key     = "ai"
+            self._active_trigger = key
+            self._start_recording()
 
     def _on_release(self, key):
         if key != self._active_trigger:
@@ -97,6 +108,8 @@ class PushToTalk:
             self._stop_recording(mode="dictate")
         elif self._active_key == "edit":
             self._stop_recording(mode="edit")
+        elif self._active_key == "ai":
+            self._stop_recording(mode="ai")
         self._active_trigger = None
 
     # ── 录音控制 ─────────────────────────────────────────────────
@@ -129,8 +142,15 @@ class PushToTalk:
             print("[ptt] 录音太短，跳过    ")
             return
 
-        label    = "识别中" if mode == "dictate" else "解析编辑指令"
-        callback = self._on_utterance if mode == "dictate" else self._on_edit_utterance
+        if mode == "dictate":
+            label    = "识别中"
+            callback = self._on_utterance
+        elif mode == "edit":
+            label    = "解析编辑指令"
+            callback = self._on_edit_utterance
+        else:
+            label    = "解析AI指令"
+            callback = self._on_ai_utterance
         print(f"[ptt] {label}...    ", end="\r", flush=True)
         threading.Thread(
             target=callback,

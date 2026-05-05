@@ -61,6 +61,22 @@ def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None):
     return on_utterance
 
 
+# ── AI 编程回调 ────────────────────────────────────────────────────
+
+def make_ai_handler(stt_client, claude_session):
+    def on_ai_utterance(pcm: bytes):
+        try:
+            text = stt_client.transcribe(pcm)
+            if text:
+                print(f"[stt] AI指令: {text!r}")
+                claude_session.send(text)
+            else:
+                print("[stt] 识别结果为空")
+        except Exception as e:
+            print(f"[stt] 请求失败: {e}")
+    return on_ai_utterance
+
+
 # ── 语音编辑回调 ───────────────────────────────────────────────────
 
 def make_edit_handler(stt_client, editor, buf: TextBuffer, vad_monitor=None):
@@ -182,6 +198,22 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
     mode      = audio_cfg.get("mode", "ptt")
     device    = audio_cfg.get("device", "auto")
 
+    # Claude Code AI 编程会话（可选）
+    claude_session = None
+    cs_cfg = cfg.get("claude_session", {})
+    if cs_cfg.get("enabled"):
+        try:
+            from agent.claude_session import ClaudeSession
+            if ClaudeSession.available():
+                claude_session = ClaudeSession(cs_cfg)
+                ai_key_name = cs_cfg.get("ai_key", "right_shift")
+                print(f"[agent] Claude Code AI 编程模式已启用，热键: {ai_key_name}")
+            else:
+                print("[agent] 未找到 claude 命令，AI 编程模式不可用")
+                print("[agent] 安装方法: npm install -g @anthropic-ai/claude-code")
+        except Exception as e:
+            print(f"[agent] ClaudeSession 初始化失败: {e}")
+
     on_utterance = make_utterance_handler(stt, buf, kbd_mon=kbd_monitor)
 
     if mode == "ptt":
@@ -195,11 +227,17 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
         if editor:
             on_edit = make_edit_handler(stt, editor, buf, vad_monitor=None)
 
+        on_ai = None
+        if claude_session:
+            on_ai = make_ai_handler(stt, claude_session)
+
         ptt = PushToTalk(
             on_utterance=on_utterance,
             on_edit_utterance=on_edit,
+            on_ai_utterance=on_ai,
             ptt_key=audio_cfg.get("ptt_key", "right_alt"),
             edit_key=audio_cfg.get("edit_key", "right_ctrl"),
+            ai_key=cs_cfg.get("ai_key", "right_shift"),
             device=device,
         )
         ptt.start()

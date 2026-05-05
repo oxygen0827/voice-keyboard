@@ -97,3 +97,18 @@ llm:
 #   provider: volcengine
 #   api_key: "..."          # ARK API Key
 #   model: doubao-lite-4k
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Claude Code AI 编程模式（可选）
+# 按住 ai_key 说出编程指令，松开后直接驱动 Claude Code 修改代码
+#
+# 前提：已安装 Claude Code CLI
+#   npm install -g @anthropic-ai/claude-code
+#   claude  （首次运行完成登录）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# claude_session:
+#   enabled: true
+#   working_dir: "/path/to/your/project"  # Claude Code 工作目录（你的代码仓库路径）
+#   ai_key: right_shift                   # AI 编程热键（按住说指令，松开执行）
+#   allowed_tools: "Read,Edit,Write,Bash,Glob,Grep"  # 允许 Claude 使用的工具
+#   max_turns: 10                         # 单次指令最多执行几轮
