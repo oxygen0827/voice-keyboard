@@ -36,6 +36,7 @@
 | 低声细语 | ❌ 麦克风太远 | ✅ 近讲麦克风 |
 | 语音触发快捷键（截图/保存/复制…） | ✅ | ✅ |
 | 语音修改上一句话 | ✅ | ✅ |
+| 语音驱动 Claude Code 改代码 | ✅ | ✅ |
 | 作为普通 USB 麦克风使用 | ❌ | ✅ 一键切换 |
 | 需要安装软件 | ✅ 必须 | ✅ 必须（中文输入） |
 | API 费用 | 按量计费 | 全免 |
@@ -203,6 +204,7 @@ stt:
 - [x] 常开 VAD 模式（webrtcvad 检测语音边界）
 - [x] STT 接入（讯飞 xunfei / 阿里云 NLS / 火山引擎 / 智谱 GLM-4-Voice / OpenAI Whisper）
 - [x] LLM 语音编辑（edit_key 按住说修改指令，自动擦掉原文打入新文字）
+- [x] Claude Code AI 编程模式（ai_key 按住说编程指令，直接驱动 Claude Code 修改代码，支持多轮会话续接）
 - [x] 多麦克风支持（任意 USB / 内置 / 蓝牙设备）
 - [x] `--no-serial` 纯软件模式
 - [x] `--list-devices` 枚举麦克风
@@ -336,6 +338,7 @@ SSL_CERT_FILE=$(.venv/bin/python -c "import certifi; print(certifi.where())") \
 |------|------|
 | `ptt_key` | 按住说话，松开识别打字 |
 | `edit_key` | 按住说修改指令，松开自动修改上一句 |
+| `ai_key` | 按住说编程指令，松开直接驱动 Claude Code 修改代码（需启用 `claude_session`） |
 
 热键支持**单个键或多个键**，多个键效果相同：
 
@@ -377,6 +380,39 @@ audio:
 | 空格 | Space | Space |
 
 > 讯飞 STT 返回的文字自动带句号（如"保存。"），Agent 已自动去除末尾标点再匹配，无需担心。
+
+### AI 编程模式（Claude Code 集成）
+
+按住 `ai_key`（默认 `right_shift`）说出编程指令，松开后 voice-keyboard 将语音转录结果直接发送给本机的 Claude Code CLI，Claude Code 在后台读取、修改代码文件，你的编辑器自动检测文件变化并刷新。全程不需要切换任何窗口。
+
+**前提：安装并登录 Claude Code CLI（只需做一次）**
+
+```bash
+npm install -g @anthropic-ai/claude-code
+claude  # 完成登录授权
+```
+
+**在 `config.yaml` 中启用：**
+
+```yaml
+claude_session:
+  enabled: true
+  working_dir: "/path/to/your/project"   # 你的代码仓库路径
+  ai_key: right_shift                    # AI 编程热键
+  allowed_tools: "Read,Edit,Write,Bash,Glob,Grep"
+  max_turns: 10
+```
+
+**使用示例：**
+
+| 你说的 | Claude Code 做的事 |
+|--------|-------------------|
+| "帮我给这个函数加上参数校验" | 读取相关文件，在函数开头添加校验逻辑 |
+| "把所有 print 改成 logging" | 搜索并批量替换 |
+| "写一个单元测试" | 创建测试文件并编写测试用例 |
+| "修复刚才报的那个 KeyError" | 分析代码，定位并修复 bug |
+
+多轮对话自动续接：说完第一条指令后，Claude Code 会保存会话 ID，后续指令自动延续上下文，无需重新说明背景。
 
 ### 语音编辑示例
 
