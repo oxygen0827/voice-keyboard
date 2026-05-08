@@ -60,8 +60,19 @@ audio:
   #   购买了 Voice Keyboard 硬件 → mode: vad（全程免手动，开口即唤醒）
   #   使用普通麦克风 / 内置麦克风 → mode: ptt（按住说话，避免背景噪音误触发）
   mode: ptt                 # ptt（按住说话）或 vad（常开，自动检测语音）
-  ptt_key: right_alt        # 听写热键（按住说话）
-  edit_key: right_ctrl      # 语音编辑热键（按住说修改指令，松开自动修改上一句）
+
+  # 听写热键（按住说话，原样转文字）
+  # macOS:   [alt, alt_r]       左/右 Option
+  # Windows: [alt_r]            右 Alt（或 alt_gr，中文键盘）
+  # Linux:   [alt_r]            右 Alt
+  ptt_key: [alt, alt_r]
+
+  # AI 键（快捷键/编辑/写作/撤回/聊天）
+  # macOS:   [cmd, cmd_r]       左/右 Command（推荐，不和系统快捷键冲突）
+  # Windows: [ctrl_r]           右 Ctrl（左 Ctrl 占用太多系统快捷键）
+  # Linux:   [ctrl_r]           右 Ctrl
+  ai_key: [cmd, cmd_r]
+
   device: auto              # auto = 自动查找 ESP32 UAC 麦克风，找不到用系统默认
                             # 其他示例：
                             #   device: "MacBook"        # 内置麦克风

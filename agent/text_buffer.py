@@ -15,6 +15,7 @@ class TextBuffer:
     def __init__(self, max_entries: int = 20):
         self._entries: list[str]  = []
         self._max                 = max_entries
+        self._segment_start: int  = 0   # 当前段落在 _entries 中的起始索引
         self.cursor_uncertain: bool = False   # 鼠标点击后置 True
 
     # ── 写入 / 读取 ────────────────────────────────────────────────
@@ -25,8 +26,13 @@ class TextBuffer:
             self._entries.append(text)
             if len(self._entries) > self._max:
                 self._entries.pop(0)
+                self._segment_start = max(0, self._segment_start - 1)
             # 新打出一段话 → 说明光标就在刚打的文字后面，位置可信
             self.cursor_uncertain = False
+
+    def new_segment(self) -> None:
+        """回车或鼠标点击时调用，标记新段落起始位置。"""
+        self._segment_start = len(self._entries)
 
     def pop_last(self) -> str:
         return self._entries.pop() if self._entries else ""
@@ -40,12 +46,28 @@ class TextBuffer:
         return self._entries[-1] if self._entries else ""
 
     @property
+    def current_segment(self) -> str:
+        """当前段落的全部文字（上次回车/鼠标点击之后打的内容）。"""
+        return "".join(self._entries[self._segment_start:])
+
+    @property
     def session(self) -> str:
         """当前 session 打出的全部文字（拼接）。"""
         return "".join(self._entries)
 
+    def replace_segment(self, new_text: str) -> None:
+        """用 new_text 替换当前段落的全部内容。"""
+        del self._entries[self._segment_start:]
+        if new_text:
+            self._entries.append(new_text)
+            self._segment_start = len(self._entries) - 1
+        else:
+            self._segment_start = len(self._entries)
+        self.cursor_uncertain = False
+
     def clear(self) -> None:
         self._entries.clear()
+        self._segment_start = 0
 
     def __bool__(self) -> bool:
         return bool(self._entries)

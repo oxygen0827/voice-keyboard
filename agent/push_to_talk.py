@@ -5,6 +5,9 @@ Push-to-Talk 录音模块，支持三个热键：
   ai_key   — AI 编程指令（ai），松开后调 on_ai_utterance
 
 三个键互斥：一个按下时另两个无效。
+
+dictation 模式支持实时分句：按住说话过程中，检测到句子间停顿即立刻触发 STT，
+无需等到松键，适合连续说多句话的场景。
 """
 
 import threading
@@ -13,9 +16,15 @@ from typing import Callable, Optional
 import sounddevice as sd
 from pynput import keyboard as kb
 
-from agent.audio_monitor import find_device
+from agent.audio_monitor import find_device, FRAME_BYTES, SILENCE_FRAMES, MIN_SPEECH_FRAMES
+import agent.typer as _typer
 
 SAMPLE_RATE = 16000
+
+try:
+    import webrtcvad as _webrtcvad
+except ImportError:
+    _webrtcvad = None
 
 
 def _parse_key(key_str: str):
@@ -38,6 +47,7 @@ class PushToTalk:
         on_utterance:      Callable[[bytes], None],
         on_edit_utterance: Optional[Callable[[bytes], None]] = None,
         on_ai_utterance:   Optional[Callable[[bytes], None]] = None,
+        on_ai_key_down:    Optional[Callable[[], None]] = None,
         ptt_key:           str = "right_alt",
         edit_key:          str = "right_ctrl",
         ai_key:            str = "right_shift",
@@ -46,6 +56,7 @@ class PushToTalk:
         self._on_utterance      = on_utterance
         self._on_edit_utterance = on_edit_utterance
         self._on_ai_utterance   = on_ai_utterance
+        self._on_ai_key_down    = on_ai_key_down
         self._ptt_keys          = _parse_keys(ptt_key)
         self._edit_keys         = _parse_keys(edit_key) if on_edit_utterance else []
         self._ai_keys           = _parse_keys(ai_key)   if on_ai_utterance   else []
@@ -57,6 +68,14 @@ class PushToTalk:
         self._stream: Optional[sd.RawInputStream] = None
         self._listener: Optional[kb.Listener]     = None
 
+        # 实时分句 VAD 状态（仅 dictate 模式使用）
+        self._vad                            = None
+        self._vad_raw: bytearray            = bytearray()
+        self._vad_speech_frames: list[bytes] = []
+        self._vad_in_speech                  = False
+        self._vad_silent_count               = 0
+        self._vad_sent_count                 = 0  # 本次按键已分句发出的数量
+
     def start(self):
         self._device_idx = find_device(self._device_hint)
         if self._device_idx is None:
@@ -64,6 +83,12 @@ class PushToTalk:
         else:
             info = sd.query_devices(self._device_idx)
             print(f"[ptt] 使用麦克风: {info['name']}")
+
+        if _webrtcvad is not None:
+            self._vad = _webrtcvad.Vad(2)
+            print("[ptt] 实时分句已启用（说话中停顿可提前输出）")
+        else:
+            print("[ptt] webrtcvad 未安装，实时分句不可用")
 
         self._listener = kb.Listener(
             on_press=self._on_press,
@@ -86,6 +111,8 @@ class PushToTalk:
     # ── 键盘事件 ─────────────────────────────────────────────────
 
     def _on_press(self, key):
+        if _typer.is_simulating():
+            return  # 程序自身发出的按键，忽略
         if self._active_key is not None:
             return  # 已有键按下，忽略另一个
         if key in self._ptt_keys:
@@ -97,11 +124,15 @@ class PushToTalk:
             self._active_trigger = key
             self._start_recording()
         elif self._ai_keys and key in self._ai_keys:
+            if self._on_ai_key_down:
+                self._on_ai_key_down()
             self._active_key     = "ai"
             self._active_trigger = key
             self._start_recording()
 
     def _on_release(self, key):
+        if _typer.is_simulating():
+            return
         if key != self._active_trigger:
             return
         if self._active_key == "dictate":
@@ -115,10 +146,54 @@ class PushToTalk:
     # ── 录音控制 ─────────────────────────────────────────────────
 
     def _audio_callback(self, indata, frames, time_info, status):
-        self._buf.append(bytes(indata))
+        data = bytes(indata)
+        self._buf.append(data)
+        if self._active_key == "dictate" and self._vad is not None:
+            self._vad_raw.extend(data)
+            self._process_vad()
+
+    def _process_vad(self):
+        """消费 _vad_raw 中所有完整的 30ms 帧，检测句子边界。"""
+        while len(self._vad_raw) >= FRAME_BYTES:
+            frame = bytes(self._vad_raw[:FRAME_BYTES])
+            del self._vad_raw[:FRAME_BYTES]
+
+            is_speech = self._vad.is_speech(frame, SAMPLE_RATE)
+
+            if is_speech:
+                self._vad_in_speech    = True
+                self._vad_silent_count = 0
+                self._vad_speech_frames.append(frame)
+            elif self._vad_in_speech:
+                self._vad_speech_frames.append(frame)
+                self._vad_silent_count += 1
+                if self._vad_silent_count >= SILENCE_FRAMES:
+                    self._dispatch_mid_sentence()
+
+    def _dispatch_mid_sentence(self):
+        """把当前积累的语音帧作为一句话立刻发出去，重置 VAD 状态。"""
+        if len(self._vad_speech_frames) >= MIN_SPEECH_FRAMES:
+            pcm = b"".join(self._vad_speech_frames)
+            self._vad_sent_count += 1
+            n = self._vad_sent_count
+            print(f"[ptt] 分句{n} 识别中...    ", end="\r", flush=True)
+            threading.Thread(
+                target=self._on_utterance,
+                args=(pcm,),
+                daemon=True,
+                name=f"PTT-mid-{n}",
+            ).start()
+        self._vad_speech_frames = []
+        self._vad_silent_count  = 0
+        self._vad_in_speech     = False
 
     def _start_recording(self):
         self._buf = []
+        self._vad_raw           = bytearray()
+        self._vad_speech_frames = []
+        self._vad_in_speech     = False
+        self._vad_silent_count  = 0
+        self._vad_sent_count    = 0
         self._stream = sd.RawInputStream(
             samplerate=SAMPLE_RATE,
             channels=1,
@@ -135,6 +210,38 @@ class PushToTalk:
         self._active_key = None
         self._close_stream()
 
+        if mode == "dictate" and self._vad is not None:
+            self._process_vad()  # 处理流关闭前残留的音频字节
+
+            # 松键时若仍在句子中间，把尾巴也发出去
+            if self._vad_in_speech and len(self._vad_speech_frames) >= MIN_SPEECH_FRAMES:
+                pcm = b"".join(self._vad_speech_frames)
+                self._vad_sent_count += 1
+                n = self._vad_sent_count
+                print(f"[ptt] 分句{n} 识别中...    ", end="\r", flush=True)
+                threading.Thread(
+                    target=self._on_utterance,
+                    args=(pcm,),
+                    daemon=True,
+                    name=f"PTT-mid-{n}",
+                ).start()
+            elif self._vad_sent_count == 0:
+                # 全程未检测到任何句子（录音极短或全静音），回退到原有整段发送逻辑
+                pcm = b"".join(self._buf)
+                if len(pcm) < SAMPLE_RATE * 2 * 0.3:
+                    print("[ptt] 录音太短，跳过    ")
+                else:
+                    print("[ptt] 识别中...    ", end="\r", flush=True)
+                    threading.Thread(
+                        target=self._on_utterance,
+                        args=(pcm,),
+                        daemon=True,
+                        name="PTT-dictate",
+                    ).start()
+            self._buf = []
+            return
+
+        # dictate / edit / ai 模式（VAD 不可用时 dictate 也走这里）
         pcm = b"".join(self._buf)
         self._buf = []
 

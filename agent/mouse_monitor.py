@@ -36,5 +36,6 @@ class MouseMonitor:
 
     def _on_click(self, x, y, button, pressed):
         if pressed:
-            # 任意鼠标按键按下时，认为光标位置已改变
+            # 任意鼠标按键按下时，认为光标位置已改变，同时标记新段落
             self._buf.cursor_uncertain = True
+            self._buf.new_segment()

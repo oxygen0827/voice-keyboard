@@ -51,6 +51,7 @@ if _OS == "Windows":
 # CPython GIL 保证单字节赋值是原子的，线程安全。
 
 _erasing: bool = False
+_simulating: bool = False   # 程序自己发 Cmd+C/V 等按键时置 True，让 PTT 监听忽略
 _use_clipboard_mode: bool = False
 
 
@@ -65,6 +66,10 @@ def init(cfg: dict) -> None:
 def is_erasing() -> bool:
     """供 keyboard_monitor 检查：当前退格事件是否由 erase_last 发出。"""
     return _erasing
+
+def is_simulating() -> bool:
+    """供 push_to_talk 检查：当前按键事件是否由程序自身发出（如 Cmd+C）。"""
+    return _simulating
 
 
 # 语音指令 → 快捷键映射
@@ -82,16 +87,20 @@ _SHORTCUTS: dict[str, list] = {
     "空格":    [Key.space],
 }
 
-# Windows 下替换修饰键
+# Windows / Linux 下替换修饰键（两者快捷键基本相同）
+if _OS in ("Windows", "Linux"):
+    _SHORTCUTS["复制"]    = [Key.ctrl, KeyCode.from_char("c")]
+    _SHORTCUTS["粘贴"]    = [Key.ctrl, KeyCode.from_char("v")]
+    _SHORTCUTS["保存"]    = [Key.ctrl, KeyCode.from_char("s")]
+    _SHORTCUTS["撤销"]    = [Key.ctrl, KeyCode.from_char("z")]
+    _SHORTCUTS["全选"]    = [Key.ctrl, KeyCode.from_char("a")]
+    _SHORTCUTS["新标签"]  = [Key.ctrl, KeyCode.from_char("t")]
+    _SHORTCUTS["关闭标签"]= [Key.ctrl, KeyCode.from_char("w")]
+
 if _OS == "Windows":
-    _SHORTCUTS["截图"] = [Key.cmd, Key.shift, KeyCode.from_char("s")]
-    _SHORTCUTS["复制"] = [Key.ctrl, KeyCode.from_char("c")]
-    _SHORTCUTS["粘贴"] = [Key.ctrl, KeyCode.from_char("v")]
-    _SHORTCUTS["保存"] = [Key.ctrl, KeyCode.from_char("s")]
-    _SHORTCUTS["撤销"] = [Key.ctrl, KeyCode.from_char("z")]
-    _SHORTCUTS["全选"] = [Key.ctrl, KeyCode.from_char("a")]
-    _SHORTCUTS["新标签"] = [Key.ctrl, KeyCode.from_char("t")]
-    _SHORTCUTS["关闭标签"] = [Key.ctrl, KeyCode.from_char("w")]
+    _SHORTCUTS["截图"] = [Key.cmd, Key.shift, KeyCode.from_char("s")]  # Win+Shift+S
+elif _OS == "Linux":
+    _SHORTCUTS["截图"] = [Key.print_screen]  # 大多数桌面环境
 
 
 # ── 打字 ──────────────────────────────────────────────────────────
@@ -187,6 +196,7 @@ def _erase_via_quartz(n: int) -> None:
     for _ in range(n):
         for key_down in (True, False):
             evt = Quartz.CGEventCreateKeyboardEvent(src, 51, key_down)  # 51 = Backspace
+            Quartz.CGEventSetFlags(evt, 0)  # 清空修饰键，防止 Command 按住时变成 Cmd+Backspace
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, evt)
         time.sleep(0.005)
 
@@ -252,6 +262,50 @@ def get_current_line() -> str | None:
         return None
 
 
+def get_selection() -> str:
+    """
+    读取当前鼠标选中的文字。
+    原理：保存剪贴板 → Cmd+C → 读新剪贴板 → 恢复原剪贴板。
+    若内容未变（说明没有选中文字），返回空字符串。
+    """
+    try:
+        old_clip = _get_clipboard()
+        _copy_selection()
+        time.sleep(0.12)
+        selected = _get_clipboard()
+        if selected and selected != old_clip:
+            return selected
+        return ""
+    except Exception as e:
+        print(f"[typer] get_selection 失败: {e}")
+        return ""
+
+
+def replace_selection(text: str) -> None:
+    """将 text 写入剪贴板并粘贴，替换当前选中内容（选区失效时在光标处插入）。"""
+    global _simulating
+    _set_clipboard(text)
+    time.sleep(0.03)
+    _simulating = True
+    try:
+        if _OS == "Darwin":
+            _kb.press(Key.cmd)
+            try:
+                _press_key(KeyCode.from_char("v"))
+            finally:
+                _kb.release(Key.cmd)
+        else:
+            _kb.press(Key.ctrl)
+            try:
+                _press_key(KeyCode.from_char("v"))
+            finally:
+                _kb.release(Key.ctrl)
+        time.sleep(0.05)  # 等 pynput 监听线程处理完这批模拟事件
+    finally:
+        _simulating = False
+    time.sleep(0.03)
+
+
 def replace_current_line(new_text: str) -> None:
     """
     Home → Shift+End 选中当前行，然后打入 new_text 替换。
@@ -279,18 +333,24 @@ def _press_key(key) -> None:
 
 def _copy_selection() -> None:
     """发送 Ctrl+C（Windows/Linux）或 Cmd+C（macOS）复制选中内容。"""
-    if _OS == "Darwin":
-        _kb.press(Key.cmd)
-        try:
-            _press_key(KeyCode.from_char("c"))
-        finally:
-            _kb.release(Key.cmd)
-    else:
-        _kb.press(Key.ctrl)
-        try:
-            _press_key(KeyCode.from_char("c"))
-        finally:
-            _kb.release(Key.ctrl)
+    global _simulating
+    _simulating = True
+    try:
+        if _OS == "Darwin":
+            _kb.press(Key.cmd)
+            try:
+                _press_key(KeyCode.from_char("c"))
+            finally:
+                _kb.release(Key.cmd)
+        else:
+            _kb.press(Key.ctrl)
+            try:
+                _press_key(KeyCode.from_char("c"))
+            finally:
+                _kb.release(Key.ctrl)
+        time.sleep(0.05)  # 等 pynput 监听线程处理完这批模拟事件
+    finally:
+        _simulating = False
 
 
 def _get_clipboard() -> str:
@@ -403,3 +463,21 @@ def register_shortcut(name: str, keys: list) -> None:
 
 def list_shortcuts() -> list[str]:
     return list(_SHORTCUTS.keys())
+
+
+def jump_to_end() -> None:
+    """光标跳到文本框末尾（取消任何选中状态）。跨平台实现。"""
+    if _OS == "Darwin":
+        _kb.press(Key.cmd)
+        try:
+            _press_key(Key.down)
+        finally:
+            _kb.release(Key.cmd)
+    else:
+        # Windows / Linux：Ctrl+End
+        _kb.press(Key.ctrl)
+        try:
+            _press_key(Key.end)
+        finally:
+            _kb.release(Key.ctrl)
+    time.sleep(0.05)

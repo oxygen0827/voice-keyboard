@@ -35,8 +35,11 @@
 | 语音打字（中英文混排） | ✅ PTT 按键触发 | ✅ 自动唤醒，免手动 |
 | 低声细语 | ❌ 麦克风太远 | ✅ 近讲麦克风 |
 | 语音触发快捷键（截图/保存/复制…） | ✅ | ✅ |
-| 语音修改上一句话 | ✅ | ✅ |
-| 语音驱动 Claude Code 改代码 | ✅ | ✅ |
+| 语音编辑/润色上一句或选中内容 | ✅ | ✅ |
+| 语音写作（逐句流式打入） | ✅ | ✅ |
+| 语音撤回上一次 AI 操作 | ✅ | ✅ |
+| 语音删除当前段落或选中内容 | ✅ | ✅ |
+| AI 聊天（回复自动显示并删除） | ✅ | ✅ |
 | 作为普通 USB 麦克风使用 | ❌ | ✅ 一键切换 |
 | 需要安装软件 | ✅ 必须 | ✅ 必须（中文输入） |
 | API 费用 | 按量计费 | 全免 |
@@ -198,13 +201,19 @@ stt:
 - [x] 三平台打字（macOS Quartz / Windows SendInput / Linux XTest）
 - [x] 串口自动识别 + 断线重连
 - [x] TEXT / CMD 协议路由
-- [x] 语音指令 → 快捷键映射
+- [x] 语音指令 → 快捷键映射（三平台各自的修饰键）
 - [x] 开机自启动（macOS LaunchAgent / Windows 注册表 / Linux .desktop）
 - [x] Push-to-Talk 录音（ptt_key 按住说话）
 - [x] 常开 VAD 模式（webrtcvad 检测语音边界）
+- [x] PTT 实时分句（说话中检测停顿，提前触发 STT，无需等到松键）
 - [x] STT 接入（讯飞 xunfei / 阿里云 NLS / 火山引擎 / 智谱 GLM-4-Voice / OpenAI Whisper）
-- [x] LLM 语音编辑（edit_key 按住说修改指令，自动擦掉原文打入新文字）
-- [x] Claude Code AI 编程模式（ai_key 按住说编程指令，直接驱动 Claude Code 修改代码，支持多轮会话续接）
+- [x] AI 键（ai_key）：STT + LLM 意图分类，自动执行以下操作：
+  - 快捷键：说出操作名称直接触发系统快捷键
+  - 编辑：修改/润色当前段落或鼠标选中内容
+  - 写作：逐句流式生成内容打入输入框
+  - 删除：删除当前段落或选中内容
+  - 撤回：撤销上一次 AI 操作（最多 5 步历史）
+  - 聊天：AI 回复显示在输入框，按阅读时间自动消失
 - [x] 多麦克风支持（任意 USB / 内置 / 蓝牙设备）
 - [x] `--no-serial` 纯软件模式
 - [x] `--list-devices` 枚举麦克风
@@ -334,40 +343,41 @@ SSL_CERT_FILE=$(.venv/bin/python -c "import certifi; print(certifi.where())") \
 
 ### 热键说明
 
-| 热键 | 功能 |
-|------|------|
-| `ptt_key` | 按住说话，松开识别打字 |
-| `edit_key` | 按住说修改指令，松开自动修改上一句 |
-| `ai_key` | 按住说编程指令，松开直接驱动 Claude Code 修改代码（需启用 `claude_session`） |
+两个热键，分工明确：
 
-热键支持**单个键或多个键**，多个键效果相同：
+| 热键 | 默认按键 | 功能 |
+|------|---------|------|
+| `ptt_key` | macOS: Option / Windows/Linux: Alt | 按住说话，松开原样转文字打入 |
+| `ai_key` | macOS: Command / Windows/Linux: 右Ctrl | 按住说话，松开走 AI 智能处理 |
+
+热键支持**单个键或多个键**，多个键效果相同（左右手都能触发）：
 
 ```yaml
 audio:
-  ptt_key: [alt, alt_r]    # 左右 Option / Alt 都能触发
-  edit_key: [cmd, cmd_r]   # 左右 Command 都能触发
+  ptt_key: [alt, alt_r]    # 左右 Option/Alt 都能触发
+  ai_key: [cmd, cmd_r]     # 左右 Command 都能触发（Windows/Linux 改为 ctrl_r）
 ```
-
-热键可在 `config.yaml` 中修改。硬件模式建议改为 `mode: vad`（无需按键，自动唤醒）。
 
 不确定按键名称时，运行以下命令，按目标键后查看打印的名称：
 
 ```bash
 # macOS / Linux
 .venv/bin/python -c "from pynput import keyboard; l = keyboard.Listener(on_press=lambda k: print(k)); l.start(); input()"
-
 # Windows
 .venv\Scripts\python -c "from pynput import keyboard; l = keyboard.Listener(on_press=lambda k: print(k)); l.start(); input()"
 ```
 
+### AI 键功能详解
 
-### 语音快捷键
+按住 `ai_key` 说话，松开后根据你说的内容**自动判断意图**，执行对应操作：
 
-说话内容**完全匹配**以下指令词时，直接触发对应快捷键，不打字：
+#### 1. 快捷键
 
-| 说的词 | macOS | Windows |
-|--------|-------|---------|
-| 截图 | Cmd+Shift+4 | Win+Shift+S |
+说出操作名称，直接执行系统快捷键：
+
+| 说的词 | macOS | Windows / Linux |
+|--------|-------|----------------|
+| 截图 | Cmd+Shift+4 | Win+Shift+S / PrtSc |
 | 保存 | Cmd+S | Ctrl+S |
 | 复制 | Cmd+C | Ctrl+C |
 | 粘贴 | Cmd+V | Ctrl+V |
@@ -379,49 +389,57 @@ audio:
 | 删除 | Backspace | Backspace |
 | 空格 | Space | Space |
 
-> 讯飞 STT 返回的文字自动带句号（如"保存。"），Agent 已自动去除末尾标点再匹配，无需担心。
+#### 2. 编辑 / 润色
 
-### AI 编程模式（Claude Code 集成）
-
-按住 `ai_key`（默认 `right_shift`）说出编程指令，松开后 voice-keyboard 将语音转录结果直接发送给本机的 Claude Code CLI，Claude Code 在后台读取、修改代码文件，你的编辑器自动检测文件变化并刷新。全程不需要切换任何窗口。
-
-**前提：安装并登录 Claude Code CLI（只需做一次）**
-
-```bash
-npm install -g @anthropic-ai/claude-code
-claude  # 完成登录授权
-```
-
-**在 `config.yaml` 中启用：**
-
-```yaml
-claude_session:
-  enabled: true
-  working_dir: "/path/to/your/project"   # 你的代码仓库路径
-  ai_key: right_shift                    # AI 编程热键
-  allowed_tools: "Read,Edit,Write,Bash,Glob,Grep"
-  max_turns: 10
-```
-
-**使用示例：**
-
-| 你说的 | Claude Code 做的事 |
-|--------|-------------------|
-| "帮我给这个函数加上参数校验" | 读取相关文件，在函数开头添加校验逻辑 |
-| "把所有 print 改成 logging" | 搜索并批量替换 |
-| "写一个单元测试" | 创建测试文件并编写测试用例 |
-| "修复刚才报的那个 KeyError" | 分析代码，定位并修复 bug |
-
-多轮对话自动续接：说完第一条指令后，Claude Code 会保存会话 ID，后续指令自动延续上下文，无需重新说明背景。
-
-### 语音编辑示例
+明确要求修改已有文字，AI 会修改当前段落或选中内容：
 
 | 你说的 | 效果 |
 |--------|------|
 | "把会议改成会谈" | 替换关键词 |
 | "去掉最后一句" | 删除末尾内容 |
-| "在后面加上请及时回复" | 追加文字 |
 | "改成更正式的表达" | LLM 润色重写 |
+| "帮我翻译成英文" | 翻译当前段落 |
+
+> 用鼠标选中文字后再按 AI 键，优先修改选中内容。
+
+#### 3. 写作
+
+给出主题或要求，AI 逐句流式生成并打入输入框：
+
+| 你说的 | 效果 |
+|--------|------|
+| "帮我写一段单片机的介绍" | 生成介绍文字，逐句打入 |
+| "写一封请假邮件" | 生成邮件正文 |
+| "给这个功能写一段产品描述" | 生成描述文字 |
+
+#### 4. 删除
+
+明确要求删除，直接删掉选中内容或当前段落：
+
+| 你说的 | 效果 |
+|--------|------|
+| "删除这段话" | 删掉当前段落 |
+| "清除选中内容" | 删掉鼠标选中的文字 |
+
+#### 5. 撤回
+
+撤销上一次 AI 操作，恢复原文：
+
+| 你说的 | 效果 |
+|--------|------|
+| "撤回" / "撤销" | 恢复被编辑/删除的原文，或删掉写作生成的内容 |
+
+最多记录 5 步历史。
+
+#### 6. 聊天
+
+其他问题或不确定意图，AI 在输入框末尾显示回复，**按阅读时间自动删除**，不影响正文：
+
+| 你说的 | 效果 |
+|--------|------|
+| "你能做什么" | AI 介绍本软件功能 |
+| "这句话有没有语法错误" | AI 回复，自动消失 |
+| "帮我想个标题" | AI 建议，自动消失 |
 
 ### 注册开机自启动
 

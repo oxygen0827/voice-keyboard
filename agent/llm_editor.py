@@ -74,6 +74,51 @@ class LLMEditor:
         """用 instruction 修改 original，返回修改后的文字。"""
         return self._edit(original, instruction)
 
+    def chat_stream(self, system_prompt: str, user_message: str):
+        """流式调用，逐 token yield 文字片段。"""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_message},
+        ]
+        if hasattr(self, "_zhipu_client"):
+            stream = self._zhipu_client.chat.completions.create(
+                model=self._model, messages=messages,
+                stream=True, temperature=0.7, max_tokens=1000,
+            )
+        else:
+            stream = self._client.chat.completions.create(
+                model=self._model, messages=messages,
+                stream=True, temperature=0.7, max_tokens=1000,
+            )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+
+    def chat(self, system_prompt: str, user_message: str) -> str:
+        """通用 LLM 调用，返回模型回复文字。"""
+        if hasattr(self, "_zhipu_client"):
+            resp = self._zhipu_client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_message},
+                ],
+                temperature=0.1,
+                max_tokens=200,
+            )
+        else:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_message},
+                ],
+                temperature=0.1,
+                max_tokens=200,
+            )
+        return resp.choices[0].message.content.strip()
+
     def _openai_edit(self, original: str, instruction: str) -> str:
         resp = self._client.chat.completions.create(
             model=self._model,

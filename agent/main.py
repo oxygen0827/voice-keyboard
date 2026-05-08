@@ -20,7 +20,7 @@ from agent.autostart import install, uninstall
 from agent.config import load as load_config
 from agent.serial_reader import SerialReader
 from agent.text_buffer import TextBuffer
-from agent.typer import erase_last, get_current_line, init as typer_init, list_shortcuts, replace_current_line, send_shortcut, type_text
+from agent.typer import init as typer_init, list_shortcuts, send_shortcut, type_text
 
 
 # ── 串口回调 ───────────────────────────────────────────────────────
@@ -47,117 +47,15 @@ def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None):
             text = stt_client.transcribe(pcm)
             if text:
                 print(f"[stt] {text!r}")
-                if send_shortcut(text.strip().rstrip("。，、！？,.!? ")):
-                    print(f"[stt] 触发快捷键: {text!r}")
-                else:
-                    type_text(text)
-                    buf.push(text)
-                    if kbd_mon is not None:
-                        kbd_mon.notify_voice_output()
+                type_text(text)
+                buf.push(text)
+                if kbd_mon is not None:
+                    kbd_mon.notify_voice_output()
             else:
                 print("[stt] 识别结果为空")
         except Exception as e:
             print(f"[stt] 请求失败: {e}")
     return on_utterance
-
-
-# ── AI 编程回调 ────────────────────────────────────────────────────
-
-def make_ai_handler(stt_client, claude_session):
-    def on_ai_utterance(pcm: bytes):
-        try:
-            text = stt_client.transcribe(pcm)
-            if text:
-                print(f"[stt] AI指令: {text!r}")
-                claude_session.send(text)
-            else:
-                print("[stt] 识别结果为空")
-        except Exception as e:
-            print(f"[stt] 请求失败: {e}")
-    return on_ai_utterance
-
-
-# ── 语音编辑回调 ───────────────────────────────────────────────────
-
-def make_edit_handler(stt_client, editor, buf: TextBuffer, vad_monitor=None):
-    def on_edit_utterance(pcm: bytes):
-        # 1. 识别编辑指令
-        try:
-            instruction = stt_client.transcribe(pcm)
-        except Exception as e:
-            print(f"[edit] STT 失败: {e}")
-            if vad_monitor:
-                vad_monitor.resume()
-            return
-
-        if not instruction:
-            print("[edit] 未识别到编辑指令")
-            if vad_monitor:
-                vad_monitor.resume()
-            return
-
-        # 2. 决定使用哪种模式获取原文
-        #
-        #   cursor_uncertain=True → 鼠标点击过，光标位置不可靠
-        #     → 行选择剪贴板模式：Home→Shift+End→复制 读取当前行真实内容
-        #     → LLM 修改后：Home→Shift+End→打新文字 整行替换
-        #
-        #   cursor_uncertain=False → 只用了语音打字和 Backspace
-        #     → 直接用 buf.last（快，无剪贴板副作用）
-        #     → LLM 修改后：退格 + 打新文字
-
-        use_line_mode = buf.cursor_uncertain
-        original      = None
-
-        if use_line_mode:
-            print("[edit] 检测到光标位移（鼠标点击过），切换到行选择模式")
-            original = get_current_line()
-            if original is None:
-                print("[edit] 行选择读取失败，回退到 buf.last")
-                use_line_mode = False
-
-        if not use_line_mode:
-            original = buf.last
-
-        if not original:
-            print("[edit] 没有可编辑的内容")
-            if vad_monitor:
-                vad_monitor.resume()
-            return
-
-        print(f"[edit] 指令: {instruction!r}")
-        print(f"[edit] 原文: {original!r}  (模式: {'行选择' if use_line_mode else 'buf'})")
-
-        # 3. LLM 修改
-        try:
-            corrected = editor.edit(original, instruction)
-        except Exception as e:
-            print(f"[edit] LLM 失败: {e}")
-            if vad_monitor:
-                vad_monitor.resume()
-            return
-
-        print(f"[edit] 修改后: {corrected!r}")
-
-        # 4. 写回输入框并更新 buffer
-        if use_line_mode:
-            # Home → Shift+End → 打新文字（整行替换）
-            replace_current_line(corrected)
-            buf.clear()
-            buf.push(corrected)
-            buf.cursor_uncertain = False
-        else:
-            # 退格擦掉原文，打入修改后的文字
-            erase_last(original)
-            type_text(corrected)
-            buf.replace_last(corrected)
-            # 编辑完成后光标在 corrected 末尾，位置可信
-            buf.cursor_uncertain = False
-
-        if vad_monitor:
-            vad_monitor.resume()
-
-    return on_edit_utterance
 
 
 # ── 音频管线 ───────────────────────────────────────────────────────
@@ -198,21 +96,16 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
     mode      = audio_cfg.get("mode", "ptt")
     device    = audio_cfg.get("device", "auto")
 
-    # Claude Code AI 编程会话（可选）
-    claude_session = None
-    cs_cfg = cfg.get("claude_session", {})
-    if cs_cfg.get("enabled"):
+    # AI 键处理器
+    ai_handler = None
+    if editor:
         try:
-            from agent.claude_session import ClaudeSession
-            if ClaudeSession.available():
-                claude_session = ClaudeSession(cs_cfg)
-                ai_key_name = cs_cfg.get("ai_key", "right_shift")
-                print(f"[agent] Claude Code AI 编程模式已启用，热键: {ai_key_name}")
-            else:
-                print("[agent] 未找到 claude 命令，AI 编程模式不可用")
-                print("[agent] 安装方法: npm install -g @anthropic-ai/claude-code")
+            from agent.ai_handler import AIHandler
+            ai_handler = AIHandler(stt, editor, buf)
+            ai_key_name = audio_cfg.get("ai_key", "cmd_r")
+            print(f"[agent] AI 键已启用，热键: {ai_key_name}")
         except Exception as e:
-            print(f"[agent] ClaudeSession 初始化失败: {e}")
+            print(f"[agent] AIHandler 初始化失败: {e}")
 
     on_utterance = make_utterance_handler(stt, buf, kbd_mon=kbd_monitor)
 
@@ -223,21 +116,15 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
             print(f"[agent] PTT 依赖缺失（{e}）")
             return None
 
-        on_edit = None
-        if editor:
-            on_edit = make_edit_handler(stt, editor, buf, vad_monitor=None)
-
-        on_ai = None
-        if claude_session:
-            on_ai = make_ai_handler(stt, claude_session)
+        on_ai         = ai_handler.handle        if ai_handler else None
+        on_ai_key_dwn = ai_handler.on_ai_key_down if ai_handler else None
 
         ptt = PushToTalk(
             on_utterance=on_utterance,
-            on_edit_utterance=on_edit,
             on_ai_utterance=on_ai,
+            on_ai_key_down=on_ai_key_dwn,
             ptt_key=audio_cfg.get("ptt_key", "right_alt"),
-            edit_key=audio_cfg.get("edit_key", "right_ctrl"),
-            ai_key=cs_cfg.get("ai_key", "right_shift"),
+            ai_key=audio_cfg.get("ai_key", "cmd_r"),
             device=device,
         )
         ptt.start()
@@ -256,34 +143,6 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
             vad_level=audio_cfg.get("vad_aggressiveness", 2),
         )
         monitor.start()
-
-        # VAD 模式下，编辑键仍用 PTT 方式（避免 VAD 误触发）
-        if editor:
-            try:
-                from agent.push_to_talk import PushToTalk
-                on_edit = make_edit_handler(stt, editor, buf, vad_monitor=monitor)
-
-                edit_ptt = PushToTalk(
-                    on_utterance=on_utterance,
-                    on_edit_utterance=on_edit,
-                    ptt_key=audio_cfg.get("ptt_key", "right_alt"),
-                    edit_key=audio_cfg.get("edit_key", "right_ctrl"),
-                    device=device,
-                )
-
-                _orig_press = edit_ptt._on_press
-
-                def _patched_press(key):
-                    if key in edit_ptt._edit_keys:
-                        monitor.pause()
-                    _orig_press(key)
-
-                edit_ptt._listener
-                edit_ptt._on_press = _patched_press
-                edit_ptt.start()
-                return monitor
-            except ImportError:
-                pass
 
         return monitor
 

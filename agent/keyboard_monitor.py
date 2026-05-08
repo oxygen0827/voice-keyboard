@@ -70,3 +70,5 @@ class KeyboardMonitor:
             # Delete 键删除光标右边的字符，方向相反，
             # 无法直接对应 buf.last，只能标记 cursor_uncertain
             self._buf.cursor_uncertain = True
+        elif key == kb.Key.enter:
+            self._buf.new_segment()
