@@ -9,6 +9,9 @@ openai
 requests
 pyyaml
 pyobjc-framework-Quartz; sys_platform == "darwin"
+pyobjc-framework-Cocoa; sys_platform == "darwin"
+pyobjc-framework-AVFoundation; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices; sys_platform == "darwin"
 
 # 智谱 AI（zhipuai provider，参考 transmission_assistant 项目）
 # https://open.bigmodel.cn/

@@ -329,6 +329,11 @@ class _XunfeiSTT:
         self._api_key    = cfg["api_key"]
         self._api_secret = cfg["api_secret"]
         self._language   = cfg.get("language", "zh_cn")
+        import os
+        self._sslopt = {}
+        ca_file = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
+        if ca_file:
+            self._sslopt["ca_certs"] = ca_file
 
     def _build_url(self) -> str:
         import hashlib, hmac as _hmac
@@ -423,7 +428,7 @@ class _XunfeiSTT:
             on_open=on_open, on_message=on_message,
             on_error=on_error, on_close=on_close,
         )
-        threading.Thread(target=app.run_forever, daemon=True).start()
+        threading.Thread(target=lambda: app.run_forever(sslopt=self._sslopt), daemon=True).start()
         done.wait(timeout=15)
 
         if err[0]:

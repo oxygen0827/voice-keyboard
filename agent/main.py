@@ -10,14 +10,47 @@ Voice Keyboard Agent —— PC 端后台程序入口。
 """
 
 import argparse
+import os
 import signal
 import sys
+import threading
 import time
+
+# 打包后显式指定 CA 证书路径，供 requests 等直接读取环境变量使用。
+if getattr(sys, "frozen", False):
+    try:
+        import certifi
+        from pathlib import Path
+
+        exe_dir = Path(sys.executable).resolve().parent
+        resources_dir = exe_dir.parent / "Resources"
+        bundled_candidates = [
+            resources_dir / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "certifi" / "cacert.pem",
+            resources_dir / "openssl.ca",
+        ]
+        _ca_path = None
+        for p in bundled_candidates:
+            if p.exists():
+                _ca_path = str(p)
+                break
+        if _ca_path is None:
+            _ca_path = certifi.where()
+
+        os.environ.setdefault("SSL_CERT_FILE", _ca_path)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca_path)
+        print(f"[agent] 使用 CA 证书: {_ca_path}")
+    except ImportError:
+        pass
+
+# 打包模式下日志重定向到文件，必须在所有 print 之前
+from agent import log_setup as _log_setup
+_log_setup.setup()
 
 import sounddevice as sd
 
 from agent.autostart import install, uninstall
 from agent.config import load as load_config
+from agent.history import History
 from agent.serial_reader import SerialReader
 from agent.text_buffer import TextBuffer
 from agent.typer import init as typer_init, list_shortcuts, send_shortcut, type_text
@@ -25,11 +58,18 @@ from agent.typer import init as typer_init, list_shortcuts, send_shortcut, type_
 
 # ── 串口回调 ───────────────────────────────────────────────────────
 
-def make_serial_handlers(buf: TextBuffer):
+def make_serial_handlers(buf: TextBuffer, history: History | None = None):
     def on_text(text: str):
         print(f"[agent] 打字: {text!r}")
-        type_text(text)
-        buf.push(text)
+        try:
+            type_text(text)
+            buf.push(text)
+            if history is not None:
+                history.append("dictate", text, "ok")
+        except Exception as e:
+            print(f"[agent] 打字失败: {e}")
+            if history is not None:
+                history.append("dictate", text, "error", f"typing: {e}")
 
     def on_cmd(cmd: str):
         print(f"[agent] 指令: {cmd}")
@@ -41,26 +81,119 @@ def make_serial_handlers(buf: TextBuffer):
 
 # ── STT 回调 ───────────────────────────────────────────────────────
 
-def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None):
-    def on_utterance(pcm: bytes):
+_POLISH_SYSTEM = """你是文字润色助手。对用户说的话做最轻度的润色：
+- 去掉口语填充词（嗯、啊、呃、那个、就是说、然后呢之类）
+- 修正明显的错别字和不通顺的地方
+- 加上合适的标点
+
+严格遵守：保留原意和说话风格，不要扩写、不要总结、不要改写措辞。
+直接输出润色后的文字，不要任何解释、前缀或引号。"""
+
+
+def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None, editor=None,
+                           status_window=None, history: History | None = None):
+    def on_utterance(pcm: bytes, polish: bool = False):
+        mode = "polish" if polish else "dictate"
         try:
             text = stt_client.transcribe(pcm)
-            if text:
-                print(f"[stt] {text!r}")
-                type_text(text)
-                buf.push(text)
-                if kbd_mon is not None:
-                    kbd_mon.notify_voice_output()
-            else:
-                print("[stt] 识别结果为空")
         except Exception as e:
             print(f"[stt] 请求失败: {e}")
+            if history is not None:
+                history.append(mode, "", "error", f"STT: {e}")
+            if status_window is not None:
+                status_window.set_state("error_stt")
+            return
+        if not text:
+            print("[stt] 识别结果为空")
+            if history is not None:
+                history.append(mode, "", "empty")
+            return
+        print(f"[stt] {text!r}")
+        if polish and editor is not None:
+            if status_window is not None:
+                status_window.set_state("polishing")
+            try:
+                polished = editor.chat(_POLISH_SYSTEM, text).strip()
+                if polished:
+                    print(f"[stt] 微润色 → {polished!r}")
+                    text = polished
+            except Exception as e:
+                print(f"[stt] 润色失败，回退原文: {e}")
+        try:
+            type_text(text)
+            buf.push(text)
+        except Exception as e:
+            print(f"[stt] 打字失败: {e}")
+            if status_window is not None:
+                status_window.set_state("error_typing")
+            if history is not None:
+                history.append(mode, text, "error", f"typing: {e}")
+            return
+        if history is not None:
+            history.append(mode, text, "ok")
+        if kbd_mon is not None:
+            kbd_mon.notify_voice_output()
+        if status_window is not None:
+            status_window.set_state("idle")
     return on_utterance
 
 
-# ── 音频管线 ───────────────────────────────────────────────────────
+# ── 后端组件容器（供热重载使用）─────────────────────────────────────
 
-def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
+class _Backend:
+    """所有可重启的后端组件，热重载时整体停掉再重建。"""
+    def __init__(self):
+        self.cfg = None
+        self.kbd_monitor = None
+        self.mouse_monitor = None
+        self.reader = None
+        self.audio = None  # PushToTalk or AudioMonitor
+
+    def stop(self):
+        for attr in ("audio", "reader", "mouse_monitor", "kbd_monitor"):
+            comp = getattr(self, attr, None)
+            if comp is None:
+                continue
+            try:
+                comp.stop()
+            except Exception as e:
+                print(f"[agent] 停止 {attr} 失败: {e}")
+            setattr(self, attr, None)
+
+
+def build_backend(args, buf: TextBuffer, status_window, history: History) -> _Backend:
+    bk = _Backend()
+    bk.cfg = load_config()
+    typer_init(bk.cfg.get("typing", {}))
+
+    try:
+        from agent.keyboard_monitor import KeyboardMonitor
+        bk.kbd_monitor = KeyboardMonitor(buf)
+        bk.kbd_monitor.start()
+    except Exception as e:
+        print(f"[agent] 键盘监听启动失败（{e}），退格同步不可用")
+
+    try:
+        from agent.mouse_monitor import MouseMonitor
+        bk.mouse_monitor = MouseMonitor(buf)
+        bk.mouse_monitor.start()
+    except Exception as e:
+        print(f"[agent] 鼠标监听启动失败（{e}），行选择模式不可用")
+
+    if not args.no_serial:
+        on_text, on_cmd = make_serial_handlers(buf, history=history)
+        bk.reader = SerialReader(on_text=on_text, on_cmd=on_cmd, port=args.port)
+        bk.reader.start()
+    else:
+        print("[agent] 串口已禁用（纯软件模式）")
+
+    bk.audio = _build_audio(bk.cfg, buf, kbd_monitor=bk.kbd_monitor,
+                            status_window=status_window, history=history)
+    return bk
+
+
+def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None, status_window=None,
+                 history: History | None = None):
     stt_cfg = cfg.get("stt", {})
     provider = stt_cfg.get("provider", "")
     _no_api_key_providers = {"volcengine", "aliyun"}
@@ -81,7 +214,6 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
         print(f"[agent] STT 初始化失败: {e}")
         return None
 
-    # LLM 编辑器（可选）
     editor = None
     llm_cfg = cfg.get("llm", {})
     if llm_cfg.get("api_key"):
@@ -90,24 +222,32 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
             editor = LLMEditor(llm_cfg)
             print("[agent] LLM 编辑功能已启用")
         except Exception as e:
+            import traceback
             print(f"[agent] LLM 初始化失败: {e}")
+            traceback.print_exc()
 
     audio_cfg = cfg.get("audio", {})
     mode      = audio_cfg.get("mode", "ptt")
     device    = audio_cfg.get("device", "auto")
 
-    # AI 键处理器
     ai_handler = None
     if editor:
         try:
             from agent.ai_handler import AIHandler
-            ai_handler = AIHandler(stt, editor, buf)
+            from agent.memo_store import MemoStore
+            memo_store = MemoStore()
+            ai_handler = AIHandler(stt, editor, buf, memo_store=memo_store,
+                                   status_window=status_window, history=history)
             ai_key_name = audio_cfg.get("ai_key", "cmd_r")
+            existing = memo_store.keys()
+            if existing:
+                print(f"[memo] 已加载 {len(existing)} 条备忘录: {'、'.join(existing)}")
             print(f"[agent] AI 键已启用，热键: {ai_key_name}")
         except Exception as e:
             print(f"[agent] AIHandler 初始化失败: {e}")
 
-    on_utterance = make_utterance_handler(stt, buf, kbd_mon=kbd_monitor)
+    on_utterance = make_utterance_handler(stt, buf, kbd_mon=kbd_monitor, editor=editor,
+                                          status_window=status_window, history=history)
 
     if mode == "ptt":
         try:
@@ -126,11 +266,12 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
             ptt_key=audio_cfg.get("ptt_key", "right_alt"),
             ai_key=audio_cfg.get("ai_key", "cmd_r"),
             device=device,
+            status_window=status_window,
         )
         ptt.start()
         return ptt
 
-    else:  # vad
+    else:
         try:
             from agent.audio_monitor import AudioMonitor
         except ImportError as e:
@@ -143,7 +284,6 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None):
             vad_level=audio_cfg.get("vad_aggressiveness", 2),
         )
         monitor.start()
-
         return monitor
 
 
@@ -170,7 +310,10 @@ def main():
     parser.add_argument("--list-devices", action="store_true", help="列出可用麦克风设备后退出")
     parser.add_argument("--install",      action="store_true", help="注册开机自启动")
     parser.add_argument("--uninstall",    action="store_true", help="移除开机自启动")
+    parser.add_argument("--no-ui",        action="store_true", help="不启动菜单栏/主窗口（纯命令行）")
     args = parser.parse_args()
+    if getattr(sys, "frozen", False):
+        args.no_serial = True
 
     if args.list_devices:
         list_devices()
@@ -182,59 +325,91 @@ def main():
         uninstall()
         return
 
-    cfg = load_config()
-    typer_init(cfg.get("typing", {}))
+    from agent.config import ensure_user_config
+    ensure_user_config()
+
+    # 启动权限自检（仅 macOS）
+    try:
+        from agent import permissions as _perm
+        print(f"[perm] {_perm.summary_log()}")
+    except Exception as e:
+        print(f"[perm] 自检失败: {e}")
+
     buf = TextBuffer()
+    history = History()
+    history.compact()
+
+    # ── 状态悬浮窗 ───────────────────────────────────────────────
+    status_window = None
+    try:
+        from agent.status_window import StatusWindow
+        status_window = StatusWindow()
+    except Exception as e:
+        print(f"[agent] 状态悬浮窗启动失败（{e}），将以无窗口模式运行")
+
     print("[agent] Voice Keyboard Agent 启动")
 
-    # ── 键盘退格监听（同步 TextBuffer）─────────────────────────────
-    try:
-        from agent.keyboard_monitor import KeyboardMonitor
-        kbd_monitor = KeyboardMonitor(buf)
-        kbd_monitor.start()
-    except Exception as e:
-        print(f"[agent] 键盘监听启动失败（{e}），退格同步不可用")
-        kbd_monitor = None
+    # ── 后端 ─────────────────────────────────────────────────────
+    backend_lock = threading.Lock()
+    backend = build_backend(args, buf, status_window, history)
 
-    # ── 鼠标点击监听（光标位移检测）───────────────────────────────
-    try:
-        from agent.mouse_monitor import MouseMonitor
-        mouse_monitor = MouseMonitor(buf)
-        mouse_monitor.start()
-    except Exception as e:
-        print(f"[agent] 鼠标监听启动失败（{e}），行选择模式不可用")
-        mouse_monitor = None
+    def reload_backend():
+        with backend_lock:
+            print("[agent] === 热重载后端 ===")
+            backend.stop()
+            new_bk = build_backend(args, buf, status_window, history)
+            backend.cfg          = new_bk.cfg
+            backend.kbd_monitor  = new_bk.kbd_monitor
+            backend.mouse_monitor= new_bk.mouse_monitor
+            backend.reader       = new_bk.reader
+            backend.audio        = new_bk.audio
+            print("[agent] 热重载完成")
 
-    # ── 串口 ─────────────────────────────────────────────────────
-    reader = None
-    if not args.no_serial:
-        on_text, on_cmd = make_serial_handlers(buf)
-        reader = SerialReader(on_text=on_text, on_cmd=on_cmd, port=args.port)
-        reader.start()
-    else:
-        print("[agent] 串口已禁用（纯软件模式）")
+    def retype(text: str):
+        # 历史 tab「再次打字」回调，UI 已隐藏后调度
+        try:
+            type_text(text)
+            buf.push(text)
+            history.append("dictate", text, "ok", detail="retype")
+        except Exception as e:
+            print(f"[agent] retype 失败: {e}")
 
-    # ── 音频 STT + 编辑 ──────────────────────────────────────────
-    monitor = _build_audio(cfg, buf, kbd_monitor=kbd_monitor)
+    # ── UI（菜单栏 + 主窗口）───────────────────────────────────────
+    ui_app = None
+    if status_window is not None and not args.no_ui:
+        try:
+            from agent.ui.app import UIApp
+            from agent.memo_store import MemoStore
+            ui_app = UIApp(
+                history=history,
+                memos=MemoStore(),
+                reload_backend=reload_backend,
+                retype_callback=retype,
+            )
+            status_window.add_main_thread_setup(ui_app.build)
+        except Exception as e:
+            import traceback
+            print(f"[agent] UI 初始化失败: {e}")
+            traceback.print_exc()
+            ui_app = None
 
-    def shutdown(sig, frame):
+    def shutdown(sig=None, frame=None):
         print("\n[agent] 退出")
-        if kbd_monitor:
-            kbd_monitor.stop()
-        if mouse_monitor:
-            mouse_monitor.stop()
-        if reader:
-            reader.stop()
-        if monitor:
-            monitor.stop()
+        with backend_lock:
+            backend.stop()
+        if status_window:
+            status_window.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
     print("[agent] 运行中，Ctrl+C 退出\n")
-    while True:
-        time.sleep(1)
+    if status_window is not None:
+        status_window.run()
+    else:
+        while True:
+            time.sleep(1)
 
 
 if __name__ == "__main__":

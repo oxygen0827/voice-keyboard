@@ -11,6 +11,7 @@ dictation 模式支持实时分句：按住说话过程中，检测到句子间�
 """
 
 import threading
+import time
 from typing import Callable, Optional
 
 import sounddevice as sd
@@ -52,6 +53,7 @@ class PushToTalk:
         edit_key:          str = "right_ctrl",
         ai_key:            str = "right_shift",
         device:            Optional[str] = "auto",
+        status_window=None,
     ):
         self._on_utterance      = on_utterance
         self._on_edit_utterance = on_edit_utterance
@@ -61,12 +63,18 @@ class PushToTalk:
         self._edit_keys         = _parse_keys(edit_key) if on_edit_utterance else []
         self._ai_keys           = _parse_keys(ai_key)   if on_ai_utterance   else []
         self._device_hint       = device
+        self._status            = status_window
         self._device_idx        = None
         self._active_key        = None   # 当前正在录音用哪个键
         self._active_trigger    = None   # 触发本次录音的具体按键，用于 release 配对
         self._buf: list[bytes]  = []
         self._stream: Optional[sd.RawInputStream] = None
         self._listener: Optional[kb.Listener]     = None
+
+        # 双击 PTT 切换微润色模式
+        self._polish_mode             = False
+        self._last_ptt_press_time     = 0.0
+        self._double_tap_window       = 0.4   # 秒
 
         # 实时分句 VAD 状态（仅 dictate 模式使用）
         self._vad                            = None
@@ -96,7 +104,7 @@ class PushToTalk:
         )
         self._listener.start()
 
-        hints = [f"{'/'.join(str(k) for k in self._ptt_keys)} 说话"]
+        hints = [f"{'/'.join(str(k) for k in self._ptt_keys)} 说话（双击切换微润色）"]
         if self._edit_keys:
             hints.append(f"{'/'.join(str(k) for k in self._edit_keys)} 语音编辑")
         if self._ai_keys:
@@ -108,6 +116,10 @@ class PushToTalk:
             self._listener.stop()
         self._close_stream()
 
+    def _set_status(self, state: str) -> None:
+        if self._status is not None:
+            self._status.set_state(state)
+
     # ── 键盘事件 ─────────────────────────────────────────────────
 
     def _on_press(self, key):
@@ -116,6 +128,15 @@ class PushToTalk:
         if self._active_key is not None:
             return  # 已有键按下，忽略另一个
         if key in self._ptt_keys:
+            now = time.monotonic()
+            if (now - self._last_ptt_press_time) < self._double_tap_window:
+                # 双击：切换微润色模式，不开新录音
+                self._polish_mode = not self._polish_mode
+                mode_name = "微润色" if self._polish_mode else "原文"
+                print(f"[ptt] 切换为「{mode_name}」模式")
+                self._last_ptt_press_time = 0.0
+                return
+            self._last_ptt_press_time = now
             self._active_key     = "dictate"
             self._active_trigger = key
             self._start_recording()
@@ -179,7 +200,7 @@ class PushToTalk:
             print(f"[ptt] 分句{n} 识别中...    ", end="\r", flush=True)
             threading.Thread(
                 target=self._on_utterance,
-                args=(pcm,),
+                args=(pcm, self._polish_mode),
                 daemon=True,
                 name=f"PTT-mid-{n}",
             ).start()
@@ -203,7 +224,19 @@ class PushToTalk:
             callback=self._audio_callback,
         )
         self._stream.start()
-        label = "录音中" if self._active_key == "dictate" else "编辑指令录音中"
+        if self._active_key == "dictate":
+            if self._polish_mode:
+                label = "微润色 录音中"
+                self._set_status("polish_recording")
+            else:
+                label = "录音中"
+                self._set_status("recording")
+        elif self._active_key == "ai":
+            label = "AI 指令录音中"
+            self._set_status("ai_recording")
+        else:
+            label = "编辑指令录音中"
+            self._set_status("recording")
         print(f"[ptt] {label}... ", end="\r", flush=True)
 
     def _stop_recording(self, mode: str):
@@ -219,9 +252,10 @@ class PushToTalk:
                 self._vad_sent_count += 1
                 n = self._vad_sent_count
                 print(f"[ptt] 分句{n} 识别中...    ", end="\r", flush=True)
+                self._set_status("recognizing")
                 threading.Thread(
                     target=self._on_utterance,
-                    args=(pcm,),
+                    args=(pcm, self._polish_mode),
                     daemon=True,
                     name=f"PTT-mid-{n}",
                 ).start()
@@ -230,14 +264,18 @@ class PushToTalk:
                 pcm = b"".join(self._buf)
                 if len(pcm) < SAMPLE_RATE * 2 * 0.3:
                     print("[ptt] 录音太短，跳过    ")
+                    self._set_status("idle")
                 else:
                     print("[ptt] 识别中...    ", end="\r", flush=True)
+                    self._set_status("recognizing")
                     threading.Thread(
                         target=self._on_utterance,
-                        args=(pcm,),
+                        args=(pcm, self._polish_mode),
                         daemon=True,
                         name="PTT-dictate",
                     ).start()
+            else:
+                self._set_status("idle")
             self._buf = []
             return
 
@@ -247,21 +285,28 @@ class PushToTalk:
 
         if len(pcm) < SAMPLE_RATE * 2 * 0.3:
             print("[ptt] 录音太短，跳过    ")
+            self._set_status("idle")
             return
 
         if mode == "dictate":
             label    = "识别中"
             callback = self._on_utterance
+            args     = (pcm, self._polish_mode)
+            self._set_status("recognizing")
         elif mode == "edit":
             label    = "解析编辑指令"
             callback = self._on_edit_utterance
+            args     = (pcm,)
+            self._set_status("recognizing")
         else:
             label    = "解析AI指令"
             callback = self._on_ai_utterance
+            args     = (pcm,)
+            self._set_status("ai_processing")
         print(f"[ptt] {label}...    ", end="\r", flush=True)
         threading.Thread(
             target=callback,
-            args=(pcm,),
+            args=args,
             daemon=True,
             name=f"PTT-{mode}",
         ).start()

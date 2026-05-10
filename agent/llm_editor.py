@@ -13,10 +13,28 @@ LLM 文字编辑器。
   在 __init__ 的 elif 链中添加分支，或参照 openai / zhipuai 分支实现。
 """
 
+import ssl
+
+import certifi
+import httpx
+
 _SYSTEM_PROMPT = """你是一个专业的文字编辑助手。
 用户会给你一段原文和一条修改指令。
 请严格按照指令修改原文，只返回修改后的结果，不要添加任何解释或标点以外的内容。
 如果指令不清晰，尽量按最合理的方式理解并修改。"""
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """统一构造显式使用 certifi 的 SSLContext，避免 .app 中默认 CA 路径失效。"""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.check_hostname = True
+    ctx.load_verify_locations(cafile=certifi.where())
+    return ctx
+
+
+def _build_httpx_client() -> httpx.Client:
+    return httpx.Client(verify=_build_ssl_context(), timeout=30.0)
 
 
 class LLMEditor:
@@ -25,7 +43,7 @@ class LLMEditor:
 
         if provider == "openai":
             from openai import OpenAI
-            self._client = OpenAI(api_key=cfg["api_key"])
+            self._client = OpenAI(api_key=cfg["api_key"], http_client=_build_httpx_client())
             self._model  = cfg.get("model", "gpt-4o-mini")
             self._edit   = self._openai_edit
 
@@ -35,6 +53,7 @@ class LLMEditor:
             self._client = OpenAI(
                 api_key=cfg["api_key"],
                 base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                http_client=_build_httpx_client(),
             )
             self._model = cfg.get("model", "qwen-turbo")
             self._edit  = self._openai_edit
@@ -45,22 +64,24 @@ class LLMEditor:
             self._client = OpenAI(
                 api_key=cfg["api_key"],
                 base_url="https://ark.cn-beijing.volces.com/api/v3",
+                http_client=_build_httpx_client(),
             )
             self._model = cfg.get("model", "doubao-lite-4k")
             self._edit  = self._openai_edit
 
         elif provider == "zhipuai":
-            # 智谱 AI GLM，使用原生 zhipuai SDK
-            # 与 transmission_assistant 项目的集成方式一致：
-            #   from zhipuai import ZhipuAI
-            #   client = ZhipuAI(api_key=GLM_API_KEY)
+            # 智谱 AI GLM，使用原生 zhipuai SDK，但显式注入带 certifi 的 httpx client，
+            # 避免打包成 .app 后默认 CA 路径失效。
             try:
                 from zhipuai import ZhipuAI
             except ImportError:
                 raise ImportError(
                     "使用 zhipuai provider 需要安装 zhipuai：pip install zhipuai"
                 )
-            self._zhipu_client = ZhipuAI(api_key=cfg["api_key"])
+            self._zhipu_client = ZhipuAI(
+                api_key=cfg["api_key"],
+                http_client=_build_httpx_client(),
+            )
             self._model        = cfg.get("model", "glm-4-flash")
             self._edit         = self._zhipu_edit
 

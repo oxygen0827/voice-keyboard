@@ -262,18 +262,29 @@ def get_current_line() -> str | None:
         return None
 
 
+_SENTINEL = "\x00__VK_NO_SELECTION__\x00"
+
+
 def get_selection() -> str:
     """
     读取当前鼠标选中的文字。
-    原理：保存剪贴板 → Cmd+C → 读新剪贴板 → 恢复原剪贴板。
-    若内容未变（说明没有选中文字），返回空字符串。
+    原理：剪贴板写 sentinel → Cmd+C → 读剪贴板 → 恢复原剪贴板。
+    若读到 sentinel（说明 Cmd+C 没改写剪贴板）则没有选中。
+    用 sentinel 而非 old_clip 比较，避免选中内容和剪贴板原内容相同时误判为空。
     """
     try:
         old_clip = _get_clipboard()
+        _set_clipboard(_SENTINEL)
+        time.sleep(0.05)
         _copy_selection()
         time.sleep(0.12)
         selected = _get_clipboard()
-        if selected and selected != old_clip:
+        # 恢复原剪贴板
+        try:
+            _set_clipboard(old_clip)
+        except Exception:
+            pass
+        if selected and selected != _SENTINEL:
             return selected
         return ""
     except Exception as e:

@@ -17,27 +17,72 @@
 
 import os
 import pathlib
+import shutil
+import sys
 
 import yaml
 
 _ROOT = pathlib.Path(__file__).parent.parent
-_CONFIG_PATH = _ROOT / "config.yaml"
-_ENV_PATH    = _ROOT / ".env"
+_USER_DIR = pathlib.Path.home() / ".voice-keyboard"
+# 优先从用户目录读取（打包成 .app 后的标准路径），其次从源码目录（开发模式）
+_USER_CONFIG = _USER_DIR / "config.yaml"
+_USER_ENV    = _USER_DIR / ".env"
+_DEV_CONFIG  = _ROOT / "config.yaml"
+_DEV_ENV     = _ROOT / ".env"
+
+
+def _resolve_config_path() -> pathlib.Path:
+    if _USER_CONFIG.exists():
+        return _USER_CONFIG
+    return _DEV_CONFIG
+
+
+def _resolve_env_path() -> pathlib.Path:
+    if _USER_ENV.exists():
+        return _USER_ENV
+    return _DEV_ENV
+
+
+def _bundled_example_path() -> pathlib.Path | None:
+    """打包后从 .app/Contents/Resources 找 config.yaml.example，开发模式从项目根。"""
+    candidates = []
+    # py2app: sys.executable 在 Contents/MacOS/，example 在 Contents/Resources/
+    if getattr(sys, "frozen", False):
+        exe_dir = pathlib.Path(sys.executable).resolve().parent
+        candidates.append(exe_dir.parent / "Resources" / "config.yaml.example")
+    candidates.append(_ROOT / "config.yaml.example")
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def ensure_user_config() -> None:
+    """首次启动若用户目录没有 config.yaml，从示例文件复制一份。"""
+    if _USER_CONFIG.exists():
+        return
+    example = _bundled_example_path()
+    if example is None:
+        return
+    _USER_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy(example, _USER_CONFIG)
+    print(f"[config] 已创建 {_USER_CONFIG}，请编辑填入 API Key")
 
 
 def _load_dotenv():
     """手动解析 .env 文件，写入 os.environ（不依赖 python-dotenv）。
     若已安装 python-dotenv，则优先使用它。"""
-    if not _ENV_PATH.exists():
+    env_path = _resolve_env_path()
+    if not env_path.exists():
         return
     try:
         from dotenv import load_dotenv
-        load_dotenv(_ENV_PATH, override=False)  # 已有的环境变量不覆盖
+        load_dotenv(env_path, override=False)  # 已有的环境变量不覆盖
         return
     except ImportError:
         pass
     # 简易回退解析
-    with open(_ENV_PATH, encoding="utf-8") as f:
+    with open(env_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -50,9 +95,10 @@ def _load_dotenv():
 
 
 def _yaml_config() -> dict:
-    if not _CONFIG_PATH.exists():
+    cfg_path = _resolve_config_path()
+    if not cfg_path.exists():
         return {}
-    with open(_CONFIG_PATH, encoding="utf-8") as f:
+    with open(cfg_path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
