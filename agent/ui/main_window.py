@@ -21,6 +21,12 @@ from AppKit import (
     NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
     NSWindowStyleMaskMiniaturizable, NSWindowStyleMaskResizable,
 )
+
+
+class _FlippedView(NSView):
+    """y=0 在顶部的 NSView，配合 NSScrollView 让滚动行为符合直觉（从上往下排版）。"""
+    def isFlipped(self):
+        return True
 from Foundation import NSIndexSet, NSMutableArray
 from PyObjCTools import AppHelper
 
@@ -82,42 +88,55 @@ class _SettingsTab(NSObject):
 
     @objc.python_method
     def _build(self) -> NSView:
-        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 600, 480))
-        y = 440
+        # 容器：占满 tab 区域
+        container = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 600, 480))
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 0, 600, 480))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setHasHorizontalScroller_(False)
+        scroll.setBorderType_(0)  # NSNoBorder
+        scroll.setAutohidesScrollers_(False)
+        scroll.setAutoresizingMask_(2 | 16)  # NSViewWidthSizable | NSViewHeightSizable
+        container.addSubview_(scroll)
+
+        # 滚动内容视图（flipped：y=0 在顶部）
+        # 高度先给个大值，最后根据实际内容裁剪
+        doc = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, 600, 1000))
+        scroll.setDocumentView_(doc)
+
+        y = 16  # flipped 坐标系，y 从顶部开始递增
 
         def row(label_text: str, key: str, value: str = "", secure: bool = False, w: int = 380):
             nonlocal y
-            v.addSubview_(_label(label_text, NSMakeRect(20, y, 160, 20)))
+            doc.addSubview_(_label(label_text, NSMakeRect(20, y, 160, 20)))
             inp = _input(value, NSMakeRect(180, y - 4, w, 24), secure=secure)
-            v.addSubview_(inp)
+            doc.addSubview_(inp)
             self._fields[key] = inp
-            y -= 32
+            y += 32
 
-        # STT
-        v.addSubview_(_label("【语音识别 STT】", NSMakeRect(20, y, 200, 20)))
-        y -= 28
+        def section(title: str):
+            nonlocal y
+            y += 8
+            doc.addSubview_(_label(title, NSMakeRect(20, y, 240, 20)))
+            y += 28
+
+        section("【语音识别 STT】")
         row("provider", "stt.provider", "xunfei", w=200)
         row("app_id", "stt.app_id")
         row("api_key", "stt.api_key", secure=True)
         row("api_secret", "stt.api_secret", secure=True)
         row("language", "stt.language", "zh_cn", w=160)
 
-        # LLM
-        y -= 8
-        v.addSubview_(_label("【LLM】", NSMakeRect(20, y, 200, 20)))
-        y -= 28
+        section("【LLM】")
         row("provider", "llm.provider", "zhipuai", w=200)
         row("api_key", "llm.api_key", secure=True)
         row("model", "llm.model", "glm-4-flash", w=240)
 
-        # 热键 + 麦克风 + 打字方式
-        y -= 8
-        v.addSubview_(_label("【热键 / 音频 / 打字】", NSMakeRect(20, y, 220, 20)))
-        y -= 28
+        section("【热键 / 音频 / 打字】")
         row("ptt_key", "audio.ptt_key", "alt,alt_r", w=200)
         row("ai_key",  "audio.ai_key",  "cmd,cmd_r", w=200)
-        # 麦克风：popup
-        v.addSubview_(_label("device", NSMakeRect(20, y, 160, 20)))
+
+        # 麦克风 popup
+        doc.addSubview_(_label("device", NSMakeRect(20, y, 160, 20)))
         pop = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(180, y - 4, 380, 26))
         pop.addItemWithTitle_("auto")
         try:
@@ -126,25 +145,29 @@ class _SettingsTab(NSObject):
                     pop.addItemWithTitle_(f"{i}: {d['name']}")
         except Exception:
             pass
-        v.addSubview_(pop)
+        doc.addSubview_(pop)
         self._fields["audio.device"] = pop
-        y -= 32
+        y += 32
 
-        # typing.method: popup unicode/clip
-        v.addSubview_(_label("typing.method", NSMakeRect(20, y, 160, 20)))
+        # typing.method popup
+        doc.addSubview_(_label("typing.method", NSMakeRect(20, y, 160, 20)))
         tm = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(180, y - 4, 200, 26))
         tm.addItemWithTitle_("unicode")
         tm.addItemWithTitle_("clip")
-        v.addSubview_(tm)
+        doc.addSubview_(tm)
         self._fields["typing.method"] = tm
-        y -= 40
+        y += 44
 
         # 保存按钮
         save = _button("保存并热重载", NSMakeRect(180, y, 180, 32), self, b"save:")
         save.setKeyEquivalent_("\r")
-        v.addSubview_(save)
-        v.addSubview_(_label("热重载会重启 STT/LLM/PTT，热键继续可用", NSMakeRect(370, y + 6, 280, 20)))
-        return v
+        doc.addSubview_(save)
+        doc.addSubview_(_label("热重载会重启 STT/LLM/PTT，热键继续可用", NSMakeRect(370, y + 6, 280, 20)))
+        y += 48
+
+        # 把 doc 高度精确收紧到内容总高，让滚动条对齐
+        doc.setFrame_(NSMakeRect(0, 0, 600, max(y, 480)))
+        return container
 
     @objc.python_method
     def _load(self):
