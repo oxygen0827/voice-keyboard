@@ -62,11 +62,11 @@ audio:
   mode: ptt                 # ptt（按住说话）或 vad（常开，自动检测语音）
 
   # 听写热键（按住说话，原样转文字）
-  # macOS:   ctrl                 左 Control（macOS 上左 Ctrl 极少占用）
+  # macOS:   shift_r              右 Shift（无系统冲突；避开 Ctrl+Space 输入法切换）
   # Windows: [alt_r]               右 Alt（或 alt_gr，中文键盘）
   # Linux:   [alt_r]               右 Alt
-  # 备选：[alt, alt_r] 左右 Option（输入特殊字符时有可能误触）
-  ptt_key: ctrl
+  # 不推荐 ctrl：会和 Ctrl+Space（macOS 切换输入法）、Ctrl+A/E/K（编辑光标）冲突
+  ptt_key: shift_r
 
   # AI 键（快捷键/编辑/写作/撤回/聊天）
   # macOS:   alt_r                 右 Option（不和系统 Cmd 快捷键冲突）
