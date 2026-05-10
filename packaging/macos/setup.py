@@ -1,14 +1,22 @@
 """
-py2app 打包配置。
-用法：
-  pip install py2app
-  python setup.py py2app          # 正常打包
-  python setup.py py2app -A       # alias 模式，开发期快速测试（不复制依赖，源码修改实时生效）
+py2app 打包配置（macOS）。
 
-打包后产物：dist/Voice Keyboard.app
+用法（在仓库根目录执行）：
+  pip install py2app
+  python packaging/macos/setup.py py2app          # 正常打包
+  python packaging/macos/setup.py py2app -A       # alias 模式，源码修改实时生效
+
+打包后产物：<repo>/dist/Voice Keyboard.app
 """
 
+import os
+from pathlib import Path
+
 from setuptools import setup
+
+# 不论从哪里调用，统一切到仓库根目录，保持 APP / DATA_FILES / dist 路径稳定
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+os.chdir(_REPO_ROOT)
 
 APP = ["agent/main.py"]
 DATA_FILES = [

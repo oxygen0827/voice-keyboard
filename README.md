@@ -496,6 +496,20 @@ Windows 无虚拟串口，串口联调请直接接 ESP32-S3 硬件，或用 [com
 
 ---
 
+## 构建打包
+
+各平台打包脚本和说明放在 `packaging/<平台>/` 目录下，源码 `agent/` 三平台共用。
+
+| 平台 | 工具 | 说明 |
+|------|------|------|
+| macOS | py2app → `.app` | 已实现，见 [`packaging/macos/`](packaging/macos/) |
+| Windows | PyInstaller → `.exe`（待实现） | 见 [`packaging/windows/`](packaging/windows/) |
+| Linux | AppImage（待实现） | 见 [`packaging/linux/`](packaging/linux/) |
+
+发布产物（`.dmg` / `.exe` / `.AppImage`）通过 GitHub Releases 分发，源码主线只保留构建脚本。
+
+---
+
 ## ESP32-S3 固件烧录
 
 Arduino IDE 配置：
