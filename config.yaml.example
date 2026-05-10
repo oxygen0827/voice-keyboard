@@ -62,16 +62,18 @@ audio:
   mode: ptt                 # ptt（按住说话）或 vad（常开，自动检测语音）
 
   # 听写热键（按住说话，原样转文字）
-  # macOS:   [alt, alt_r]       左/右 Option
-  # Windows: [alt_r]            右 Alt（或 alt_gr，中文键盘）
-  # Linux:   [alt_r]            右 Alt
-  ptt_key: [alt, alt_r]
+  # macOS:   ctrl                 左 Control（macOS 上左 Ctrl 极少占用）
+  # Windows: [alt_r]               右 Alt（或 alt_gr，中文键盘）
+  # Linux:   [alt_r]               右 Alt
+  # 备选：[alt, alt_r] 左右 Option（输入特殊字符时有可能误触）
+  ptt_key: ctrl
 
   # AI 键（快捷键/编辑/写作/撤回/聊天）
-  # macOS:   [cmd, cmd_r]       左/右 Command（推荐，不和系统快捷键冲突）
-  # Windows: [ctrl_r]           右 Ctrl（左 Ctrl 占用太多系统快捷键）
-  # Linux:   [ctrl_r]           右 Ctrl
-  ai_key: [cmd, cmd_r]
+  # macOS:   alt_r                 右 Option（不和系统 Cmd 快捷键冲突）
+  # Windows: [ctrl_r]               右 Ctrl（左 Ctrl 占用太多系统快捷键）
+  # Linux:   [ctrl_r]               右 Ctrl
+  # 不推荐 cmd / cmd_r：按住的瞬间所有 Cmd+X 系统快捷键都会被劫持
+  ai_key: alt_r
 
   device: auto              # auto = 自动查找 ESP32 UAC 麦克风，找不到用系统默认
                             # 其他示例：

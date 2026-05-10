@@ -91,8 +91,8 @@ typing:
 
 audio:
   mode: ptt                 # ptt=按键触发 / vad=自动检测
-  ptt_key: [alt, alt_r]     # macOS 左/右Option；Windows alt_r（中文键盘 alt_gr）
-  ai_key: [cmd, cmd_r]      # macOS 左/右Command；Windows/Linux 改为 ctrl_r
+  ptt_key: ctrl             # macOS 左 Ctrl（推荐）；Windows/Linux alt_r（中文键盘 alt_gr）
+  ai_key: alt_r             # macOS 右 Option（推荐，不和 Cmd 系统快捷键冲突）；Windows/Linux ctrl_r
   device: auto              # 麦克风序号，auto=自动
 ```
 
