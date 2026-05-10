@@ -27,11 +27,15 @@ TRACK_TIMEOUT = 30.0
 
 
 class KeyboardMonitor:
-    """监听 Backspace/Delete，实时同步 TextBuffer。"""
+    """监听 Backspace/Delete/Enter，实时同步 TextBuffer。
+
+    设计：不再自己开 pynput.Listener。由 PushToTalk 的 listener 顺手调用
+    process_press(key)，把全局只剩一个键盘 CGEventTap，避免事件被 Python
+    多次 round-trip 拖慢系统输入（尤其切换中文输入法时）。
+    """
 
     def __init__(self, buf: TextBuffer):
         self._buf           = buf
-        self._listener      = None
         self._last_voice_ts = 0.0   # 上次语音输出的时间戳
 
     def notify_voice_output(self) -> None:
@@ -42,19 +46,15 @@ class KeyboardMonitor:
         return (time.monotonic() - self._last_voice_ts) < TRACK_TIMEOUT
 
     def start(self):
-        self._listener = kb.Listener(
-            on_press=self._on_press,
-            daemon=True,
-        )
-        self._listener.start()
-        print(f"[kbd] 键盘退格监听已启动（语音输出后 {TRACK_TIMEOUT}s 内同步 Backspace）")
+        # 不再创建独立 listener，仅打印启用提示
+        print(f"[kbd] 键盘退格同步已启用（共享 PTT 监听；{TRACK_TIMEOUT}s 内的退格同步 buf）")
 
     def stop(self):
-        if self._listener:
-            self._listener.stop()
-            self._listener = None
+        # 没有自己的 listener，无需 stop
+        pass
 
-    def _on_press(self, key):
+    def process_press(self, key):
+        """供 PushToTalk 在 on_press 里调用——不创建独立 CGEventTap。"""
         # 忽略我们自己调用 erase_last 时发出的退格
         if typer.is_erasing():
             return
@@ -63,12 +63,8 @@ class KeyboardMonitor:
             if self._within_track_window():
                 self._buf.trim_end(1)
             else:
-                # 超出追踪窗口：可能是其他应用的退格，
-                # 标记不确定，下次编辑走行选择模式
                 self._buf.cursor_uncertain = True
         elif key == kb.Key.delete:
-            # Delete 键删除光标右边的字符，方向相反，
-            # 无法直接对应 buf.last，只能标记 cursor_uncertain
             self._buf.cursor_uncertain = True
         elif key == kb.Key.enter:
             self._buf.new_segment()

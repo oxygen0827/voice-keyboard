@@ -267,6 +267,7 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None, status_window=Non
             ai_key=audio_cfg.get("ai_key", "cmd_r"),
             device=device,
             status_window=status_window,
+            kbd_monitor=kbd_monitor,
         )
         ptt.start()
         return ptt
