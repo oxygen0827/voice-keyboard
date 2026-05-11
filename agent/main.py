@@ -343,7 +343,10 @@ def main():
     # ── 状态悬浮窗 ───────────────────────────────────────────────
     status_window = None
     try:
-        from agent.status_window import StatusWindow
+        if sys.platform == "win32":
+            from agent.status_window_win import StatusWindow
+        else:
+            from agent.status_window import StatusWindow
         status_window = StatusWindow()
     except Exception as e:
         print(f"[agent] 状态悬浮窗启动失败（{e}），将以无窗口模式运行")
