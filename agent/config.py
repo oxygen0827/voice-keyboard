@@ -124,6 +124,7 @@ def _env_stt() -> dict | None:
         cfg["api_key"] = api_key
     for key, env in [
         ("model",              "STT_MODEL"),
+        ("base_url",           "STT_BASE_URL"),
         ("language",           "STT_LANGUAGE"),
         ("app_key",            "STT_APP_KEY"),
         ("access_key_id",      "STT_ACCESS_KEY_ID"),
@@ -161,6 +162,7 @@ def _env_llm() -> dict | None:
     for key, env in [
         ("model", "LLM_MODEL"),
         ("model", "GLM_MODEL"),  # 兼容 transmission_assistant
+        ("base_url", "LLM_BASE_URL"),
     ]:
         val = os.getenv(env, "").strip()
         if val:
