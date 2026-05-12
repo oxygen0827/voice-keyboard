@@ -45,7 +45,10 @@ def _pcm_to_wav(pcm: bytes) -> bytes:
 class _OpenAISTT:
     def __init__(self, cfg: dict):
         from openai import OpenAI
-        self._client   = OpenAI(api_key=cfg["api_key"])
+        kwargs = {"api_key": cfg["api_key"]}
+        if cfg.get("base_url"):
+            kwargs["base_url"] = cfg["base_url"]
+        self._client   = OpenAI(**kwargs)
         self._model    = cfg.get("model", "whisper-1")
         self._language = cfg.get("language", "zh")
 
