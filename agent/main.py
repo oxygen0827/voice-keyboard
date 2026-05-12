@@ -235,8 +235,13 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None, status_window=Non
         try:
             from agent.ai_handler import AIHandler
             from agent.memo_store import MemoStore
+            ai_stt = stt
+            ai_stt_cfg = cfg.get("ai_stt", {})
+            if ai_stt_cfg:
+                ai_stt = STTClient(ai_stt_cfg)
+                print(f"[agent] AI 键 STT 使用独立 provider: {ai_stt_cfg.get('provider', 'openai')}")
             memo_store = MemoStore()
-            ai_handler = AIHandler(stt, editor, buf, memo_store=memo_store,
+            ai_handler = AIHandler(ai_stt, editor, buf, memo_store=memo_store,
                                    status_window=status_window, history=history)
             ai_key_name = audio_cfg.get("ai_key", "cmd_r")
             existing = memo_store.keys()
