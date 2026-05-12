@@ -53,12 +53,13 @@ from agent.config import load as load_config
 from agent.history import History
 from agent.serial_reader import SerialReader
 from agent.text_buffer import TextBuffer
-from agent.typer import init as typer_init, list_shortcuts, send_shortcut, type_text
 
 
 # ── 串口回调 ───────────────────────────────────────────────────────
 
 def make_serial_handlers(buf: TextBuffer, history: History | None = None):
+    from agent.typer import list_shortcuts, send_shortcut, type_text
+
     def on_text(text: str):
         print(f"[agent] 打字: {text!r}")
         try:
@@ -92,6 +93,7 @@ _POLISH_SYSTEM = """你是文字润色助手。对用户说的话做最轻度的
 
 def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None, editor=None,
                            status_window=None, history: History | None = None):
+    from agent.typer import type_text
     def on_utterance(pcm: bytes, polish: bool = False):
         mode = "polish" if polish else "dictate"
         try:
@@ -166,6 +168,7 @@ class _Backend:
 def build_backend(args, buf: TextBuffer, status_window, history: History) -> _Backend:
     bk = _Backend()
     bk.cfg = load_config()
+    from agent.typer import init as typer_init
     typer_init(bk.cfg.get("typing", {}))
 
     try:
@@ -378,6 +381,7 @@ def main():
 
     def retype(text: str):
         # 历史 tab「再次打字」回调，UI 已隐藏后调度
+        from agent.typer import type_text
         try:
             type_text(text)
             buf.push(text)
