@@ -107,6 +107,8 @@ def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None, editor=Non
             print("[stt] 识别结果为空")
             if history is not None:
                 history.append(mode, "", "empty")
+            if status_window is not None:
+                status_window.set_state("empty_stt")
             return
         print(f"[stt] {text!r}")
         if polish and editor is not None:

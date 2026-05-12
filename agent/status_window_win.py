@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import queue
+import threading
 from ctypes import wintypes
 
 
@@ -12,6 +13,7 @@ _STATES: dict[str, tuple[str, int]] = {
     "polish_recording": ("录音中 · 微润色", 0x78C931),
     "ai_recording": ("AI 指令录音中", 0xF755A8),
     "recognizing": ("识别中", 0x0B9EF5),
+    "empty_stt": ("未识别到语句", 0x0B9EF5),
     "polishing": ("润色中", 0xD4B606),
     "ai_processing": ("AI 处理中", 0xF6823B),
     "error_stt": ("识别失败", 0x4444EF),
@@ -20,9 +22,10 @@ _STATES: dict[str, tuple[str, int]] = {
     "error_perm": ("权限未授予", 0x4444EF),
 }
 
-_ERROR_STATES = {"error_stt", "error_typing", "error_llm", "error_perm"}
+_ERROR_STATES = {"error_stt", "error_typing", "error_llm", "error_perm", "empty_stt"}
 _WM_APP_STATE = 0x8001
 _WM_APP_STOP = 0x8002
+_WM_APP_MESSAGE = 0x8003
 _TIMER_POLL = 1
 _TIMER_HIDE = 2
 _SPI_GETWORKAREA = 0x0030
@@ -124,14 +127,46 @@ class StatusWindow:
         self._state = "idle"
         self._text = ""
         self._color = 0xFFFFFF
+        self._message_token = 0
+        self._width_text = ""
         self._wndproc = WNDPROC(self._handle_message)
         self._hinst = _kernel32.GetModuleHandleW(None)
         self._class_name = "VoiceKeyboardStatusWindow"
 
     def set_state(self, state: str) -> None:
-        self._q.put(state)
+        self._q.put(("state", state))
         if self._hwnd:
             _user32.PostMessageW(self._hwnd, _WM_APP_STATE, 0, 0)
+
+    def show_message(self, text: str, seconds: float = 6.0) -> None:
+        self._message_token += 1
+        token = self._message_token
+        self._q.put(("message", text, token))
+        if self._hwnd:
+            _user32.PostMessageW(self._hwnd, _WM_APP_MESSAGE, 0, 0)
+        threading.Timer(seconds, self._hide_message, args=(token,)).start()
+
+    def show_typing_message(self, text: str, seconds: float = 6.0, interval: float = 0.006) -> None:
+        self._message_token += 1
+        token = self._message_token
+
+        def run() -> None:
+            step = max(1, len(text) // 36)
+            for idx in range(step, len(text) + step, step):
+                if token != self._message_token:
+                    return
+                self._q.put(("message", text[:idx], token, text))
+                if self._hwnd:
+                    _user32.PostMessageW(self._hwnd, _WM_APP_MESSAGE, 0, 0)
+                threading.Event().wait(interval)
+            threading.Timer(seconds, self._hide_message, args=(token,)).start()
+
+        threading.Thread(target=run, daemon=True, name="StatusTypingMessage").start()
+
+    def _hide_message(self, token: int) -> None:
+        self._q.put(("hide_message", token))
+        if self._hwnd:
+            _user32.PostMessageW(self._hwnd, _WM_APP_MESSAGE, 0, 0)
 
     def add_main_thread_setup(self, fn) -> None:
         self._extra_setup.append(fn)
@@ -197,6 +232,9 @@ class StatusWindow:
         if msg == _WM_APP_STATE:
             self._poll()
             return 0
+        if msg == _WM_APP_MESSAGE:
+            self._poll()
+            return 0
         if msg == _WM_APP_STOP:
             _user32.DestroyWindow(hwnd)
             return 0
@@ -208,7 +246,17 @@ class StatusWindow:
     def _poll(self) -> None:
         try:
             while True:
-                self._apply(self._q.get_nowait())
+                item = self._q.get_nowait()
+                if isinstance(item, tuple) and item and item[0] == "message":
+                    _, text, token, *rest = item
+                    width_text = rest[0] if rest else text
+                    self._apply_message(text, token, width_text)
+                elif isinstance(item, tuple) and item and item[0] == "hide_message":
+                    _, token = item
+                    self._hide_message_now(token)
+                else:
+                    state = item[1] if isinstance(item, tuple) else item
+                    self._apply(state)
         except queue.Empty:
             pass
 
@@ -217,9 +265,12 @@ class StatusWindow:
             return
         info = _STATES.get(state)
         if info is None or state == "idle":
+            self._state = "idle"
+            self._width_text = ""
             _user32.ShowWindow(self._hwnd, 0)
             return
         self._state = state
+        self._width_text = ""
         self._text, self._color = info
         _user32.KillTimer(self._hwnd, _TIMER_HIDE)
         self._position()
@@ -228,12 +279,32 @@ class StatusWindow:
         if state in _ERROR_STATES:
             _user32.SetTimer(self._hwnd, _TIMER_HIDE, 1500, None)
 
+    def _apply_message(self, text: str, token: int, width_text: str | None = None) -> None:
+        if not self._hwnd or token != self._message_token:
+            return
+        self._state = "message"
+        self._text = text
+        self._width_text = width_text or text
+        self._color = 0xF6823B
+        _user32.KillTimer(self._hwnd, _TIMER_HIDE)
+        self._position()
+        _user32.ShowWindow(self._hwnd, 8)
+        _user32.InvalidateRect(self._hwnd, None, True)
+
+    def _hide_message_now(self, token: int) -> None:
+        if not self._hwnd or token != self._message_token or self._state != "message":
+            return
+        self._state = "idle"
+        self._width_text = ""
+        _user32.ShowWindow(self._hwnd, 0)
+
     def _position(self) -> None:
         hdc = _user32.GetDC(self._hwnd)
         font = self._font()
         old_font = _gdi32.SelectObject(hdc, font)
         size = SIZE()
-        _gdi32.GetTextExtentPoint32W(hdc, self._text, len(self._text), ctypes.byref(size))
+        measure_text = self._width_text or self._text
+        _gdi32.GetTextExtentPoint32W(hdc, measure_text, len(measure_text), ctypes.byref(size))
         _gdi32.SelectObject(hdc, old_font)
         _gdi32.DeleteObject(font)
         _user32.ReleaseDC(self._hwnd, hdc)

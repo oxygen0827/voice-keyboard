@@ -120,10 +120,11 @@ class AIHandler:
     # ── 内部流程 ──────────────────────────────────────────────────────
 
     def _run(self, pcm: bytes) -> None:
+        keep_status = False
         try:
-            self._run_inner(pcm)
+            keep_status = bool(self._run_inner(pcm))
         finally:
-            if self._status is not None:
+            if self._status is not None and not keep_status:
                 self._status.set_state("idle")
 
     def _run_inner(self, pcm: bytes) -> None:
@@ -147,7 +148,9 @@ class AIHandler:
         if not text:
             print("[ai] 未识别到内容")
             self._record("ai", "", "empty")
-            return
+            if self._status is not None:
+                self._status.set_state("empty_stt")
+            return True
         print(f"[ai] 识别: {text!r}")
         self._record("ai", text, "ok")
 
@@ -444,28 +447,16 @@ class AIHandler:
             self._show(f"没记过「{key}」")
 
     def _show(self, message: str) -> None:
-        """把 AI 消息追加到输入框，按字数等待后自动删除。"""
+        """Show AI/chat feedback in the floating status HUD."""
         message = message.replace("\n", " ").replace("\r", "")
-        full = _AI_PREFIX + message
-
-        with self._io_lock:
-            # 取消定时器，读取并清空待删内容
-            with self._lock:
-                if self._erase_timer is not None:
-                    self._erase_timer.cancel()
-                    self._erase_timer = None
-                pending = self._last_ai_output
-                self._last_ai_output = ""
-
-            if pending:
-                erase_last(pending)
-            type_text(full)
-
-            delay = max(2.0, len(message) * 0.15)
-            with self._lock:
-                self._last_ai_output = full
-                self._erase_timer = threading.Timer(delay, self._auto_erase, args=(full,))
-                self._erase_timer.start()
+        delay = max(3.0, min(12.0, len(message) * 0.18))
+        full = _AI_PREFIX.strip() + " " + message
+        if self._status is not None and hasattr(self._status, "show_typing_message"):
+            self._status.show_typing_message(full, delay)
+        elif self._status is not None and hasattr(self._status, "show_message"):
+            self._status.show_message(full, delay)
+        else:
+            print(f"{_AI_PREFIX}{message}")
 
     def _auto_erase(self, expected: str) -> None:
         with self._io_lock:
