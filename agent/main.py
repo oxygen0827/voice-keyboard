@@ -10,6 +10,7 @@ Voice Keyboard Agent —— PC 端后台程序入口。
 """
 
 import argparse
+import json
 import os
 import signal
 import sys
@@ -201,7 +202,10 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None, status_window=Non
                  history: History | None = None):
     stt_cfg = cfg.get("stt", {})
     provider = stt_cfg.get("provider", "")
-    _no_api_key_providers = {"volcengine", "aliyun"}
+    if provider == "typeup_backend" and not stt_cfg.get("access_token"):
+        print("[typeup-auth-required] 请先登录 TypeUp 后端账号，跳过音频 STT")
+        return None
+    _no_api_key_providers = {"volcengine", "aliyun", "typeup_backend"}
     if not stt_cfg.get("api_key") and provider not in _no_api_key_providers:
         print("[agent] 未配置 stt.api_key，跳过音频 STT")
         print("[agent] 提示: cp config.yaml.example config.yaml 然后填入 API Key")
@@ -221,7 +225,7 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None, status_window=Non
 
     editor = None
     llm_cfg = cfg.get("llm", {})
-    if llm_cfg.get("api_key"):
+    if _llm_configured(llm_cfg):
         try:
             from agent.llm_editor import LLMEditor
             editor = LLMEditor(llm_cfg)
@@ -298,6 +302,13 @@ def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None, status_window=Non
         return monitor
 
 
+def _llm_configured(llm_cfg: dict) -> bool:
+    provider = llm_cfg.get("provider", "")
+    if provider == "typeup_backend":
+        return bool((llm_cfg.get("api_base_url") or llm_cfg.get("base_url")) and llm_cfg.get("access_token"))
+    return bool(llm_cfg.get("api_key"))
+
+
 # ── 入口 ───────────────────────────────────────────────────────────
 
 def list_devices():
@@ -319,6 +330,8 @@ def main():
     parser.add_argument("--port",         default=None,        help="指定串口路径")
     parser.add_argument("--no-serial",    action="store_true", help="不搜索 ESP32 串口（纯软件模式）")
     parser.add_argument("--list-devices", action="store_true", help="列出可用麦克风设备后退出")
+    parser.add_argument("--permissions-json", action="store_true", help="输出 macOS 权限状态 JSON 后退出")
+    parser.add_argument("--request-microphone", action="store_true", help="请求 macOS 麦克风权限后退出")
     parser.add_argument("--install",      action="store_true", help="注册开机自启动")
     parser.add_argument("--uninstall",    action="store_true", help="移除开机自启动")
     parser.add_argument("--no-ui",        action="store_true", help="不启动菜单栏/主窗口（纯命令行）")
@@ -328,6 +341,14 @@ def main():
 
     if args.list_devices:
         list_devices()
+        return
+    if args.permissions_json:
+        from agent import permissions as _perm
+        print(json.dumps(_perm.all_status(), ensure_ascii=False))
+        return
+    if args.request_microphone:
+        from agent import permissions as _perm
+        print(json.dumps({"microphone": _perm.request_microphone_sync()}, ensure_ascii=False))
         return
     if args.install:
         install()

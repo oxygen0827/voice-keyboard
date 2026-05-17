@@ -4,6 +4,7 @@ macOS 三大权限自检：辅助功能（Accessibility）/ 输入监听（Input
 """
 
 import sys
+import threading
 from typing import Optional
 
 _DARWIN = sys.platform == "darwin"
@@ -96,6 +97,22 @@ def request_microphone(callback=None):
         )
     except Exception as e:
         print(f"[perm] 请求麦克风权限失败: {e}")
+
+
+def request_microphone_sync(timeout: float = 20.0) -> str:
+    """请求麦克风权限并等待系统回调，供打包后的命令行入口调用。"""
+    if not _DARWIN:
+        return "granted"
+    done = threading.Event()
+    result = {"granted": False}
+
+    def _callback(granted):
+        result["granted"] = bool(granted)
+        done.set()
+
+    request_microphone(_callback)
+    done.wait(timeout)
+    return "granted" if result["granted"] else microphone()
 
 
 _SETTINGS_LINKS = {
