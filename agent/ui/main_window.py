@@ -1,6 +1,6 @@
 """
 Voice Keyboard 主窗口：单 NSWindow + NSTabView，4 个标签：
-  设置 / 历史 / 备忘录 / 权限自检
+  设置 / 历史 / 可复用文本 / 权限自检
 所有 UI 操作必须在主线程；从其他线程调用通过 PyObjCTools.AppHelper.callAfter 入队。
 """
 
@@ -362,7 +362,7 @@ class _HistoryTab(NSObject):
         a.setMessageText_(title); a.setInformativeText_(msg); a.runModal()
 
 
-# ── 备忘录 tab ───────────────────────────────────────────────────
+# ── 可复用文本 tab ───────────────────────────────────────────────
 
 class _MemosTab(NSObject):
     def initWithApp_(self, app):
@@ -471,7 +471,7 @@ class _MemosTab(NSObject):
         if not k:
             return
         a = NSAlert.alloc().init()
-        a.setMessageText_(f"删除备忘录「{k}」？")
+        a.setMessageText_(f"删除可复用文本「{k}」？")
         a.addButtonWithTitle_("删除")
         a.addButtonWithTitle_("取消")
         if a.runModal() != NSAlertFirstButtonReturn:
@@ -591,7 +591,7 @@ class MainWindow(NSObject):
         for ident, title, cls in (
             ("settings", "设置",   _SettingsTab),
             ("history",  "历史",   _HistoryTab),
-            ("memos",    "备忘录", _MemosTab),
+            ("memos",    "可复用文本", _MemosTab),
             ("perms",    "权限",   _PermsTab),
         ):
             tab = cls.alloc().initWithApp_(self._app)

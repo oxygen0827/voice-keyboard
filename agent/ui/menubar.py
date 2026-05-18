@@ -1,5 +1,5 @@
 """
-顶部菜单栏 NSStatusItem。点击展开菜单：状态 / 打开设置 / 历史 / 备忘录 / 权限 / 重启 / 退出。
+顶部菜单栏 NSStatusItem。点击展开菜单：状态 / 打开设置 / 历史 / 可复用文本 / 权限 / 重启 / 退出。
 LSUIElement=true 的应用没有 dock 图标，菜单栏图标是用户唯一可见的入口。
 """
 
@@ -56,7 +56,7 @@ class MenuBar(NSObject):
         for title, sel in (
             ("打开设置…", b"openSettings:"),
             ("转写历史…", b"openHistory:"),
-            ("备忘录管理…", b"openMemos:"),
+            ("可复用文本…", b"openMemos:"),
             ("权限自检…", b"openPerms:"),
         ):
             mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, sel, "")

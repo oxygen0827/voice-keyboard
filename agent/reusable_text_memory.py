@@ -42,7 +42,7 @@ class ReusableTextMemory:
 
     def save(self, key: str, value: str, selected: str = "") -> MemoryOperationResult:
         if self._store is None:
-            return MemoryOperationResult.show("备忘录功能未启用")
+            return MemoryOperationResult.show("可复用文本功能未启用")
         key = (key or "").strip()
         final_value = selected.strip() or (value or "").strip()
         if not key:
@@ -55,7 +55,7 @@ class ReusableTextMemory:
 
     def recall(self, key: str) -> MemoryOperationResult:
         if self._store is None:
-            return MemoryOperationResult.show("备忘录功能未启用")
+            return MemoryOperationResult.show("可复用文本功能未启用")
         key = (key or "").strip()
         if not key:
             return MemoryOperationResult.show("没听清楚要查什么")
@@ -67,17 +67,17 @@ class ReusableTextMemory:
 
     def list_all(self) -> MemoryOperationResult:
         if self._store is None:
-            return MemoryOperationResult.show("备忘录功能未启用")
+            return MemoryOperationResult.show("可复用文本功能未启用")
         keys = self._store.keys()
         if not keys:
-            return MemoryOperationResult.show("备忘录是空的")
+            return MemoryOperationResult.show("可复用文本是空的")
         lines = [f"{key}: {self._store.get(key)}" for key in keys]
         print(f"[memo] 列出 {len(keys)} 条")
         return MemoryOperationResult.insert("\n".join(lines))
 
     def delete(self, key: str) -> MemoryOperationResult:
         if self._store is None:
-            return MemoryOperationResult.show("备忘录功能未启用")
+            return MemoryOperationResult.show("可复用文本功能未启用")
         key = (key or "").strip()
         if not key:
             return MemoryOperationResult.show("没听清楚要删哪一条")

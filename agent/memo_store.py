@@ -1,6 +1,8 @@
 """
-简单的 JSON 备忘录键值存储，跨会话持久化。
-默认路径 ~/.voice-keyboard/memos.json。
+Simple JSON store for Reusable Text Memory.
+
+The MemoStore name and ~/.voice-keyboard/memos.json path are compatibility
+surface for existing installs and persisted user data.
 """
 
 import json

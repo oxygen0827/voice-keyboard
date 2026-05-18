@@ -52,7 +52,7 @@ class ReusableTextMemoryTests(unittest.TestCase):
 
         result = memory.list_all()
 
-        self.assertEqual(result, MemoryOperationResult.show("备忘录功能未启用"))
+        self.assertEqual(result, MemoryOperationResult.show("可复用文本功能未启用"))
 
     def test_list_all_formats_saved_memory(self):
         store = FakeMemoryStore()
