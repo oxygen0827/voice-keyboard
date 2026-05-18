@@ -1,0 +1,3 @@
+# Input Environment seam
+
+Instruction Mode should depend on an Input Environment seam instead of calling `typer`, `TextBuffer`, keyboard monitoring, and mouse monitoring details directly. The interface should expose domain operations such as reading the current Explicit Selection, inserting text, revising or removing a safe Tracked Segment, replacing an Explicit Selection, moving out of an Explicit Selection before insertion, and reporting when the Tracked Segment is unsafe. This concentrates the "Explicit Selection first, otherwise safe Tracked Segment only" rule in one deep module while allowing platform-specific typing, clipboard, cursor, and tracking adapters to remain implementation details.
