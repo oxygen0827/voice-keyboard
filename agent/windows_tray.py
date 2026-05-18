@@ -9,7 +9,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pystray
 from PIL import Image, ImageDraw
@@ -18,7 +17,8 @@ from agent.autostart import install as install_autostart
 from agent.autostart import uninstall as uninstall_autostart
 from agent.config import ensure_user_config
 from agent.history import History
-from agent.main import build_backend, list_devices
+from agent.main import list_devices
+from agent.runtime_composition import RuntimeOptions, build_runtime_backend
 from agent.status_window_win import StatusWindow
 from agent.text_buffer import TextBuffer
 
@@ -68,9 +68,13 @@ class WindowsTrayApp:
         )
 
     def _start_backend(self):
-        args = SimpleNamespace(no_serial=True, port=None)
         with self._lock:
-            self._backend = build_backend(args, self._buf, self._status, self._history)
+            self._backend = build_runtime_backend(
+                RuntimeOptions(no_serial=True),
+                self._buf,
+                self._status,
+                self._history,
+            )
 
     def _reload_backend(self, _icon=None, _item=None):
         with self._lock:

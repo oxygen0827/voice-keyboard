@@ -18,6 +18,7 @@ import sounddevice as sd
 from pynput import keyboard as kb
 
 from agent.audio_monitor import find_device, FRAME_BYTES, SILENCE_FRAMES, MIN_SPEECH_FRAMES
+from agent.capture_path import UtteranceEvent
 import agent.typer as _typer
 
 SAMPLE_RATE = 16000
@@ -52,6 +53,7 @@ class PushToTalk:
         ptt_key:           str = "right_alt",
         edit_key:          str = "right_ctrl",
         ai_key:            str = "right_shift",
+        toggle_key:        Optional[str] = None,
         device:            Optional[str] = "auto",
         status_window=None,
         kbd_monitor=None,
@@ -64,6 +66,7 @@ class PushToTalk:
         self._ptt_keys          = _parse_keys(ptt_key)
         self._edit_keys         = _parse_keys(edit_key) if on_edit_utterance else []
         self._ai_keys           = _parse_keys(ai_key)   if on_ai_utterance   else []
+        self._toggle_keys       = _parse_keys(toggle_key) if toggle_key else []
         self._device_hint       = device
         self._status            = status_window
         self._device_idx        = None
@@ -72,6 +75,7 @@ class PushToTalk:
         self._buf: list[bytes]  = []
         self._stream: Optional[sd.RawInputStream] = None
         self._listener: Optional[kb.Listener]     = None
+        self._enabled           = True
 
         # 双击 PTT 切换微润色模式
         self._polish_mode             = False
@@ -111,6 +115,8 @@ class PushToTalk:
             hints.append(f"{'/'.join(str(k) for k in self._edit_keys)} 语音编辑")
         if self._ai_keys:
             hints.append(f"{'/'.join(str(k) for k in self._ai_keys)} AI编程")
+        if self._toggle_keys:
+            hints.append(f"{'/'.join(str(k) for k in self._toggle_keys)} 启停")
         print(f"[ptt] 按住 {' | '.join(hints)}")
 
     def stop(self):
@@ -133,8 +139,13 @@ class PushToTalk:
                 self._kbd_monitor.process_press(key)
             except Exception:
                 pass
+        if self._toggle_keys and key in self._toggle_keys:
+            self._toggle_enabled()
+            return
         if self._active_key is not None:
             return  # 已有键按下，忽略另一个
+        if not self._enabled:
+            return
         if key in self._ptt_keys:
             now = time.monotonic()
             if (now - self._last_ptt_press_time) < self._double_tap_window:
@@ -206,12 +217,10 @@ class PushToTalk:
             self._vad_sent_count += 1
             n = self._vad_sent_count
             print(f"[ptt] 分句{n} 识别中...    ", end="\r", flush=True)
-            threading.Thread(
-                target=self._on_utterance,
-                args=(pcm, self._polish_mode),
-                daemon=True,
+            self._dispatch_utterance(
+                UtteranceEvent.dictation(pcm, self._polish_mode),
                 name=f"PTT-mid-{n}",
-            ).start()
+            )
         self._vad_speech_frames = []
         self._vad_silent_count  = 0
         self._vad_in_speech     = False
@@ -261,12 +270,10 @@ class PushToTalk:
                 n = self._vad_sent_count
                 print(f"[ptt] 分句{n} 识别中...    ", end="\r", flush=True)
                 self._set_status("recognizing")
-                threading.Thread(
-                    target=self._on_utterance,
-                    args=(pcm, self._polish_mode),
-                    daemon=True,
+                self._dispatch_utterance(
+                    UtteranceEvent.dictation(pcm, self._polish_mode),
                     name=f"PTT-mid-{n}",
-                ).start()
+                )
             elif self._vad_sent_count == 0:
                 # 全程未检测到任何句子（录音极短或全静音），回退到原有整段发送逻辑
                 pcm = b"".join(self._buf)
@@ -276,12 +283,10 @@ class PushToTalk:
                 else:
                     print("[ptt] 识别中...    ", end="\r", flush=True)
                     self._set_status("recognizing")
-                    threading.Thread(
-                        target=self._on_utterance,
-                        args=(pcm, self._polish_mode),
-                        daemon=True,
+                    self._dispatch_utterance(
+                        UtteranceEvent.dictation(pcm, self._polish_mode),
                         name="PTT-dictate",
-                    ).start()
+                    )
             else:
                 self._set_status("idle")
             self._buf = []
@@ -298,25 +303,36 @@ class PushToTalk:
 
         if mode == "dictate":
             label    = "识别中"
-            callback = self._on_utterance
-            args     = (pcm, self._polish_mode)
+            event    = UtteranceEvent.dictation(pcm, self._polish_mode)
             self._set_status("recognizing")
         elif mode == "edit":
             label    = "解析编辑指令"
-            callback = self._on_edit_utterance
-            args     = (pcm,)
+            event    = UtteranceEvent.instruction_edit(pcm)
             self._set_status("recognizing")
         else:
             label    = "解析AI指令"
-            callback = self._on_ai_utterance
-            args     = (pcm,)
+            event    = UtteranceEvent.instruction(pcm)
             self._set_status("ai_processing")
         print(f"[ptt] {label}...    ", end="\r", flush=True)
+        self._dispatch_utterance(event, name=f"PTT-{mode}")
+
+    def _dispatch_utterance(self, event: UtteranceEvent, name: str) -> None:
+        if event.mode == "dictation":
+            callback = self._on_utterance
+            args = (event.pcm, event.polish)
+        elif event.mode == "instruction_edit":
+            callback = self._on_edit_utterance
+            args = (event.pcm,)
+        else:
+            callback = self._on_ai_utterance
+            args = (event.pcm,)
+        if callback is None:
+            return
         threading.Thread(
             target=callback,
             args=args,
             daemon=True,
-            name=f"PTT-{mode}",
+            name=name,
         ).start()
 
     def _close_stream(self):
@@ -327,3 +343,16 @@ class PushToTalk:
             except Exception:
                 pass
             self._stream = None
+
+    def _toggle_enabled(self) -> None:
+        self._enabled = not self._enabled
+        if not self._enabled:
+            self._active_key = None
+            self._active_trigger = None
+            self._buf = []
+            self._close_stream()
+            self._set_status("dictation_disabled")
+            print("[ptt] 语音转写已关闭")
+        else:
+            self._set_status("dictation_enabled")
+            print("[ptt] 语音转写已开启")

@@ -52,22 +52,22 @@ _log_setup.setup()
 import sounddevice as sd
 
 from agent.autostart import install, uninstall
-from agent.config import load as load_config
 from agent.history import History
-from agent.serial_reader import SerialReader
+from agent.input_environment import TyperInputEnvironment
+from agent.runtime_composition import RuntimeOptions, build_runtime_backend, options_from_args
 from agent.text_buffer import TextBuffer
 
 
 # ── 串口回调 ───────────────────────────────────────────────────────
 
-def make_serial_handlers(buf: TextBuffer, history: History | None = None):
-    from agent.typer import list_shortcuts, send_shortcut, type_text
+def make_serial_handlers(buf: TextBuffer, history: History | None = None, input_environment=None):
+    from agent.typer import list_shortcuts, send_shortcut
+    env = input_environment or TyperInputEnvironment(buf)
 
     def on_text(text: str):
         print(f"[agent] 打字: {text!r}")
         try:
-            type_text(text)
-            buf.push(text)
+            env.insert_dictation(text)
             if history is not None:
                 history.append("dictate", text, "ok")
         except Exception as e:
@@ -125,8 +125,10 @@ def _clean_polished_text(text: str) -> str:
 
 
 def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None, editor=None,
-                           status_window=None, history: History | None = None):
-    from agent.typer import type_text
+                           status_window=None, history: History | None = None,
+                           input_environment=None):
+    env = input_environment or TyperInputEnvironment(buf)
+
     def on_utterance(
         pcm: bytes,
         polish: bool = False,
@@ -135,7 +137,10 @@ def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None, editor=Non
     ):
         mode = "polish" if polish else "dictate"
         try:
-            text = stt_client.transcribe(pcm)
+            if polish and hasattr(stt_client, "transcribe_polished"):
+                text = stt_client.transcribe_polished(pcm)
+            else:
+                text = stt_client.transcribe(pcm)
         except Exception as e:
             print(f"[stt] 请求失败: {e}")
             if history is not None:
@@ -163,8 +168,7 @@ def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None, editor=Non
             except Exception as e:
                 print(f"[stt] 润色失败，回退原文: {e}")
         try:
-            type_text(text)
-            buf.push(text)
+            env.insert_dictation(text)
         except Exception as e:
             print(f"[stt] 打字失败: {e}")
             if status_window is not None and progress_status:
@@ -183,170 +187,13 @@ def make_utterance_handler(stt_client, buf: TextBuffer, kbd_mon=None, editor=Non
     return on_utterance
 
 
-# ── 后端组件容器（供热重载使用）─────────────────────────────────────
-
-class _Backend:
-    """所有可重启的后端组件，热重载时整体停掉再重建。"""
-    def __init__(self):
-        self.cfg = None
-        self.kbd_monitor = None
-        self.mouse_monitor = None
-        self.reader = None
-        self.audio = None  # PushToTalk or AudioMonitor
-
-    def stop(self):
-        for attr in ("audio", "reader", "mouse_monitor", "kbd_monitor"):
-            comp = getattr(self, attr, None)
-            if comp is None:
-                continue
-            try:
-                comp.stop()
-            except Exception as e:
-                print(f"[agent] 停止 {attr} 失败: {e}")
-            setattr(self, attr, None)
-
-
-def build_backend(args, buf: TextBuffer, status_window, history: History) -> _Backend:
-    bk = _Backend()
-    bk.cfg = load_config()
-    from agent.typer import init as typer_init
-    typer_init(bk.cfg.get("typing", {}))
-
-    try:
-        from agent.keyboard_monitor import KeyboardMonitor
-        bk.kbd_monitor = KeyboardMonitor(buf)
-        bk.kbd_monitor.start()
-    except Exception as e:
-        print(f"[agent] 键盘监听启动失败（{e}），退格同步不可用")
-
-    try:
-        from agent.mouse_monitor import MouseMonitor
-        bk.mouse_monitor = MouseMonitor(buf)
-        bk.mouse_monitor.start()
-    except Exception as e:
-        print(f"[agent] 鼠标监听启动失败（{e}），行选择模式不可用")
-
-    if not args.no_serial:
-        on_text, on_cmd = make_serial_handlers(buf, history=history)
-        bk.reader = SerialReader(on_text=on_text, on_cmd=on_cmd, port=args.port)
-        bk.reader.start()
-    else:
-        print("[agent] 串口已禁用（纯软件模式）")
-
-    bk.audio = _build_audio(bk.cfg, buf, kbd_monitor=bk.kbd_monitor,
-                            status_window=status_window, history=history)
-    return bk
-
-
-def _build_audio(cfg: dict, buf: TextBuffer, kbd_monitor=None, status_window=None,
-                 history: History | None = None):
-    stt_cfg = cfg.get("stt", {})
-    provider = stt_cfg.get("provider", "")
-    if provider == "typeup_backend" and not stt_cfg.get("access_token"):
-        print("[typeup-auth-required] 请先登录 TypeUp 后端账号，跳过音频 STT")
-        return None
-    _no_api_key_providers = {"volcengine", "aliyun", "typeup_backend"}
-    if not stt_cfg.get("api_key") and provider not in _no_api_key_providers:
-        print("[agent] 未配置 stt.api_key，跳过音频 STT")
-        print("[agent] 提示: cp config.yaml.example config.yaml 然后填入 API Key")
-        return None
-
-    try:
-        from agent.stt import STTClient
-    except ImportError as e:
-        print(f"[agent] STT 依赖缺失（{e}）")
-        return None
-
-    try:
-        stt = STTClient(stt_cfg)
-    except Exception as e:
-        print(f"[agent] STT 初始化失败: {e}")
-        return None
-
-    editor = None
-    llm_cfg = cfg.get("llm", {})
-    if _llm_configured(llm_cfg):
-        try:
-            from agent.llm_editor import LLMEditor
-            editor = LLMEditor(llm_cfg)
-            print("[agent] LLM 编辑功能已启用")
-        except Exception as e:
-            import traceback
-            print(f"[agent] LLM 初始化失败: {e}")
-            traceback.print_exc()
-
-    audio_cfg = cfg.get("audio", {})
-    mode      = audio_cfg.get("mode", "ptt")
-    device    = audio_cfg.get("device", "auto")
-
-    ai_handler = None
-    if editor:
-        try:
-            from agent.ai_handler import AIHandler
-            from agent.memo_store import MemoStore
-            ai_stt = stt
-            ai_stt_cfg = cfg.get("ai_stt", {})
-            if ai_stt_cfg:
-                ai_stt = STTClient(ai_stt_cfg)
-                print(f"[agent] AI 键 STT 使用独立 provider: {ai_stt_cfg.get('provider', 'openai')}")
-            memo_store = MemoStore()
-            ai_handler = AIHandler(ai_stt, editor, buf, memo_store=memo_store,
-                                   status_window=status_window, history=history)
-            ai_key_name = audio_cfg.get("ai_key", "cmd_r")
-            existing = memo_store.keys()
-            if existing:
-                print(f"[memo] 已加载 {len(existing)} 条备忘录: {'、'.join(existing)}")
-            print(f"[agent] AI 键已启用，热键: {ai_key_name}")
-        except Exception as e:
-            print(f"[agent] AIHandler 初始化失败: {e}")
-
-    on_utterance = make_utterance_handler(stt, buf, kbd_mon=kbd_monitor, editor=editor,
-                                          status_window=status_window, history=history)
-
-    if mode == "ptt":
-        try:
-            from agent.push_to_talk import PushToTalk
-        except ImportError as e:
-            print(f"[agent] PTT 依赖缺失（{e}）")
-            return None
-
-        on_ai         = ai_handler.handle        if ai_handler else None
-        on_ai_key_dwn = ai_handler.on_ai_key_down if ai_handler else None
-
-        ptt = PushToTalk(
-            on_utterance=on_utterance,
-            on_ai_utterance=on_ai,
-            on_ai_key_down=on_ai_key_dwn,
-            ptt_key=audio_cfg.get("ptt_key", "right_alt"),
-            ai_key=audio_cfg.get("ai_key", "cmd_r"),
-            device=device,
-            status_window=status_window,
-            kbd_monitor=kbd_monitor,
-        )
-        ptt.start()
-        return ptt
-
-    else:
-        try:
-            from agent.audio_monitor import AudioMonitor
-        except ImportError as e:
-            print(f"[agent] VAD 依赖缺失（{e}）")
-            return None
-
-        monitor = AudioMonitor(
-            on_utterance=on_utterance,
-            device=device,
-            vad_level=audio_cfg.get("vad_aggressiveness", 2),
-        )
-        monitor.start()
-        return monitor
+def build_backend(args, buf: TextBuffer, status_window, history: History):
+    return build_runtime_backend(options_from_args(args), buf, status_window, history)
 
 
 def _llm_configured(llm_cfg: dict) -> bool:
-    provider = llm_cfg.get("provider", "")
-    if provider == "typeup_backend":
-        return bool((llm_cfg.get("api_base_url") or llm_cfg.get("base_url")) and llm_cfg.get("access_token"))
-    return bool(llm_cfg.get("api_key"))
+    from agent.typeup_backend_auth import is_typeup_backend_configured
+    return is_typeup_backend_configured(llm_cfg)
 
 
 # ── 入口 ───────────────────────────────────────────────────────────
@@ -465,10 +312,9 @@ def main():
 
     def retype(text: str):
         # 历史 tab「再次打字」回调，UI 已隐藏后调度
-        from agent.typer import type_text
+        env = TyperInputEnvironment(buf)
         try:
-            type_text(text)
-            buf.push(text)
+            env.insert_dictation(text)
             history.append("dictate", text, "ok", detail="retype")
         except Exception as e:
             print(f"[agent] retype 失败: {e}")

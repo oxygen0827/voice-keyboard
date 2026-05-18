@@ -20,9 +20,14 @@ _STATES: dict[str, tuple[str, int]] = {
     "error_typing": ("打字失败", 0x4444EF),
     "error_llm": ("LLM 失败", 0x4444EF),
     "error_perm": ("权限未授予", 0x4444EF),
+    "dictation_disabled": ("语音转写已关闭", 0x999999),
+    "dictation_enabled": ("语音转写已开启", 0x78C931),
 }
 
-_ERROR_STATES = {"error_stt", "error_typing", "error_llm", "error_perm", "empty_stt"}
+_ERROR_STATES = {
+    "error_stt", "error_typing", "error_llm", "error_perm", "empty_stt",
+    "dictation_disabled", "dictation_enabled",
+}
 _WM_APP_STATE = 0x8001
 _WM_APP_STOP = 0x8002
 _WM_APP_MESSAGE = 0x8003

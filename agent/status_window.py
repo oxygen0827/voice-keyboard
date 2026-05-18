@@ -38,9 +38,14 @@ _STATES: dict[str, tuple[str, tuple[float, float, float]]] = {
     "error_typing":     ("打字失败 · 检查权限",  (0.94, 0.20, 0.20)),  # 深红
     "error_llm":        ("LLM 失败",          (0.94, 0.20, 0.20)),  # 深红
     "error_perm":       ("权限未授予",          (0.94, 0.20, 0.20)),  # 深红
+    "dictation_disabled": ("语音转写已关闭",      (0.55, 0.58, 0.62)),  # 灰
+    "dictation_enabled":  ("语音转写已开启",      (0.20, 0.78, 0.50)),  # 绿
 }
 # 错误状态 1.5s 后自动消失
-_ERROR_STATES = {"error_stt", "error_typing", "error_llm", "error_perm", "empty_stt"}
+_ERROR_STATES = {
+    "error_stt", "error_typing", "error_llm", "error_perm", "empty_stt",
+    "dictation_disabled", "dictation_enabled",
+}
 
 _BOTTOM_MARGIN = 96
 _HEIGHT        = 36

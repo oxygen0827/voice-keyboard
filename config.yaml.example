@@ -88,6 +88,10 @@ audio:
   # 不推荐 cmd / cmd_r：按住的瞬间所有 Cmd+X 系统快捷键都会被劫持
   ai_key: alt_r
 
+  # 启停热键：按一下关闭 Dictation Mode / Instruction Mode 录音，再按一下恢复。
+  # 用于临时避开系统热键冲突或敏感词错误后的快速恢复。
+  toggle_key: f8
+
   device: auto              # auto = 自动查找 ESP32 UAC 麦克风，找不到用系统默认
                             # 其他示例：
                             #   device: "MacBook"        # 内置麦克风
@@ -117,6 +121,17 @@ llm:
 #   model: glm-asr-2512
 #   hotwords: ["Voice Keyboard", "备忘录", "撤回"]
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 微润色专用 STT（可选）
+# 普通听写可继续使用上面的 stt provider；微润色模式可直接用智谱 ASR，
+# 避免先走讯飞/阿里云再润色。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# polish_stt:
+#   provider: glm_asr_2512
+#   api_key: "..."           # 智谱 AI API Key，也可用 .env 的 GLM_API_KEY
+#   model: glm-asr-2512
+#   hotwords: ["Voice Keyboard", "TypeUp"]
+
 # 智谱 AI GLM 示例（与 stt.zhipuai 搭配，只需一个 API Key）：
 # llm:
 #   provider: zhipuai
@@ -143,6 +158,24 @@ llm:
 #   refresh_token: "..."
 #   cloud_bridge_path: "/path/to/cloud-bridge.json"
 #   model: glm-4-flash
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Instruction Mode
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+instruction_mode:
+  # true 时，润色/翻译/删除只能作用于 Explicit Selection。
+  # 这样不会因为鼠标、回车或焦点变化误改上一句。
+  require_selection_for_edit: true
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 打字与自定义快捷键
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+typing:
+  method: unicode            # unicode 或 clip
+  shortcuts:
+    # 语音说“打开设置”时执行 Cmd+,；Windows/Linux 可写成 ctrl+,
+    打开设置: cmd+,
+    刷新: cmd+r
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Claude Code AI 编程模式（可选）
