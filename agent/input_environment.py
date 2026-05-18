@@ -19,7 +19,7 @@ class TextTarget:
     tracked_segment_safe: bool = True
 
 
-TargetFailure = Literal["unsafe_tracked_segment", "no_tracked_segment"]
+TargetFailure = Literal["unsafe_tracked_segment", "no_tracked_segment", "no_focused_input"]
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,21 @@ class TyperInputEnvironment:
         self._buf.push(text)
 
     def insert_dictation(self, text: str) -> None:
-        self.insert_text(text)
+        result = self.insert_output_text(text)
+        if not result.ok:
+            raise RuntimeError(result.failure or "insert_failed")
+
+    def insert_output_text(self, text: str) -> TextInsertionResult:
+        if not text:
+            return TextInsertionResult(inserted_text="")
+        if self._text_io.can_insert_text():
+            self.insert_text(text)
+            return TextInsertionResult(inserted_text=text)
+        if not self._text_io.confirm_paste_text(text):
+            return TextInsertionResult(failure="no_focused_input")
+        self._text_io.paste_text(text)
+        self._buf.push(text)
+        return TextInsertionResult(inserted_text=text)
 
     def insert_text_after_selection(self, text: str, selected: str = "") -> None:
         if selected:
@@ -128,8 +142,7 @@ class TyperInputEnvironment:
         target = self.target_for_instruction()
         if target.selected:
             self._text_io.jump_to_end()
-        self.insert_text(text)
-        return TextInsertionResult(inserted_text=text)
+        return self.insert_output_text(text)
 
     def replace_selection(self, original: str, replacement: str) -> None:
         self._text_io.replace_selection(replacement)

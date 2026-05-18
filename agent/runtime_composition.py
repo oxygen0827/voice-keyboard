@@ -64,12 +64,18 @@ def build_runtime_backend(
         ),
     )
 
-    try:
-        from agent.keyboard_monitor import KeyboardMonitor
-        bk.kbd_monitor = KeyboardMonitor(bk.input_environment)
-        bk.kbd_monitor.start()
-    except Exception as e:
-        print(f"[agent] 键盘监听启动失败（{e}），退格同步不可用")
+    if not instruction_cfg.get("require_selection_for_edit", True):
+        try:
+            from agent.keyboard_monitor import KeyboardMonitor
+            from agent.mouse_monitor import MouseMonitor
+            bk.kbd_monitor = KeyboardMonitor(bk.input_environment)
+            bk.kbd_monitor.start()
+            bk.mouse_monitor = MouseMonitor(bk.input_environment)
+            bk.mouse_monitor.start()
+        except Exception as e:
+            print(f"[agent] 追踪监听启动失败（{e}），Tracked Segment 安全检测不可用")
+    else:
+        print("[agent] 编辑/删除仅使用 Explicit Selection，已关闭鼠标/回车/退格追踪检测")
 
     if not options.no_serial:
         from agent.main import make_serial_handlers

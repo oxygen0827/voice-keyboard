@@ -69,6 +69,8 @@ class InstructionModeExecutor:
             insertion = self._env.insert_generated_text(result.text)
             if insertion.ok and insertion.inserted_text:
                 self._record_effect(OperationEffect.insert(insertion.inserted_text))
+            elif insertion.failure == "no_focused_input":
+                self._show("未点击到输入框，已取消输出")
         else:
             self._show(result.message)
 
@@ -133,8 +135,9 @@ class InstructionModeExecutor:
                             insertion = self._env.insert_generated_text(pending)
                             if insertion.ok:
                                 total += insertion.inserted_text
-                            else:
-                                total += pending
+                            elif insertion.failure == "no_focused_input":
+                                self._show("未点击到输入框，已取消输出")
+                                return
                             pending = ""
                         break
                     sentence = pending[:idx + 1]
@@ -142,8 +145,9 @@ class InstructionModeExecutor:
                     insertion = self._env.insert_generated_text(sentence)
                     if insertion.ok:
                         total += insertion.inserted_text
-                    else:
-                        total += sentence
+                    elif insertion.failure == "no_focused_input":
+                        self._show("未点击到输入框，已取消输出")
+                        return
         except Exception as e:
             print(f"[ai] 写作失败: {e}")
             return
@@ -152,8 +156,9 @@ class InstructionModeExecutor:
             insertion = self._env.insert_generated_text(pending)
             if insertion.ok:
                 total += insertion.inserted_text
-            else:
-                total += pending
+            elif insertion.failure == "no_focused_input":
+                self._show("未点击到输入框，已取消输出")
+                return
 
         if total:
             self._record_effect(OperationEffect.insert(total))

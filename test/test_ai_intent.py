@@ -16,6 +16,25 @@ class AIIntentTests(unittest.TestCase):
 
         self.assertEqual(result, {"type": "edit"})
 
+    def test_edit_hint_without_selection_but_recent_text_is_still_edit_operation(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"请提供内容"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="把上一句翻译成英文",
+            recent_text="上一句",
+        ))
+
+        self.assertEqual(result, {"type": "edit"})
+
+    def test_write_request_with_edit_hint_without_target_stays_write(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"write"}'
+
+        result = classify_intent(llm, IntentContext(text="写一封英文邮件"))
+
+        self.assertEqual(result, {"type": "write"})
+
     def test_chat_can_fuzzy_match_saved_memo_key(self):
         llm = MagicMock()
         llm.chat.return_value = '{"type":"chat","reply":"不知道"}'

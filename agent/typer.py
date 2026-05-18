@@ -1,4 +1,5 @@
 import platform
+import subprocess
 import time
 from pynput.keyboard import Controller, Key, KeyCode
 
@@ -7,6 +8,8 @@ _OS = platform.system()
 
 if _OS == "Darwin":
     import Quartz
+    import ApplicationServices
+    from AppKit import NSPasteboard, NSPasteboardTypeString, NSWorkspace
 
 if _OS == "Windows":
     import ctypes
@@ -87,6 +90,11 @@ _SHORTCUTS: dict[str, list] = {
     "删除":    [Key.backspace],
     "空格":    [Key.space],
 }
+_SYSTEM_ACTIONS = {
+    "打开系统设置": "open_system_settings",
+    "系统设置": "open_system_settings",
+    "打开设置": "open_system_settings",
+}
 
 # Windows / Linux 下替换修饰键（两者快捷键基本相同）
 if _OS in ("Windows", "Linux"):
@@ -119,6 +127,66 @@ def type_text(text: str) -> None:
             _type_via_sendinput(text)
     else:
         _type_via_xtest(text)  # Linux
+
+
+def has_focused_text_input() -> bool:
+    """Best-effort focus check before emitting text.
+
+    Platform APIs expose this unevenly. Returning True keeps existing behavior
+    where focus detection is unavailable; macOS uses Accessibility attributes.
+    """
+    if _OS != "Darwin":
+        return True
+    try:
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        pid = app.processIdentifier() if app is not None else None
+        if not pid:
+            return True
+        elem = ApplicationServices.AXUIElementCreateApplication(pid)
+        err, focused = ApplicationServices.AXUIElementCopyAttributeValue(elem, "AXFocusedUIElement", None)
+        if err != 0 or focused is None:
+            return True
+        err, role = ApplicationServices.AXUIElementCopyAttributeValue(focused, "AXRole", None)
+        if err != 0:
+            return True
+        role_name = str(role)
+        if role_name in {"AXTextField", "AXTextArea", "AXTextView", "AXComboBox"}:
+            return True
+        return False
+    except Exception:
+        return True
+
+
+def confirm_paste_without_focused_input(text: str) -> bool:
+    preview = (text or "").replace("\n", " ")[:80]
+    message = f"未点击到输入框。\n\n是否把识别结果复制到剪贴板并尝试粘贴？\n\n{preview}"
+    if _OS == "Darwin":
+        script = (
+            'display dialog '
+            + _osascript_quote(message)
+            + ' buttons {"取消", "粘贴"} default button "粘贴" with icon caution'
+        )
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return result.returncode == 0 and "button returned:粘贴" in result.stdout
+        except Exception:
+            return False
+    print(f"[typer] 未点击到输入框，跳过输出: {preview}")
+    return False
+
+
+def paste_text(text: str) -> None:
+    replace_selection(text)
+
+
+def _osascript_quote(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _type_via_quartz(text: str) -> None:
@@ -263,7 +331,7 @@ def get_current_line() -> str | None:
         return None
 
 
-_SENTINEL = "\x00__VK_NO_SELECTION__\x00"
+_SENTINEL = "__VOICE_KEYBOARD_NO_SELECTION_SENTINEL__"
 
 
 def get_selection() -> str:
@@ -387,11 +455,9 @@ def _get_clipboard() -> str:
     if _OS == "Windows":
         return _get_clipboard_win()
     elif _OS == "Darwin":
-        import subprocess
         try:
-            return subprocess.check_output(
-                ["pbpaste"], timeout=3
-            ).decode("utf-8", errors="replace")
+            value = NSPasteboard.generalPasteboard().stringForType_(NSPasteboardTypeString)
+            return str(value) if value is not None else ""
         except Exception:
             return ""
     else:
@@ -409,10 +475,10 @@ def _set_clipboard(text: str) -> None:
     if _OS == "Windows":
         _set_clipboard_win(text)
     elif _OS == "Darwin":
-        import subprocess
         try:
-            p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
-            p.communicate(text.encode("utf-8"))
+            pb = NSPasteboard.generalPasteboard()
+            pb.clearContents()
+            pb.setString_forType_(str(text or ""), NSPasteboardTypeString)
         except Exception:
             pass
     else:
@@ -476,6 +542,9 @@ def _set_clipboard_win(text: str) -> None:
 
 def send_shortcut(name: str) -> bool:
     """按名称触发快捷键，返回是否找到该指令"""
+    action = _SYSTEM_ACTIONS.get(name)
+    if action:
+        return _run_system_action(action)
     keys = _SHORTCUTS.get(name)
     if not keys:
         return False
@@ -486,13 +555,26 @@ def send_shortcut(name: str) -> bool:
     return True
 
 
+def _run_system_action(action: str) -> bool:
+    if action == "open_system_settings":
+        if _OS == "Darwin":
+            subprocess.Popen(["open", "-b", "com.apple.systempreferences"])
+            return True
+        if _OS == "Windows":
+            subprocess.Popen(["start", "ms-settings:"], shell=True)
+            return True
+        subprocess.Popen(["sh", "-lc", "gnome-control-center || systemsettings5 || true"])
+        return True
+    return False
+
+
 def register_shortcut(name: str, keys: list) -> None:
     """运行时注册自定义快捷键"""
     _SHORTCUTS[name] = keys
 
 
 def list_shortcuts() -> list[str]:
-    return list(_SHORTCUTS.keys())
+    return list(_SHORTCUTS.keys()) + list(_SYSTEM_ACTIONS.keys())
 
 
 def _load_custom_shortcuts(shortcuts) -> None:

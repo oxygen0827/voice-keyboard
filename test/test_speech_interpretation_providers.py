@@ -111,6 +111,7 @@ class SpeechInterpretationProviderFactoryTests(unittest.TestCase):
         utterance_stt = self.factory.create_utterance_stt(
             dictation_stt,
             {"provider": "glm_asr_2512", "api_key": "sk-polish", "name": "polished"},
+            {},
         )
 
         self.assertEqual(utterance_stt.transcribe(b"base"), "dictation")
@@ -119,6 +120,18 @@ class SpeechInterpretationProviderFactoryTests(unittest.TestCase):
             self.messages,
             ["[agent] 微润色 STT 使用独立 provider: glm_asr_2512"],
         )
+
+    def test_micro_polish_does_not_infer_provider_from_llm_config(self):
+        dictation_stt = FakeSTT({"name": "dictation"})
+
+        utterance_stt = self.factory.create_utterance_stt(
+            dictation_stt,
+            {},
+            {"provider": "zhipuai", "api_key": "sk-zhipu"},
+        )
+
+        self.assertIs(utterance_stt, dictation_stt)
+        self.assertEqual(len(FakeSTT.instances), 1)
 
     def test_provider_set_concentrates_all_configured_construction(self):
         providers = self.factory.create_provider_set({

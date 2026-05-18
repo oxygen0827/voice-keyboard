@@ -99,6 +99,7 @@ class AIHandler:
         except Exception as e:
             print(f"[ai] STT 失败: {e}")
             self._record("ai", "", "error", f"STT: {e}")
+            self._show_error_message(e)
             if self._status is not None:
                 self._status.set_state("error_stt")
             return
@@ -164,6 +165,11 @@ class AIHandler:
             self._status.show_message(full, delay)
         else:
             print(f"{_AI_PREFIX}{message}")
+
+    def _show_error_message(self, error: Exception) -> None:
+        msg = str(error)
+        if "敏感" in msg or "不安全" in msg or "unsafe" in msg.lower():
+            self._show("识别内容被服务商拦截，请松开热键后重新说。可用启停热键快速恢复。")
 
     def _auto_erase(self, expected: str) -> None:
         with self._io_lock:

@@ -112,7 +112,7 @@ class SpeechInterpretationProviderFactory:
             self._log(f"[agent] AI 键 STT 初始化失败: {e}")
             return None
 
-    def create_utterance_stt(self, dictation_stt, polish_stt_cfg: dict):
+    def create_utterance_stt(self, dictation_stt, polish_stt_cfg: dict, llm_cfg: dict):
         if not polish_stt_cfg:
             return dictation_stt
         try:
@@ -140,6 +140,7 @@ class SpeechInterpretationProviderFactory:
         utterance_stt = self.create_utterance_stt(
             dictation_stt,
             cfg.get("polish_stt", {}),
+            cfg.get("llm", {}),
         )
         return SpeechInterpretationProviderSet(
             dictation_stt=dictation_stt,

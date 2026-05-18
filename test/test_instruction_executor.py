@@ -98,6 +98,20 @@ class InstructionModeExecutorTests(unittest.TestCase):
         env.insert_generated_text.assert_any_call("第二句。")
         self.assertEqual(history.snapshot(), (OperationEffect.insert("第一句。第二句。"),))
 
+    def test_write_cancelled_paste_does_not_record_insert_effect(self):
+        llm = MagicMock()
+        llm.chat_stream.return_value = ["第一句。"]
+        env = MagicMock()
+        env.insert_generated_text.return_value = TextInsertionResult(failure="no_focused_input")
+        history = OperationHistory()
+        messages = []
+        executor = InstructionModeExecutor(llm, env, history, show=messages.append)
+
+        executor.execute(VoiceTextOperation("write"), "写一句", "")
+
+        self.assertEqual(history.snapshot(), ())
+        self.assertEqual(messages, ["未点击到输入框，已取消输出"])
+
     def test_unsafe_tracked_segment_edit_does_not_call_llm(self):
         llm = MagicMock()
         env = MagicMock()

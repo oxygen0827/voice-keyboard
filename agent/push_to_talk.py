@@ -130,15 +130,15 @@ class PushToTalk:
     def _on_press(self, key):
         if _typer.is_simulating():
             return  # 程序自身发出的按键，忽略
+        if self._toggle_keys and key in self._toggle_keys:
+            self._toggle_enabled()
+            return
         # 顺手把退格/Delete/Enter 同步给 KeyboardMonitor，避免再开一个 CGEventTap
         if self._kbd_monitor is not None:
             try:
                 self._kbd_monitor.process_press(key)
             except Exception:
                 pass
-        if self._toggle_keys and key in self._toggle_keys:
-            self._toggle_enabled()
-            return
         if key in self._ptt_keys:
             now = time.monotonic()
             start = self._capture_runtime.press_dictation(key, now)

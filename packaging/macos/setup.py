@@ -35,6 +35,7 @@ OPTIONS = {
         "agent.history",
         "agent.permissions",
         "agent.log_setup",
+        "wave",
     ],
     "plist": {
         "CFBundleName":              "Voice Keyboard",
@@ -53,6 +54,7 @@ OPTIONS = {
     # 显式打包，避免 py2app 漏掉动态导入的模块
     "packages": [
         "agent",
+        "serial",
         "sounddevice",
         "pynput",
         "websocket",

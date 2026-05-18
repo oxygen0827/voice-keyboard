@@ -104,6 +104,17 @@ class DictationModeModuleTests(unittest.TestCase):
         status.set_state.assert_called_once_with("error_typing")
         kbd.notify_voice_output.assert_not_called()
 
+    def test_cancelled_no_focus_paste_is_not_recorded_as_typing_error(self):
+        module, _stt, env, status, history, kbd = self.make_module("hello")
+        env.insert_dictation.side_effect = RuntimeError("no_focused_input")
+
+        module.handle_utterance(b"pcm")
+
+        history.append.assert_called_once_with("dictate", "hello", "cancelled", "no_focused_input")
+        status.show_message.assert_called_once_with("未点击到输入框，已取消输出", 5.0)
+        status.set_state.assert_called_once_with("idle")
+        kbd.notify_voice_output.assert_not_called()
+
     def test_status_flags_preserve_segment_behavior(self):
         module, _stt, env, status, _history, _kbd = self.make_module("hello")
 

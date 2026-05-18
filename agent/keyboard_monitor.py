@@ -2,7 +2,7 @@
 全局键盘监听，追踪用户手动按 Backspace / Delete，实时同步 Tracked Segment。
 
 设计要点：
-  - 只监听 Backspace 和 Delete 两个键，不干扰其他按键逻辑
+  - 监听 Backspace、Delete 和 Enter，不干扰其他按键逻辑
   - typer.py 调用 erase_last() 时会设置 _erasing=True 标志，
     此时 pynput 回调也会收到我们自己发出的退格事件，
     通过 typer.is_erasing() 判断并忽略，避免双重扣减
@@ -25,7 +25,7 @@ TRACK_TIMEOUT = 30.0
 
 
 class KeyboardMonitor:
-    """监听 Backspace/Delete，实时同步 Tracked Segment。
+    """监听 Backspace/Delete/Enter，实时同步 Tracked Segment。
 
     设计：不再自己开 pynput.Listener。由 PushToTalk 的 listener 顺手调用
     process_press(key)，把全局只剩一个键盘 CGEventTap，避免事件被 Python
@@ -64,3 +64,6 @@ class KeyboardMonitor:
                 self._env.mark_tracked_segment_unsafe()
         elif key == kb.Key.delete:
             self._env.mark_tracked_segment_unsafe()
+        elif key == kb.Key.enter:
+            self._env.mark_tracked_segment_unsafe()
+            self._env.start_new_tracked_segment()

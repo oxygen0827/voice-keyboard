@@ -88,6 +88,7 @@ class DictationMode:
         except Exception as e:
             print(f"[stt] 请求失败: {e}")
             self._append_history(mode, "", "error", f"STT: {e}")
+            self._show_error_message(e)
             if progress_status:
                 self._set_status("error_stt")
             return
@@ -109,6 +110,12 @@ class DictationMode:
         try:
             self.input_environment.insert_dictation(text)
         except Exception as e:
+            if str(e) == "no_focused_input":
+                self._append_history(mode, text, "cancelled", "no_focused_input")
+                self._show("未点击到输入框，已取消输出")
+                if progress_status:
+                    self._set_status("idle")
+                return
             print(f"[stt] 打字失败: {e}")
             if progress_status:
                 self._set_status("error_typing")
@@ -141,6 +148,12 @@ class DictationMode:
         if self.status_window is not None:
             self.status_window.set_state(state)
 
+    def _show(self, message: str) -> None:
+        if self.status_window is not None and hasattr(self.status_window, "show_message"):
+            self.status_window.show_message(message, 5.0)
+        else:
+            print(f"[stt] {message}")
+
     def _append_history(
         self,
         mode: str,
@@ -150,6 +163,15 @@ class DictationMode:
     ) -> None:
         if self.history is not None:
             self.history.append(mode, text, status, detail)
+
+    def _show_error_message(self, error: Exception) -> None:
+        msg = str(error)
+        if "敏感" in msg or "不安全" in msg or "unsafe" in msg.lower():
+            message = "识别内容被服务商拦截，请松开热键后重新说。可用启停热键快速恢复。"
+            if self.status_window is not None and hasattr(self.status_window, "show_message"):
+                self.status_window.show_message(message, 5.0)
+            else:
+                print(f"[stt] {message}")
 
 
 def make_utterance_handler(

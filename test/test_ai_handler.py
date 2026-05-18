@@ -11,6 +11,19 @@ class FakeTextIO:
         self.selected = selected
         self.calls = []
         self.shortcuts_value = ["保存"]
+        self.can_insert = True
+        self.confirm_paste = False
+
+    def can_insert_text(self) -> bool:
+        self.calls.append(("can_insert_text",))
+        return self.can_insert
+
+    def confirm_paste_text(self, text: str) -> bool:
+        self.calls.append(("confirm_paste_text", text))
+        return self.confirm_paste
+
+    def paste_text(self, text: str) -> None:
+        self.calls.append(("paste_text", text))
 
     def get_selection(self) -> str:
         self.calls.append(("get_selection",))
@@ -50,7 +63,7 @@ class InputEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(
             text_io.calls,
-            [("get_selection",), ("jump_to_end",), ("type_text", "new")],
+            [("get_selection",), ("jump_to_end",), ("can_insert_text",), ("type_text", "new")],
         )
         self.assertEqual(buf.current_segment, "new")
 
@@ -76,13 +89,48 @@ class InputEnvironmentTests(unittest.TestCase):
 
     def test_insert_dictation_uses_same_tracked_segment_path(self):
         buf = TextBuffer()
-        env = TyperInputEnvironment(buf)
+        text_io = FakeTextIO()
+        env = TyperInputEnvironment(buf, text_io=text_io)
 
-        with patch("agent.typer.type_text") as type_text:
-            env.insert_dictation("dictated")
+        env.insert_dictation("dictated")
 
-        type_text.assert_called_once_with("dictated")
+        self.assertIn(("type_text", "dictated"), text_io.calls)
         self.assertEqual(buf.current_segment, "dictated")
+
+    def test_insert_dictation_prompts_for_paste_when_no_input_is_focused(self):
+        buf = TextBuffer()
+        text_io = FakeTextIO()
+        text_io.can_insert = False
+        text_io.confirm_paste = True
+        env = TyperInputEnvironment(buf, text_io=text_io)
+
+        env.insert_dictation("dictated")
+
+        self.assertEqual(
+            text_io.calls,
+            [
+                ("can_insert_text",),
+                ("confirm_paste_text", "dictated"),
+                ("paste_text", "dictated"),
+            ],
+        )
+        self.assertEqual(buf.current_segment, "dictated")
+
+    def test_insert_generated_text_reports_cancelled_paste(self):
+        text_io = FakeTextIO()
+        text_io.can_insert = False
+        text_io.confirm_paste = False
+        env = TyperInputEnvironment(TextBuffer(), text_io=text_io)
+
+        result = env.insert_generated_text("generated")
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure, "no_focused_input")
+        self.assertEqual(text_io.calls, [
+            ("get_selection",),
+            ("can_insert_text",),
+            ("confirm_paste_text", "generated"),
+        ])
 
     def test_tracking_events_are_exposed_through_environment(self):
         buf = TextBuffer()

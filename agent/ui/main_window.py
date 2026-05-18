@@ -134,6 +134,7 @@ class _SettingsTab(NSObject):
         section("【热键 / 音频 / 打字】")
         row("ptt_key", "audio.ptt_key", "alt,alt_r", w=200)
         row("ai_key",  "audio.ai_key",  "cmd,cmd_r", w=200)
+        row("toggle_key",  "audio.toggle_key",  "f8", w=200)
 
         # 麦克风 popup
         doc.addSubview_(_label("device", NSMakeRect(20, y, 160, 20)))
@@ -207,7 +208,7 @@ class _SettingsTab(NSObject):
             else:
                 val = ctrl.stringValue() or ""
             # 列表字段
-            if path in ("audio.ptt_key", "audio.ai_key") and "," in val:
+            if path in ("audio.ptt_key", "audio.ai_key", "audio.toggle_key") and "," in val:
                 val = [s.strip() for s in val.split(",") if s.strip()]
             cfg[head][key] = val
         # 清掉空字段，避免覆盖原 yaml 的有效值

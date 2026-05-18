@@ -38,8 +38,10 @@ if getattr(sys, "frozen", False):
         if _ca_path is None:
             _ca_path = certifi.where()
 
-        os.environ.setdefault("SSL_CERT_FILE", _ca_path)
-        os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca_path)
+        for _env_name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+            _current = os.environ.get(_env_name)
+            if not _current or not Path(_current).exists():
+                os.environ[_env_name] = _ca_path
         print(f"[agent] 使用 CA 证书: {_ca_path}")
     except ImportError:
         pass

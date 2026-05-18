@@ -17,6 +17,9 @@ _PLIST_LABEL = "com.voicekeyboard.agent"
 
 def _launch_command() -> list[str]:
     if getattr(sys, "frozen", False):
+        if _OS == "Darwin":
+            app_bundle = Path(sys.executable).resolve().parents[2]
+            return ["/usr/bin/open", "-W", str(app_bundle)]
         return [sys.executable]
     return [sys.executable, "-m", "agent.main"]
 

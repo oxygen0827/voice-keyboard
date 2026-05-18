@@ -7,6 +7,15 @@ from agent import typer
 
 
 class TextIO(Protocol):
+    def can_insert_text(self) -> bool:
+        ...
+
+    def confirm_paste_text(self, text: str) -> bool:
+        ...
+
+    def paste_text(self, text: str) -> None:
+        ...
+
     def get_selection(self) -> str:
         ...
 
@@ -35,6 +44,15 @@ class TextIO(Protocol):
 @dataclass(frozen=True)
 class TyperTextIO:
     """Adapter that keeps platform typing details out of Input Environment rules."""
+
+    def can_insert_text(self) -> bool:
+        return typer.has_focused_text_input()
+
+    def confirm_paste_text(self, text: str) -> bool:
+        return typer.confirm_paste_without_focused_input(text)
+
+    def paste_text(self, text: str) -> None:
+        typer.paste_text(text)
 
     def get_selection(self) -> str:
         return typer.get_selection()
