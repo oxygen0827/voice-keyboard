@@ -119,7 +119,7 @@ llm:
 #   provider: glm_asr_2512
 #   api_key: "..."           # 智谱 AI API Key，也可用 .env 的 GLM_API_KEY
 #   model: glm-asr-2512
-#   hotwords: ["Voice Keyboard", "备忘录", "撤回"]
+#   hotwords: ["Voice Keyboard", "可复用文本", "备忘录", "撤回"]
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 微润色专用 STT（可选）
@@ -163,9 +163,9 @@ llm:
 # Instruction Mode
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 instruction_mode:
-  # true 时，润色/翻译/删除只能作用于 Explicit Selection。
-  # 这样不会因为鼠标、回车或焦点变化误改上一句。
-  require_selection_for_edit: true
+  # false 时，没有 Explicit Selection 也会尝试使用当前输入环境的可安全文本窗口。
+  # 如果当前窗口不可获取，再退回到安全的 Tracked Segment。
+  require_selection_for_edit: false
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 打字与自定义快捷键

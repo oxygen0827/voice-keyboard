@@ -69,6 +69,67 @@ class TyperShortcutTests(unittest.TestCase):
         ):
             self.assertIn("发送", typer.list_shortcuts())
 
+    def test_shortcut_catalog_prefers_application_entries_and_keeps_metadata(self):
+        app = typer.ActiveApplication("Codex", "com.openai.codex", 42)
+        with (
+            patch.dict(typer._APP_SHORTCUTS, {
+                "com.openai.codex": {"保存": [Key.cmd, Key.shift, typer.KeyCode.from_char("s")]},
+            }, clear=True),
+            patch.object(typer, "current_application", return_value=app),
+        ):
+            catalog = typer.shortcut_catalog()
+
+        save = next(entry for entry in catalog if entry.name == "保存")
+        self.assertEqual(save.source, "application")
+        self.assertEqual(save.application, "Codex (com.openai.codex)")
+        self.assertEqual(save.risk, "normal")
+        self.assertEqual([entry.name for entry in catalog].count("保存"), 1)
+
+    def test_shortcut_catalog_marks_high_risk_named_actions(self):
+        app = typer.ActiveApplication("Codex", "com.openai.codex", 42)
+        with (
+            patch.dict(typer._APP_SHORTCUTS, {
+                "com.openai.codex": {"发送": [Key.cmd, Key.enter]},
+            }, clear=True),
+            patch.object(typer, "current_application", return_value=app),
+        ):
+            catalog = typer.shortcut_catalog()
+
+        send = next(entry for entry in catalog if entry.name == "发送")
+        self.assertEqual(send.source, "application")
+        self.assertEqual(send.risk, "high")
+
+    def test_shortcut_policy_blocks_missing_shortcut_before_adapter_execution(self):
+        app = typer.ActiveApplication("Codex", "com.openai.codex", 42)
+        with (
+            patch.dict(typer._APP_SHORTCUTS, {}, clear=True),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "_press_keys") as press_keys,
+        ):
+            decision = typer.shortcut_policy_for_invocation("provider invented")
+            result = typer.send_shortcut("provider invented")
+
+        self.assertEqual(
+            decision,
+            typer.ShortcutPolicyDecision.missing("provider invented"),
+        )
+        self.assertFalse(result)
+        press_keys.assert_not_called()
+
+    def test_shortcut_policy_blocks_high_risk_shortcut_in_atomic_stack(self):
+        app = typer.ActiveApplication("Codex", "com.openai.codex", 42)
+        with (
+            patch.dict(typer._APP_SHORTCUTS, {
+                "com.openai.codex": {"发送": [Key.cmd, Key.enter]},
+            }, clear=True),
+            patch.object(typer, "current_application", return_value=app),
+        ):
+            decision = typer.shortcut_policy_for_invocation("发送", in_atomic_stack=True)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "high_risk_requires_confirmation")
+        self.assertEqual(decision.risk, "high")
+
     def test_open_settings_is_global_system_action(self):
         with patch.object(typer, "_run_system_action", return_value=True) as run:
             self.assertTrue(typer.send_shortcut("打开系统设置"))
@@ -349,6 +410,31 @@ class TyperShortcutTests(unittest.TestCase):
 
         self.assertFalse(result)
         ax.AXUIElementSetAttributeValue.assert_not_called()
+
+    def test_replace_text_window_applies_when_original_contains_caret(self):
+        focused = object()
+        state = {"value": "First sentence. Second sentence here.", "range": (23, 0)}
+
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "_focused_accessibility_element", return_value=focused),
+            patch.object(typer, "_get_accessibility_selected_range", return_value=state["range"]),
+            patch.object(typer, "_set_accessibility_selected_range") as set_range,
+            patch.object(typer, "ApplicationServices") as ax,
+        ):
+            ax.AXUIElementCopyAttributeValue.return_value = (0, state["value"])
+
+            def set_attr(element, attr, value):
+                state[attr] = value
+                return 0
+
+            ax.AXUIElementSetAttributeValue.side_effect = set_attr
+
+            result = typer.replace_text_window("Second sentence here.", "Changed sentence.")
+
+        self.assertTrue(result)
+        self.assertEqual(state["AXValue"], "First sentence. Changed sentence.")
+        set_range.assert_called_once_with(focused, 33, 0)
 
     def test_replace_text_window_applies_when_original_starts_at_caret(self):
         focused = object()

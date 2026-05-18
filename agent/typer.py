@@ -72,6 +72,34 @@ class ActiveApplication:
         return self.name or self.bundle_id or "未知活动应用"
 
 
+@dataclass(frozen=True)
+class ShortcutCatalogEntry:
+    name: str
+    source: str
+    risk: str = "normal"
+    application: str = ""
+
+
+@dataclass(frozen=True)
+class ShortcutPolicyDecision:
+    name: str
+    found: bool
+    allowed: bool
+    risk: str = "normal"
+    source: str = ""
+    application: str = ""
+    reason: str = ""
+
+    @classmethod
+    def missing(cls, name: str) -> "ShortcutPolicyDecision":
+        return cls(
+            name=name,
+            found=False,
+            allowed=False,
+            reason="not_in_shortcut_catalog",
+        )
+
+
 def init(cfg: dict) -> None:
     """由 main.py 在启动时调用，根据 config.yaml 的 typing.method 配置打字方式。"""
     global _use_clipboard_mode
@@ -113,6 +141,12 @@ _SYSTEM_ACTIONS = {
     "打开设置": "open_system_settings",
 }
 _APP_SHORTCUTS: dict[str, dict[str, list]] = {}
+_HIGH_RISK_SHORTCUT_NAMES = {
+    "发送",
+    "提交",
+    "删除",
+    "关闭标签",
+}
 
 # Windows / Linux 下替换修饰键（两者快捷键基本相同）
 if _OS in ("Windows", "Linux"):
@@ -712,13 +746,19 @@ def _find_original_location(
     if not original:
         return -1
     caret = max(0, min(caret, len(current)))
+    if not allow_fallback:
+        location = current.find(original)
+        while location >= 0:
+            end = location + len(original)
+            if location <= caret <= end:
+                return location
+            location = current.find(original, location + 1)
+        return -1
     start = caret - len(original)
     if start >= 0 and current[start:caret] == original:
         return start
     if current[caret:caret + len(original)] == original:
         return caret
-    if not allow_fallback:
-        return -1
     return current.rfind(original)
 
 
@@ -916,6 +956,8 @@ def _set_clipboard_win(text: str) -> None:
 
 def send_shortcut(name: str) -> bool:
     """按名称触发快捷键，返回是否找到该指令"""
+    if not shortcut_policy_for_invocation(name).allowed:
+        return False
     app = current_application()
     keys = _app_shortcut(app, name)
     if keys:
@@ -958,17 +1000,65 @@ def register_shortcut(name: str, keys: list) -> None:
 
 
 def list_shortcuts() -> list[str]:
+    return [entry.name for entry in shortcut_catalog()]
+
+
+def shortcut_catalog() -> list[ShortcutCatalogEntry]:
     names: list[str] = []
+    entries: list[ShortcutCatalogEntry] = []
+
+    def add(name: str, source: str, application: str = "") -> None:
+        if name in names:
+            return
+        names.append(name)
+        entries.append(ShortcutCatalogEntry(
+            name=name,
+            source=source,
+            risk=_shortcut_risk(name),
+            application=application,
+        ))
+
     app = current_application()
-    for source in (
-        _app_shortcuts_for(app),
-        _SHORTCUTS,
-        _SYSTEM_ACTIONS,
-    ):
-        for name in source:
-            if name not in names:
-                names.append(name)
-    return names
+    for name in _app_shortcuts_for(app):
+        add(name, "application", app.label)
+    for name in _SHORTCUTS:
+        add(name, "global")
+    for name in _SYSTEM_ACTIONS:
+        add(name, "system")
+    return entries
+
+
+def shortcut_policy_for_invocation(
+    name: str,
+    *,
+    in_atomic_stack: bool = False,
+) -> ShortcutPolicyDecision:
+    for entry in shortcut_catalog():
+        if entry.name != name:
+            continue
+        if in_atomic_stack and entry.risk == "high":
+            return ShortcutPolicyDecision(
+                name=name,
+                found=True,
+                allowed=False,
+                risk=entry.risk,
+                source=entry.source,
+                application=entry.application,
+                reason="high_risk_requires_confirmation",
+            )
+        return ShortcutPolicyDecision(
+            name=name,
+            found=True,
+            allowed=True,
+            risk=entry.risk,
+            source=entry.source,
+            application=entry.application,
+        )
+    return ShortcutPolicyDecision.missing(name)
+
+
+def _shortcut_risk(name: str) -> str:
+    return "high" if name in _HIGH_RISK_SHORTCUT_NAMES else "normal"
 
 
 def _app_shortcut(app: ActiveApplication, name: str) -> list | None:

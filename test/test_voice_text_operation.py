@@ -19,6 +19,32 @@ class VoiceTextOperationTests(unittest.TestCase):
 
         self.assertEqual(operation, VoiceTextOperation(kind="memo_save"))
 
+    def test_keeps_legacy_memo_operation_kinds_for_compatibility(self):
+        self.assertEqual(
+            operation_from_intent({
+                "type": "memo_save",
+                "key": "邮箱",
+                "value": "me@example.com",
+            }),
+            VoiceTextOperation(
+                kind="memo_save",
+                key="邮箱",
+                value="me@example.com",
+            ),
+        )
+        self.assertEqual(
+            operation_from_intent({"type": "memo_recall", "key": "邮箱"}),
+            VoiceTextOperation(kind="memo_recall", key="邮箱"),
+        )
+        self.assertEqual(
+            operation_from_intent({"type": "memo_delete", "key": "邮箱"}),
+            VoiceTextOperation(kind="memo_delete", key="邮箱"),
+        )
+        self.assertEqual(
+            operation_from_intent({"type": "memo_list"}),
+            VoiceTextOperation(kind="memo_list"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,6 +75,27 @@ class RuntimeCompositionTests(unittest.TestCase):
         keyboard.start.assert_called_once_with()
         mouse.start.assert_called_once_with()
 
+    def test_current_window_instruction_mode_is_default(self):
+        with (
+            patch("agent.runtime_composition.load_config", return_value={
+                "stt": {"provider": "openai", "api_key": "sk"},
+            }),
+            patch("agent.typer.init"),
+            patch("agent.runtime_composition.SpeechInterpretationProviderFactory") as factory_cls,
+            patch("agent.keyboard_monitor.KeyboardMonitor") as keyboard_cls,
+            patch("agent.mouse_monitor.MouseMonitor") as mouse_cls,
+        ):
+            factory_cls.return_value.create_provider_set.return_value = None
+            keyboard = keyboard_cls.return_value
+            mouse = mouse_cls.return_value
+
+            backend = build_runtime_backend(RuntimeOptions(no_serial=True), MagicMock(), None, MagicMock())
+
+        self.assertIs(backend.kbd_monitor, keyboard)
+        self.assertIs(backend.mouse_monitor, mouse)
+        keyboard.start.assert_called_once_with()
+        mouse.start.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

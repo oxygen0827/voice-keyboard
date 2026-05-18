@@ -5,6 +5,7 @@ from agent.input_environment import (
     OperationWindowLookupResult,
     ReplacementPlan,
     ReversalResult,
+    ShortcutPolicyDecision,
     TextInsertionResult,
     TyperInputEnvironment,
 )
@@ -16,6 +17,50 @@ from agent.voice_text_operation import VoiceTextOperation
 
 
 class InstructionModeExecutorTests(unittest.TestCase):
+    def test_shortcut_invocation_requires_local_catalog_policy(self):
+        env = MagicMock()
+        env.shortcut_policy_for_invocation.return_value = ShortcutPolicyDecision.missing(
+            "provider invented"
+        )
+        messages = []
+        executor = InstructionModeExecutor(
+            MagicMock(),
+            env,
+            OperationHistory(),
+            show=messages.append,
+        )
+
+        executor.execute(VoiceTextOperation("shortcut", name="provider invented"), "", "")
+
+        env.shortcut_policy_for_invocation.assert_called_once_with("provider invented")
+        env.send_shortcut.assert_not_called()
+        self.assertEqual(messages, ["没有找到快捷键：provider invented"])
+
+    def test_single_high_risk_shortcut_invocation_is_marked_but_not_blocked(self):
+        env = MagicMock()
+        env.shortcut_policy_for_invocation.return_value = ShortcutPolicyDecision(
+            name="发送",
+            found=True,
+            allowed=True,
+            risk="high",
+            source="application",
+            application="Codex (com.openai.codex)",
+        )
+        env.send_shortcut.return_value = True
+        messages = []
+        executor = InstructionModeExecutor(
+            MagicMock(),
+            env,
+            OperationHistory(),
+            show=messages.append,
+        )
+
+        executor.execute(VoiceTextOperation("shortcut", name="发送"), "", "")
+
+        env.shortcut_policy_for_invocation.assert_called_once_with("发送")
+        env.send_shortcut.assert_called_once_with("发送")
+        self.assertEqual(messages, [])
+
     def test_selected_edit_records_effect_and_syncs_buffer_suffix(self):
         buf = TextBuffer()
         buf.push("hello world")

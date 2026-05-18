@@ -12,6 +12,8 @@ from agent.input_environment import (
 from agent.operation_history import OperationEffect
 from agent.text_buffer import TextBuffer
 from agent.text_io import CaretTextWindow
+from agent.text_io import ShortcutCatalogEntry
+from agent.text_io import ShortcutPolicyDecision
 
 
 class FakeTextIO:
@@ -66,6 +68,40 @@ class FakeTextIO:
         self.calls.append(("list_shortcuts",))
         return self.shortcuts_value
 
+    def shortcut_catalog(self) -> list[ShortcutCatalogEntry]:
+        self.calls.append(("shortcut_catalog",))
+        return [ShortcutCatalogEntry(name=name, source="global") for name in self.shortcuts_value]
+
+    def shortcut_policy_for_invocation(
+        self,
+        name: str,
+        *,
+        in_atomic_stack: bool = False,
+    ) -> ShortcutPolicyDecision:
+        self.calls.append(("shortcut_policy_for_invocation", name, in_atomic_stack))
+        for entry in self.shortcut_catalog():
+            if entry.name != name:
+                continue
+            if in_atomic_stack and entry.risk == "high":
+                return ShortcutPolicyDecision(
+                    name=name,
+                    found=True,
+                    allowed=False,
+                    risk=entry.risk,
+                    source=entry.source,
+                    application=entry.application,
+                    reason="high_risk_requires_confirmation",
+                )
+            return ShortcutPolicyDecision(
+                name=name,
+                found=True,
+                allowed=True,
+                risk=entry.risk,
+                source=entry.source,
+                application=entry.application,
+            )
+        return ShortcutPolicyDecision.missing(name)
+
     def send_shortcut(self, name: str) -> bool:
         self.calls.append(("send_shortcut", name))
         return name in self.shortcuts_value
@@ -95,6 +131,47 @@ class InputEnvironmentTests(unittest.TestCase):
         self.assertEqual(env.shortcuts(), ("保存",))
         self.assertTrue(env.send_shortcut("保存"))
         self.assertEqual(env.active_application(), "Codex (com.openai.codex)")
+
+    def test_shortcut_policy_blocks_shortcuts_missing_from_local_catalog(self):
+        text_io = FakeTextIO()
+        text_io.shortcuts_value = ["保存"]
+        env = TyperInputEnvironment(TextBuffer(), text_io=text_io)
+
+        decision = env.shortcut_policy_for_invocation("provider invented")
+        executed = env.send_shortcut("provider invented")
+
+        self.assertEqual(
+            decision,
+            ShortcutPolicyDecision.missing("provider invented"),
+        )
+        self.assertFalse(executed)
+        self.assertEqual(text_io.calls[0], (
+            "shortcut_policy_for_invocation",
+            "provider invented",
+            False,
+        ))
+        self.assertNotIn(("send_shortcut", "provider invented"), text_io.calls)
+
+    def test_shortcut_policy_blocks_high_risk_shortcut_inside_stack(self):
+        class HighRiskTextIO(FakeTextIO):
+            def shortcut_catalog(self) -> list[ShortcutCatalogEntry]:
+                self.calls.append(("shortcut_catalog",))
+                return [
+                    ShortcutCatalogEntry(
+                        name="发送",
+                        source="application",
+                        risk="high",
+                        application="Codex (com.openai.codex)",
+                    )
+                ]
+
+        env = TyperInputEnvironment(TextBuffer(), text_io=HighRiskTextIO())
+
+        decision = env.shortcut_policy_for_invocation("发送", in_atomic_stack=True)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "high_risk_requires_confirmation")
+        self.assertEqual(decision.risk, "high")
 
     def test_insert_after_selection_moves_to_end_once(self):
         buf = TextBuffer()
@@ -272,16 +349,17 @@ class InputEnvironmentTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure, "no_tracked_segment")
 
-    def test_target_for_revision_requires_explicit_selection_by_default(self):
+    def test_target_for_revision_uses_current_window_without_explicit_selection(self):
         buf = TextBuffer()
         buf.push("hello")
-        env = TyperInputEnvironment(buf)
+        text_io = FakeTextIO()
+        text_io.caret_window = CaretTextWindow("current sentence.", "caret_sentence")
+        env = TyperInputEnvironment(buf, text_io=text_io)
 
-        with patch("agent.typer.get_selection", return_value=""):
-            result = env.target_for_revision()
+        result = env.target_for_revision()
 
-        self.assertFalse(result.ok)
-        self.assertEqual(result.failure, "no_tracked_segment")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.original_text, "current sentence.")
 
     def test_target_for_revision_can_allow_tracked_segment_when_configured(self):
         buf = TextBuffer()
@@ -331,6 +409,49 @@ class InputEnvironmentTests(unittest.TestCase):
         self.assertIsNotNone(result.window)
         self.assertEqual(result.window.text, "selected")
         self.assertEqual(result.window.source, "explicit_selection")
+
+    def test_operation_window_falls_back_from_caret_window_to_safe_tracked_segment(self):
+        buf = TextBuffer()
+        buf.push("safe tracked")
+        text_io = FakeTextIO()
+        text_io.caret_window = None
+        env = TyperInputEnvironment(
+            buf,
+            require_selection_for_instruction=False,
+            text_io=text_io,
+        )
+
+        result = env.operation_window_for_instruction()
+
+        self.assertTrue(result.ok)
+        self.assertIsNotNone(result.window)
+        self.assertEqual(result.window.text, "safe tracked")
+        self.assertEqual(result.window.source, "tracked_segment")
+        self.assertEqual(
+            text_io.calls,
+            [("get_selection",), ("get_caret_text_window",)],
+        )
+
+    def test_operation_window_prompts_when_no_selection_window_or_safe_tracked_segment(self):
+        buf = TextBuffer()
+        buf.push("unsafe tracked")
+        buf.cursor_uncertain = True
+        text_io = FakeTextIO()
+        text_io.caret_window = None
+        env = TyperInputEnvironment(
+            buf,
+            require_selection_for_instruction=False,
+            text_io=text_io,
+        )
+
+        result = env.operation_window_for_instruction()
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure, "unsafe_tracked_segment")
+        self.assertEqual(
+            text_io.calls,
+            [("get_selection",), ("get_caret_text_window",)],
+        )
 
     def test_replacement_plan_can_replace_subtarget_inside_selected_window(self):
         buf = TextBuffer()

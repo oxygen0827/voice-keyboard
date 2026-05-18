@@ -9,7 +9,7 @@ from typing import Literal
 
 from agent.operation_history import OperationEffect
 from agent.text_buffer import TextBuffer
-from agent.text_io import TextIO, TyperTextIO
+from agent.text_io import ShortcutPolicyDecision, TextIO, TyperTextIO
 
 
 @dataclass(frozen=True)
@@ -323,7 +323,24 @@ class TyperInputEnvironment:
     def shortcuts(self) -> tuple[str, ...]:
         return tuple(self._text_io.list_shortcuts())
 
+    def shortcut_catalog(self) -> tuple:
+        return tuple(self._text_io.shortcut_catalog())
+
+    def shortcut_policy_for_invocation(
+        self,
+        name: str,
+        *,
+        in_atomic_stack: bool = False,
+    ) -> ShortcutPolicyDecision:
+        return self._text_io.shortcut_policy_for_invocation(
+            name,
+            in_atomic_stack=in_atomic_stack,
+        )
+
     def send_shortcut(self, name: str) -> bool:
+        decision = self.shortcut_policy_for_invocation(name)
+        if not decision.allowed:
+            return False
         return self._text_io.send_shortcut(name)
 
     def active_application(self) -> str:

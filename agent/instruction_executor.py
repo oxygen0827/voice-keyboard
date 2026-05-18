@@ -37,8 +37,20 @@ class InstructionModeExecutor:
 
     def execute(self, operation: VoiceTextOperation, instruction: str, selected: str) -> bool:
         if operation.kind == "shortcut":
-            if not self._env.send_shortcut(operation.name):
+            policy = self._env.shortcut_policy_for_invocation(operation.name)
+            if not policy.found:
                 self._show(f"没有找到快捷键：{operation.name}")
+            elif policy.allowed:
+                if not self._env.send_shortcut(operation.name):
+                    self._show(f"快捷键执行失败：{operation.name}")
+                elif policy.risk == "high":
+                    print(
+                        "[ai] 高风险快捷键已执行: "
+                        f"name={policy.name!r} source={policy.source!r} "
+                        f"application={policy.application!r}"
+                    )
+            else:
+                self._show(f"快捷键需要确认：{operation.name}")
         elif operation.kind == "undo":
             self._do_undo()
         elif operation.kind == "delete":

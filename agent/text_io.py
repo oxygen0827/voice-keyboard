@@ -12,6 +12,34 @@ class CaretTextWindow:
     source: str = "caret"
 
 
+@dataclass(frozen=True)
+class ShortcutCatalogEntry:
+    name: str
+    source: str
+    risk: str = "normal"
+    application: str = ""
+
+
+@dataclass(frozen=True)
+class ShortcutPolicyDecision:
+    name: str
+    found: bool
+    allowed: bool
+    risk: str = "normal"
+    source: str = ""
+    application: str = ""
+    reason: str = ""
+
+    @classmethod
+    def missing(cls, name: str) -> "ShortcutPolicyDecision":
+        return cls(
+            name=name,
+            found=False,
+            allowed=False,
+            reason="not_in_shortcut_catalog",
+        )
+
+
 class TextIO(Protocol):
     def can_insert_text(self) -> bool:
         ...
@@ -47,6 +75,17 @@ class TextIO(Protocol):
         ...
 
     def list_shortcuts(self) -> list[str]:
+        ...
+
+    def shortcut_catalog(self) -> list[ShortcutCatalogEntry]:
+        ...
+
+    def shortcut_policy_for_invocation(
+        self,
+        name: str,
+        *,
+        in_atomic_stack: bool = False,
+    ) -> ShortcutPolicyDecision:
         ...
 
     def send_shortcut(self, name: str) -> bool:
@@ -98,6 +137,37 @@ class TyperTextIO:
 
     def list_shortcuts(self) -> list[str]:
         return typer.list_shortcuts()
+
+    def shortcut_catalog(self) -> list[ShortcutCatalogEntry]:
+        return [
+            ShortcutCatalogEntry(
+                name=entry.name,
+                source=entry.source,
+                risk=entry.risk,
+                application=entry.application,
+            )
+            for entry in typer.shortcut_catalog()
+        ]
+
+    def shortcut_policy_for_invocation(
+        self,
+        name: str,
+        *,
+        in_atomic_stack: bool = False,
+    ) -> ShortcutPolicyDecision:
+        decision = typer.shortcut_policy_for_invocation(
+            name,
+            in_atomic_stack=in_atomic_stack,
+        )
+        return ShortcutPolicyDecision(
+            name=decision.name,
+            found=decision.found,
+            allowed=decision.allowed,
+            risk=decision.risk,
+            source=decision.source,
+            application=decision.application,
+            reason=decision.reason,
+        )
 
     def send_shortcut(self, name: str) -> bool:
         return typer.send_shortcut(name)

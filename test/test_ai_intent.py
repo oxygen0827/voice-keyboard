@@ -70,7 +70,35 @@ class AIIntentTests(unittest.TestCase):
 
         _system, user = llm.chat.call_args.args
         self.assertIn("当前活动应用：Codex (com.openai.codex)", user)
-        self.assertIn("当前活动应用可用快捷键（实验性）：发送", user)
+        self.assertIn("当前活动应用可用 Shortcut Catalog：发送", user)
+
+    def test_current_runtime_asks_to_split_multi_step_instruction(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"edit"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="先删掉第一句，然后把剩下的润色",
+            recent_text="第一句。第二句。",
+        ))
+
+        self.assertEqual(result, {
+            "type": "chat",
+            "reply": "这个需要分步执行，请先说第一步",
+        })
+
+    def test_current_runtime_asks_to_split_same_kind_multi_step_instruction(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"shortcut","name":"保存"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="保存然后关闭标签",
+            shortcuts=("保存", "关闭标签"),
+        ))
+
+        self.assertEqual(result, {
+            "type": "chat",
+            "reply": "这个需要分步执行，请先说第一步",
+        })
 
 
 if __name__ == "__main__":

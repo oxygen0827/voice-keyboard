@@ -60,11 +60,11 @@ def build_runtime_backend(
     bk.input_environment = TyperInputEnvironment(
         buf,
         require_selection_for_instruction=instruction_cfg.get(
-            "require_selection_for_edit", True
+            "require_selection_for_edit", False
         ),
     )
 
-    if not instruction_cfg.get("require_selection_for_edit", True):
+    if not instruction_cfg.get("require_selection_for_edit", False):
         try:
             from agent.keyboard_monitor import KeyboardMonitor
             from agent.mouse_monitor import MouseMonitor
@@ -133,7 +133,7 @@ def build_audio_runtime(
             ai_key_name = audio_cfg.get("ai_key", "cmd_r")
             existing = memo_store.keys()
             if existing:
-                print(f"[memo] 已加载 {len(existing)} 条备忘录: {'、'.join(existing)}")
+                print(f"[memo] 已加载 {len(existing)} 条可复用文本: {'、'.join(existing)}")
             print(f"[agent] AI 键已启用，热键: {ai_key_name}")
         except Exception as e:
             print(f"[agent] AIHandler 初始化失败: {e}")
