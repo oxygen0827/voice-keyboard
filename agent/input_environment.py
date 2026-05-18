@@ -9,7 +9,7 @@ from typing import Literal
 
 from agent.operation_history import OperationEffect
 from agent.text_buffer import TextBuffer
-from agent import typer
+from agent.text_io import TextIO, TyperTextIO
 
 
 @dataclass(frozen=True)
@@ -84,16 +84,22 @@ class NoTrackedSegment(RuntimeError):
 
 
 class TyperInputEnvironment:
-    def __init__(self, buf: TextBuffer, require_selection_for_instruction: bool = True):
+    def __init__(
+        self,
+        buf: TextBuffer,
+        require_selection_for_instruction: bool = True,
+        text_io: TextIO | None = None,
+    ):
         self._buf = buf
         self._require_selection_for_instruction = require_selection_for_instruction
+        self._text_io = text_io or TyperTextIO()
 
     @property
     def buffer(self) -> TextBuffer:
         return self._buf
 
     def target_for_instruction(self) -> TextTarget:
-        selected = typer.get_selection()
+        selected = self._text_io.get_selection()
         return TextTarget(
             selected=selected,
             tracked_segment=self._buf.current_segment,
@@ -107,7 +113,7 @@ class TyperInputEnvironment:
         return self._target_for_text_change()
 
     def insert_text(self, text: str) -> None:
-        typer.type_text(text)
+        self._text_io.type_text(text)
         self._buf.push(text)
 
     def insert_dictation(self, text: str) -> None:
@@ -115,22 +121,22 @@ class TyperInputEnvironment:
 
     def insert_text_after_selection(self, text: str, selected: str = "") -> None:
         if selected:
-            typer.jump_to_end()
+            self._text_io.jump_to_end()
         self.insert_text(text)
 
     def insert_generated_text(self, text: str) -> TextInsertionResult:
         target = self.target_for_instruction()
         if target.selected:
-            typer.jump_to_end()
+            self._text_io.jump_to_end()
         self.insert_text(text)
         return TextInsertionResult(inserted_text=text)
 
     def replace_selection(self, original: str, replacement: str) -> None:
-        typer.replace_selection(replacement)
+        self._text_io.replace_selection(replacement)
         self._sync_selected_replacement(original, replacement)
 
     def delete_selection(self, original: str) -> None:
-        typer.delete_selection()
+        self._text_io.delete_selection()
         self._sync_selected_replacement(original, "")
 
     def replace_instruction_target(
@@ -175,17 +181,17 @@ class TyperInputEnvironment:
 
     def replace_tracked_segment(self, original: str, replacement: str) -> None:
         self._ensure_tracked_segment(original)
-        typer.erase_last(original)
-        typer.type_text(replacement)
+        self._text_io.erase_last(original)
+        self._text_io.type_text(replacement)
         self._buf.replace_segment(replacement)
 
     def delete_tracked_segment(self, original: str) -> None:
         self._ensure_tracked_segment(original)
-        typer.erase_last(original)
+        self._text_io.erase_last(original)
         self._buf.replace_segment("")
 
     def erase_text(self, text: str) -> None:
-        typer.erase_last(text)
+        self._text_io.erase_last(text)
 
     def trim_tracked_segment_end(self, count: int) -> None:
         self._buf.trim_end(count)
@@ -201,7 +207,7 @@ class TyperInputEnvironment:
             if effect.new_text:
                 self.erase_text(effect.new_text)
             if effect.old_text:
-                typer.type_text(effect.old_text)
+                self._text_io.type_text(effect.old_text)
             self._sync_reversed_replacement(effect.old_text, effect.new_text)
         elif effect.kind == "insert":
             if effect.new_text:
@@ -214,10 +220,10 @@ class TyperInputEnvironment:
         return ReversalResult()
 
     def shortcuts(self) -> tuple[str, ...]:
-        return tuple(typer.list_shortcuts())
+        return tuple(self._text_io.list_shortcuts())
 
     def send_shortcut(self, name: str) -> bool:
-        return typer.send_shortcut(name)
+        return self._text_io.send_shortcut(name)
 
     def _ensure_tracked_segment(self, original: str) -> None:
         if self._buf.cursor_uncertain:

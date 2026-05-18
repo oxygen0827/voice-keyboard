@@ -6,8 +6,8 @@ from agent.config import load as load_config
 from agent.history import History
 from agent.input_environment import TyperInputEnvironment
 from agent.serial_reader import SerialReader
+from agent.speech_interpretation_providers import SpeechInterpretationProviderFactory
 from agent.text_buffer import TextBuffer
-from agent.typeup_backend_auth import is_typeup_backend_configured
 
 
 @dataclass(frozen=True)
@@ -102,60 +102,22 @@ def build_audio_runtime(
     history: History | None = None,
     input_environment=None,
 ):
-    stt_cfg = cfg.get("stt", {})
     audio_cfg = cfg.get("audio", {})
-    polish_stt_cfg = cfg.get("polish_stt", {})
-    provider = stt_cfg.get("provider", "")
-    if provider == "typeup_backend" and not stt_cfg.get("access_token"):
-        print("[typeup-auth-required] 请先登录 TypeUp 后端账号，跳过音频 STT")
-        return None
-    _no_api_key_providers = {"volcengine", "aliyun", "typeup_backend"}
-    if not stt_cfg.get("api_key") and provider not in _no_api_key_providers:
-        print("[agent] 未配置 stt.api_key，跳过音频 STT")
-        print("[agent] 提示: cp config.yaml.example config.yaml 然后填入 API Key")
-        return None
-
-    try:
-        from agent.stt import STTClient
-    except ImportError as e:
-        print(f"[agent] STT 依赖缺失（{e}）")
-        return None
-
-    try:
-        stt = STTClient(stt_cfg)
-    except Exception as e:
-        print(f"[agent] STT 初始化失败: {e}")
-        return None
-
-    editor = None
-    llm_cfg = cfg.get("llm", {})
-    if is_typeup_backend_configured(llm_cfg):
-        try:
-            from agent.llm_editor import LLMEditor
-            editor = LLMEditor(llm_cfg)
-            print("[agent] LLM 编辑功能已启用")
-        except Exception as e:
-            import traceback
-            print(f"[agent] LLM 初始化失败: {e}")
-            traceback.print_exc()
-
     mode = audio_cfg.get("mode", "ptt")
     device = audio_cfg.get("device", "auto")
+    providers = SpeechInterpretationProviderFactory().create_provider_set(cfg)
+    if providers is None:
+        return None
 
     ai_handler = None
-    if editor:
+    if providers.text_operation_editor is not None and providers.instruction_stt is not None:
         try:
             from agent.ai_handler import AIHandler
             from agent.memo_store import MemoStore
-            ai_stt = stt
-            ai_stt_cfg = cfg.get("ai_stt", {})
-            if ai_stt_cfg:
-                ai_stt = STTClient(ai_stt_cfg)
-                print(f"[agent] AI 键 STT 使用独立 provider: {ai_stt_cfg.get('provider', 'openai')}")
             memo_store = MemoStore()
             ai_handler = AIHandler(
-                ai_stt,
-                editor,
+                providers.instruction_stt,
+                providers.text_operation_editor,
                 buf,
                 memo_store=memo_store,
                 status_window=status_window,
@@ -171,31 +133,11 @@ def build_audio_runtime(
             print(f"[agent] AIHandler 初始化失败: {e}")
 
     from agent.main import make_utterance_handler
-    utterance_stt = stt
-    if polish_stt_cfg:
-        try:
-            base_stt = stt
-            polish_stt = STTClient(polish_stt_cfg)
-            print(
-                f"[agent] 微润色 STT 使用独立 provider: "
-                f"{polish_stt_cfg.get('provider', 'openai')}"
-            )
-
-            class _PolishAwareSTT:
-                def transcribe(self, pcm: bytes) -> str:
-                    return base_stt.transcribe(pcm)
-
-                def transcribe_polished(self, pcm: bytes) -> str:
-                    return polish_stt.transcribe(pcm)
-
-            utterance_stt = _PolishAwareSTT()
-        except Exception as e:
-            print(f"[agent] 微润色 STT 初始化失败，回退主 STT: {e}")
     on_utterance = make_utterance_handler(
-        utterance_stt,
+        providers.utterance_stt,
         buf,
         kbd_mon=kbd_monitor,
-        editor=editor,
+        editor=providers.text_operation_editor,
         status_window=status_window,
         history=history,
         input_environment=input_environment,

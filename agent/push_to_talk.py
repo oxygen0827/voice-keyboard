@@ -19,6 +19,7 @@ from pynput import keyboard as kb
 
 from agent.audio_monitor import find_device, FRAME_BYTES, SILENCE_FRAMES, MIN_SPEECH_FRAMES
 from agent.capture_path import UtteranceEvent
+from agent.capture_path_runtime import CapturePathRuntime, PolishToggle
 import agent.typer as _typer
 
 SAMPLE_RATE = 16000
@@ -70,17 +71,13 @@ class PushToTalk:
         self._device_hint       = device
         self._status            = status_window
         self._device_idx        = None
-        self._active_key        = None   # 当前正在录音用哪个键
-        self._active_trigger    = None   # 触发本次录音的具体按键，用于 release 配对
+        self._capture_runtime   = CapturePathRuntime()
         self._buf: list[bytes]  = []
         self._stream: Optional[sd.RawInputStream] = None
         self._listener: Optional[kb.Listener]     = None
-        self._enabled           = True
 
         # 双击 PTT 切换微润色模式
-        self._polish_mode             = False
-        self._last_ptt_press_time     = 0.0
-        self._double_tap_window       = 0.4   # 秒
+        self._double_tap_window       = self._capture_runtime.double_tap_window
 
         # 实时分句 VAD 状态（仅 dictate 模式使用）
         self._vad                            = None
@@ -142,53 +139,46 @@ class PushToTalk:
         if self._toggle_keys and key in self._toggle_keys:
             self._toggle_enabled()
             return
-        if self._active_key is not None:
-            return  # 已有键按下，忽略另一个
-        if not self._enabled:
-            return
         if key in self._ptt_keys:
             now = time.monotonic()
-            if (now - self._last_ptt_press_time) < self._double_tap_window:
-                # 双击：切换微润色模式，不开新录音
-                self._polish_mode = not self._polish_mode
-                mode_name = "微润色" if self._polish_mode else "原文"
+            start = self._capture_runtime.press_dictation(key, now)
+            if isinstance(start, PolishToggle):
+                mode_name = "微润色" if start.polish else "原文"
                 print(f"[ptt] 切换为「{mode_name}」模式")
-                self._last_ptt_press_time = 0.0
                 return
-            self._last_ptt_press_time = now
-            self._active_key     = "dictate"
-            self._active_trigger = key
+            if start is None:
+                return
             self._start_recording()
         elif self._edit_keys and key in self._edit_keys:
-            self._active_key     = "edit"
-            self._active_trigger = key
+            start = self._capture_runtime.press_instruction_edit(key)
+            if start is None:
+                return
             self._start_recording()
         elif self._ai_keys and key in self._ai_keys:
+            start = self._capture_runtime.press_instruction(key)
+            if start is None:
+                return
             if self._on_ai_key_down:
                 self._on_ai_key_down()
-            self._active_key     = "ai"
-            self._active_trigger = key
             self._start_recording()
 
     def _on_release(self, key):
         if _typer.is_simulating():
             return
-        if key != self._active_trigger:
-            return
-        if self._active_key == "dictate":
+        mode = self._capture_runtime.release(key)
+        if mode == "dictate":
             self._stop_recording(mode="dictate")
-        elif self._active_key == "edit":
+        elif mode == "edit":
             self._stop_recording(mode="edit")
-        elif self._active_key == "ai":
+        elif mode == "ai":
             self._stop_recording(mode="ai")
-        self._active_trigger = None
 
     # ── 录音控制 ─────────────────────────────────────────────────
 
     def _audio_callback(self, indata, frames, time_info, status):
         data = bytes(indata)
         self._buf.append(data)
-        if self._active_key == "dictate" and self._vad is not None:
+        if self._capture_runtime.active_mode == "dictate" and self._vad is not None:
             self._vad_raw.extend(data)
             self._process_vad()
 
@@ -218,7 +208,7 @@ class PushToTalk:
             n = self._vad_sent_count
             print(f"[ptt] 分句{n} 识别中...    ", end="\r", flush=True)
             self._dispatch_utterance(
-                UtteranceEvent.dictation(pcm, self._polish_mode),
+                UtteranceEvent.dictation(pcm, self._capture_runtime.polish_mode),
                 name=f"PTT-mid-{n}",
             )
         self._vad_speech_frames = []
@@ -241,14 +231,14 @@ class PushToTalk:
             callback=self._audio_callback,
         )
         self._stream.start()
-        if self._active_key == "dictate":
-            if self._polish_mode:
+        if self._capture_runtime.active_mode == "dictate":
+            if self._capture_runtime.polish_mode:
                 label = "微润色 录音中"
                 self._set_status("polish_recording")
             else:
                 label = "录音中"
                 self._set_status("recording")
-        elif self._active_key == "ai":
+        elif self._capture_runtime.active_mode == "ai":
             label = "AI 指令录音中"
             self._set_status("ai_recording")
         else:
@@ -257,7 +247,6 @@ class PushToTalk:
         print(f"[ptt] {label}... ", end="\r", flush=True)
 
     def _stop_recording(self, mode: str):
-        self._active_key = None
         self._close_stream()
 
         if mode == "dictate" and self._vad is not None:
@@ -271,7 +260,7 @@ class PushToTalk:
                 print(f"[ptt] 分句{n} 识别中...    ", end="\r", flush=True)
                 self._set_status("recognizing")
                 self._dispatch_utterance(
-                    UtteranceEvent.dictation(pcm, self._polish_mode),
+                    UtteranceEvent.dictation(pcm, self._capture_runtime.polish_mode),
                     name=f"PTT-mid-{n}",
                 )
             elif self._vad_sent_count == 0:
@@ -284,7 +273,7 @@ class PushToTalk:
                     print("[ptt] 识别中...    ", end="\r", flush=True)
                     self._set_status("recognizing")
                     self._dispatch_utterance(
-                        UtteranceEvent.dictation(pcm, self._polish_mode),
+                        UtteranceEvent.dictation(pcm, self._capture_runtime.polish_mode),
                         name="PTT-dictate",
                     )
             else:
@@ -303,7 +292,7 @@ class PushToTalk:
 
         if mode == "dictate":
             label    = "识别中"
-            event    = UtteranceEvent.dictation(pcm, self._polish_mode)
+            event    = UtteranceEvent.dictation(pcm, self._capture_runtime.polish_mode)
             self._set_status("recognizing")
         elif mode == "edit":
             label    = "解析编辑指令"
@@ -345,10 +334,8 @@ class PushToTalk:
             self._stream = None
 
     def _toggle_enabled(self) -> None:
-        self._enabled = not self._enabled
-        if not self._enabled:
-            self._active_key = None
-            self._active_trigger = None
+        enabled = self._capture_runtime.toggle_enabled()
+        if not enabled:
             self._buf = []
             self._close_stream()
             self._set_status("dictation_disabled")

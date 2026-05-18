@@ -21,6 +21,7 @@ Current file:
 
 ```text
 agent/input_environment.py
+agent/text_io.py
 ```
 
 Suggested interface shape:
@@ -56,7 +57,7 @@ TyperInputEnvironment
 It owns:
 
 - `TextBuffer`
-- calls into `agent.typer`
+- a platform text IO adapter that calls into `agent.typer`
 - synchronizing selected replacements back into the Tracked Segment
 - deciding whether a Tracked Segment is safe
 - moving to the end before insertion when an Explicit Selection exists
@@ -74,7 +75,8 @@ It owns:
 7. Done: move Operation Reversal text side effects into the Input Environment adapter.
 8. Done: add generated-text insertion so Text Generation and Memory Operation insertion no longer pass Explicit Selection state through Instruction Mode.
 9. Done: route Dictation Mode insertion through the same adapter.
-10. Next: remove the compatibility `buf` constructor path from runtime helpers once downstream callers have migrated.
+10. Done: put platform text IO calls behind `agent/text_io.py` so Input Environment tests can use the seam without patching `agent.typer`.
+11. Next: remove the compatibility `buf` constructor path from runtime helpers once downstream callers have migrated.
 
 ## Test Surface
 

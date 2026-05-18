@@ -8,6 +8,8 @@ import json
 from dataclasses import dataclass
 from typing import Protocol
 
+from agent.reusable_text_memory import fuzzy_match_memory_key
+
 
 class ChatLLM(Protocol):
     def chat(self, system: str, user: str) -> str:
@@ -81,7 +83,7 @@ def apply_intent_fallbacks(result: dict, ctx: IntentContext) -> dict:
     if ctx.selected and intent in {"chat", "write"} and looks_like_edit_instruction(ctx.text):
         return {"type": "edit"}
     if intent == "chat":
-        fuzzy_key = fuzzy_match_memo(ctx.text, ctx.memo_keys)
+        fuzzy_key = fuzzy_match_memory_key(ctx.text, ctx.memo_keys)
         if fuzzy_key:
             return {"type": "memo_recall", "key": fuzzy_key}
     return result
@@ -89,24 +91,6 @@ def apply_intent_fallbacks(result: dict, ctx: IntentContext) -> dict:
 
 def looks_like_edit_instruction(text: str) -> bool:
     return any(hint in text for hint in _EDIT_HINTS)
-
-
-def fuzzy_match_memo(text: str, memo_keys: tuple[str, ...]) -> str | None:
-    text_chars = set(text)
-    best_key = None
-    best_score = 0.0
-    for key in memo_keys:
-        key_chars = set(key)
-        if len(key_chars) < 2:
-            continue
-        overlap = len(key_chars & text_chars)
-        if overlap < 2:
-            continue
-        score = overlap / len(key_chars)
-        if score > best_score:
-            best_score = score
-            best_key = key
-    return best_key if best_score >= 0.7 else None
 
 
 def memo_keys(memos: MemoKeys | None) -> tuple[str, ...]:

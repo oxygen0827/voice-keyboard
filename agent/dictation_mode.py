@@ -1,0 +1,173 @@
+"""Dictation Mode pipeline for the Voice Keyboard Engine."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Protocol
+
+from agent.input_environment import TyperInputEnvironment
+from agent.text_buffer import TextBuffer
+
+
+class SpeechTranscriber(Protocol):
+    def transcribe(self, pcm: bytes) -> str:
+        ...
+
+
+class PolishTranscriber(SpeechTranscriber, Protocol):
+    def transcribe_polished(self, pcm: bytes) -> str:
+        ...
+
+
+class TextPolisher(Protocol):
+    def chat(self, system_prompt: str, user_message: str) -> str:
+        ...
+
+
+_POLISH_SYSTEM = """你是文字润色助手。对用户说的话做最轻度的润色：
+- 去掉口语填充词（嗯、啊、呃、那个、就是说、然后呢之类）
+- 修正明显的错别字和不通顺的地方
+- 加上合适的标点
+
+严格遵守：保留原意和说话风格，不要扩写、不要总结、不要改写措辞。
+直接输出润色后的文字，不要任何解释、前缀或引号。"""
+
+
+_POLISH_LABEL_RE = re.compile(r"^(?:润色后|润色结果|修改后|修改结果|优化后|优化结果|结果|输出)\s*[:：]\s*")
+_LEADING_INVISIBLE_RE = re.compile(r"^[\s\ufeff\u200b\u200c\u200d]+")
+_LEADING_HASH_MARK_RE = re.compile(r"^[#＃]{1,6}[\s:：、，。,.!?！？;；-]*")
+
+
+def clean_generated_text(text: str) -> str:
+    cleaned = str(text or "").strip().strip("\"'“”")
+    for _ in range(4):
+        before = cleaned
+        cleaned = _LEADING_INVISIBLE_RE.sub("", cleaned)
+        cleaned = _LEADING_HASH_MARK_RE.sub("", cleaned).strip()
+        if cleaned == before:
+            break
+    return cleaned.strip().strip("\"'“”")
+
+
+def clean_polished_text(text: str) -> str:
+    cleaned = clean_generated_text(text)
+    cleaned = re.sub(r"^```(?:\w+)?\s*", "", cleaned).strip()
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    for _ in range(3):
+        before = cleaned
+        cleaned = _POLISH_LABEL_RE.sub("", cleaned).strip()
+        cleaned = clean_generated_text(cleaned)
+        cleaned = re.sub(r"^[-*•]\s+", "", cleaned).strip()
+        if cleaned == before:
+            break
+    return clean_generated_text(cleaned)
+
+
+@dataclass
+class DictationMode:
+    """Owns Dictation Mode interpretation, insertion, status, and history."""
+
+    transcriber: SpeechTranscriber
+    input_environment: object
+    kbd_monitor: object | None = None
+    text_polisher: TextPolisher | None = None
+    status_window: object | None = None
+    history: object | None = None
+
+    def handle_utterance(
+        self,
+        pcm: bytes,
+        polish: bool = False,
+        clear_status: bool = True,
+        progress_status: bool = True,
+    ) -> None:
+        mode = "polish" if polish else "dictate"
+        try:
+            text = self._transcribe(pcm, polish)
+        except Exception as e:
+            print(f"[stt] 请求失败: {e}")
+            self._append_history(mode, "", "error", f"STT: {e}")
+            if progress_status:
+                self._set_status("error_stt")
+            return
+
+        text = clean_generated_text(text)
+        if not text:
+            print("[stt] 识别结果为空")
+            self._append_history(mode, "", "empty")
+            if progress_status:
+                self._set_status("empty_stt")
+            return
+
+        print(f"[stt] {text!r}")
+        if polish and self.text_polisher is not None:
+            if progress_status:
+                self._set_status("polishing")
+            text = self._polish_text(text)
+
+        try:
+            self.input_environment.insert_dictation(text)
+        except Exception as e:
+            print(f"[stt] 打字失败: {e}")
+            if progress_status:
+                self._set_status("error_typing")
+            self._append_history(mode, text, "error", f"typing: {e}")
+            return
+
+        self._append_history(mode, text, "ok")
+        if self.kbd_monitor is not None:
+            self.kbd_monitor.notify_voice_output()
+        if clear_status:
+            self._set_status("idle")
+            print("[typeup] 输入完成")
+
+    def _transcribe(self, pcm: bytes, polish: bool) -> str:
+        if polish and hasattr(self.transcriber, "transcribe_polished"):
+            return self.transcriber.transcribe_polished(pcm)  # type: ignore[attr-defined]
+        return self.transcriber.transcribe(pcm)
+
+    def _polish_text(self, text: str) -> str:
+        try:
+            polished = clean_polished_text(self.text_polisher.chat(_POLISH_SYSTEM, text))  # type: ignore[union-attr]
+            if polished:
+                print(f"[stt] 微润色 → {polished!r}")
+                return polished
+        except Exception as e:
+            print(f"[stt] 润色失败，回退原文: {e}")
+        return text
+
+    def _set_status(self, state: str) -> None:
+        if self.status_window is not None:
+            self.status_window.set_state(state)
+
+    def _append_history(
+        self,
+        mode: str,
+        text: str,
+        status: str = "ok",
+        detail: str = "",
+    ) -> None:
+        if self.history is not None:
+            self.history.append(mode, text, status, detail)
+
+
+def make_utterance_handler(
+    stt_client,
+    buf: TextBuffer,
+    kbd_mon=None,
+    editor=None,
+    status_window=None,
+    history=None,
+    input_environment=None,
+):
+    env = input_environment or TyperInputEnvironment(buf)
+    mode = DictationMode(
+        stt_client,
+        env,
+        kbd_monitor=kbd_mon,
+        text_polisher=editor,
+        status_window=status_window,
+        history=history,
+    )
+    return mode.handle_utterance

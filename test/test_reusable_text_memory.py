@@ -1,6 +1,11 @@
 import unittest
 
-from agent.reusable_text_memory import MemoryOperationResult, ReusableTextMemory
+from agent.reusable_text_memory import (
+    MemoryOperationResult,
+    ReusableTextMemory,
+    ReusableTextMemoryMatcher,
+    fuzzy_match_memory_key,
+)
 
 
 class FakeMemoryStore:
@@ -68,6 +73,20 @@ class ReusableTextMemoryTests(unittest.TestCase):
 
         self.assertEqual(store.data, {})
         self.assertEqual(result, MemoryOperationResult.show("已忘掉「邮箱」"))
+
+    def test_matcher_finds_saved_key_from_spoken_memory_request(self):
+        matcher = ReusableTextMemoryMatcher()
+
+        self.assertEqual(
+            matcher.match_key("我的手机号是多少", ("手机号", "家庭地址")),
+            "手机号",
+        )
+
+    def test_fuzzy_match_memory_key_keeps_matching_rule_in_memory_module(self):
+        self.assertEqual(
+            fuzzy_match_memory_key("白光宇说什么", ("白光宇最喜欢说的话",)),
+            "白光宇最喜欢说的话",
+        )
 
 
 if __name__ == "__main__":

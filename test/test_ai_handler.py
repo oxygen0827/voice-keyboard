@@ -6,7 +6,60 @@ from agent.operation_history import OperationEffect
 from agent.text_buffer import TextBuffer
 
 
+class FakeTextIO:
+    def __init__(self, selected: str = ""):
+        self.selected = selected
+        self.calls = []
+        self.shortcuts_value = ["保存"]
+
+    def get_selection(self) -> str:
+        self.calls.append(("get_selection",))
+        return self.selected
+
+    def type_text(self, text: str) -> None:
+        self.calls.append(("type_text", text))
+
+    def jump_to_end(self) -> None:
+        self.calls.append(("jump_to_end",))
+
+    def replace_selection(self, text: str) -> None:
+        self.calls.append(("replace_selection", text))
+
+    def delete_selection(self) -> None:
+        self.calls.append(("delete_selection",))
+
+    def erase_last(self, text: str) -> None:
+        self.calls.append(("erase_last", text))
+
+    def list_shortcuts(self) -> list[str]:
+        self.calls.append(("list_shortcuts",))
+        return self.shortcuts_value
+
+    def send_shortcut(self, name: str) -> bool:
+        self.calls.append(("send_shortcut", name))
+        return name in self.shortcuts_value
+
+
 class InputEnvironmentTests(unittest.TestCase):
+    def test_input_environment_can_use_text_io_adapter_without_patching_typer(self):
+        buf = TextBuffer()
+        text_io = FakeTextIO(selected="old")
+        env = TyperInputEnvironment(buf, text_io=text_io)
+
+        env.insert_generated_text("new")
+
+        self.assertEqual(
+            text_io.calls,
+            [("get_selection",), ("jump_to_end",), ("type_text", "new")],
+        )
+        self.assertEqual(buf.current_segment, "new")
+
+    def test_shortcut_invocation_uses_text_io_adapter(self):
+        env = TyperInputEnvironment(TextBuffer(), text_io=FakeTextIO())
+
+        self.assertEqual(env.shortcuts(), ("保存",))
+        self.assertTrue(env.send_shortcut("保存"))
+
     def test_insert_after_selection_moves_to_end_once(self):
         buf = TextBuffer()
         env = TyperInputEnvironment(buf)

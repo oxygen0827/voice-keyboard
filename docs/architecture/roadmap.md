@@ -11,9 +11,11 @@ Deepen the module that owns Explicit Selection, Tracked Segment safety, insertio
 Initial implementation:
 
 - `agent/input_environment.py`
+- `agent/text_io.py`
 - `AIHandler` now uses the Input Environment seam for text-side effects.
 - Input Environment now owns Text Revision / Text Removal target lookup and Operation Reversal text effects.
 - Input Environment now owns generated-text insertion around Explicit Selection for Text Generation and Memory Operation output.
+- Platform text IO calls now sit behind a small adapter used by the Input Environment implementation.
 
 ## 2. Instruction Mode Execution
 
@@ -38,7 +40,7 @@ Initial implementation:
 - `AIHandler` now records `OperationEffect` values and Operation Reversal consumes those effects.
 - `AIHandler` now dispatches typed Voice Text Operation values instead of raw classifier dictionaries.
 - Instruction Mode execution now lives behind an executor seam, leaving `AIHandler` focused on runtime orchestration.
-- Memory Operation rules now live behind a Reusable Text Memory module; the executor only applies insert/show results to the Input Environment.
+- Memory Operation rules and Reusable Text Memory key matching now live behind a Reusable Text Memory module; the executor only applies insert/show results to the Input Environment.
 
 ## 3. Capture Path
 
@@ -55,7 +57,9 @@ Target direction:
 Initial implementation:
 
 - `agent/capture_path.py`
+- `agent/capture_path_runtime.py`
 - `PushToTalk` now dispatches typed `UtteranceEvent` values internally while keeping the existing callback adapter interface.
+- `PushToTalk` now delegates enabled/disabled state, active capture pairing, and Dictation Mode polish toggling to a Capture Path runtime state machine.
 
 ## 4. Speech Interpretation Provider Adapters
 
@@ -72,7 +76,9 @@ Target direction:
 Initial implementation:
 
 - `agent/typeup_backend_auth.py`
+- `agent/speech_interpretation_providers.py`
 - TypeUp backend Speech Interpretation Provider adapters now share credential reload, refresh, auth header, and error-message handling.
+- Runtime composition now constructs Dictation Mode, micro-polish, Instruction Mode speech recognition, and text-operation providers through one factory.
 
 ## 5. Runtime Composition
 
@@ -88,4 +94,6 @@ Target direction:
 Initial implementation:
 
 - `agent/runtime_composition.py`
+- `agent/dictation_mode.py`
 - Desktop `agent.main` and `agent.windows_tray` now use the Runtime Composition module for backend lifecycle construction.
+- Dictation Mode interpretation, cleanup, status, history, and insertion now live behind a dedicated module while `agent.main` preserves the older callback factory.

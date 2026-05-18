@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agent.capture_path import UtteranceEvent
+from agent.capture_path_runtime import CapturePathRuntime, CaptureStart, PolishToggle
 from agent.push_to_talk import PushToTalk
 
 
@@ -54,6 +55,45 @@ class CapturePathTests(unittest.TestCase):
             ptt._on_press(ptt._ptt_keys[0])
 
         start_recording.assert_called_once_with()
+
+    def test_capture_path_runtime_blocks_capture_when_disabled(self):
+        runtime = CapturePathRuntime()
+
+        self.assertFalse(runtime.toggle_enabled())
+        self.assertIsNone(runtime.press_dictation("ptt", now=10.0))
+
+        self.assertTrue(runtime.toggle_enabled())
+        self.assertEqual(
+            runtime.press_dictation("ptt", now=11.0),
+            CaptureStart(mode="dictate", polish=False),
+        )
+
+    def test_capture_path_runtime_keeps_one_active_capture(self):
+        runtime = CapturePathRuntime()
+
+        self.assertEqual(runtime.press_instruction_edit("edit"), CaptureStart(mode="edit"))
+        self.assertIsNone(runtime.press_instruction("ai"))
+        self.assertIsNone(runtime.release("other"))
+
+        self.assertEqual(runtime.release("edit"), "edit")
+        self.assertEqual(runtime.press_instruction("ai"), CaptureStart(mode="ai"))
+
+    def test_capture_path_runtime_toggles_polish_on_double_tap_without_capture(self):
+        runtime = CapturePathRuntime()
+
+        self.assertEqual(
+            runtime.press_dictation("ptt", now=10.0),
+            CaptureStart(mode="dictate", polish=False),
+        )
+        self.assertEqual(runtime.release("ptt"), "dictate")
+
+        self.assertEqual(runtime.press_dictation("ptt", now=10.2), PolishToggle(polish=True))
+        self.assertFalse(runtime.is_capturing)
+
+        self.assertEqual(
+            runtime.press_dictation("ptt", now=11.0),
+            CaptureStart(mode="dictate", polish=True),
+        )
 
 
 if __name__ == "__main__":

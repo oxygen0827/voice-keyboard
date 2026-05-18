@@ -85,3 +85,37 @@ class ReusableTextMemory:
             print(f"[memo] 已删除 {key!r}")
             return MemoryOperationResult.show(f"已忘掉「{key}」")
         return MemoryOperationResult.show(f"没记过「{key}」")
+
+
+@dataclass(frozen=True)
+class ReusableTextMemoryMatcher:
+    """Matches spoken memory requests to saved Reusable Text Memory names."""
+
+    minimum_overlap: int = 2
+    minimum_key_score: float = 0.7
+    minimum_request_score: float = 0.6
+
+    def match_key(self, text: str, keys: tuple[str, ...]) -> str | None:
+        text_chars = set(text or "")
+        best_key = None
+        best_score = 0.0
+        for key in keys:
+            key_chars = set(key)
+            if len(key_chars) < self.minimum_overlap:
+                continue
+            overlap = len(key_chars & text_chars)
+            if overlap < self.minimum_overlap:
+                continue
+            key_score = overlap / len(key_chars)
+            request_score = overlap / max(len(text_chars), 1)
+            if key_score < self.minimum_key_score and request_score < self.minimum_request_score:
+                continue
+            score = max(key_score, request_score)
+            if score > best_score:
+                best_score = score
+                best_key = key
+        return best_key
+
+
+def fuzzy_match_memory_key(text: str, keys: tuple[str, ...]) -> str | None:
+    return ReusableTextMemoryMatcher().match_key(text, keys)
