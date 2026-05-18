@@ -31,6 +31,23 @@ class IntentContext:
     memo_keys: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class IntentFallbackOptions:
+    multi_step_guard: bool = True
+    edit_hint_override: bool = False
+    memo_fuzzy_recall: bool = True
+
+    @classmethod
+    def from_config(cls, cfg: dict | None) -> "IntentFallbackOptions":
+        if not isinstance(cfg, dict):
+            return cls()
+        return cls(
+            multi_step_guard=bool(cfg.get("multi_step_guard", True)),
+            edit_hint_override=bool(cfg.get("edit_hint_override", False)),
+            memo_fuzzy_recall=bool(cfg.get("memo_fuzzy_recall", True)),
+        )
+
+
 _CLASSIFY_SYSTEM = """你是 Voice Keyboard Engine 的 Instruction Mode 意图分类器。根据用户说的话返回一个JSON对象，不要包含任何其他内容。
 
 判断依据是用户说的话，而不是是否有 Explicit Selection（明确选区）。Explicit Selection 只是上下文参考。
@@ -82,19 +99,33 @@ _MULTI_STEP_MARKERS = (
 _MULTI_STEP_FEEDBACK = "这个需要分步执行，请先说第一步"
 
 
-def classify_intent(llm: ChatLLM, ctx: IntentContext) -> dict:
+def classify_intent(
+    llm: ChatLLM,
+    ctx: IntentContext,
+    fallbacks: IntentFallbackOptions | None = None,
+) -> dict:
     raw = llm.chat(_CLASSIFY_SYSTEM, _build_user_message(ctx))
     result = _parse_json_object(raw)
-    return apply_intent_fallbacks(result, ctx)
+    return apply_intent_fallbacks(result, ctx, fallbacks or IntentFallbackOptions())
 
 
-def apply_intent_fallbacks(result: dict, ctx: IntentContext) -> dict:
+def apply_intent_fallbacks(
+    result: dict,
+    ctx: IntentContext,
+    fallbacks: IntentFallbackOptions | None = None,
+) -> dict:
+    fallbacks = fallbacks or IntentFallbackOptions()
     intent = result.get("type", "chat")
-    if looks_like_multi_step_instruction(ctx.text):
+    if fallbacks.multi_step_guard and looks_like_multi_step_instruction(ctx.text):
         return {"type": "chat", "reply": _MULTI_STEP_FEEDBACK}
-    if (ctx.selected or ctx.recent_text) and intent in {"chat", "write"} and looks_like_edit_instruction(ctx.text):
+    if (
+        fallbacks.edit_hint_override
+        and (ctx.selected or ctx.recent_text)
+        and intent == "chat"
+        and looks_like_edit_instruction(ctx.text)
+    ):
         return {"type": "edit"}
-    if intent == "chat":
+    if fallbacks.memo_fuzzy_recall and intent == "chat" and looks_like_memory_lookup(ctx.text):
         fuzzy_key = fuzzy_match_memory_key(ctx.text, ctx.memo_keys)
         if fuzzy_key:
             return {"type": "memo_recall", "key": fuzzy_key}
@@ -103,6 +134,17 @@ def apply_intent_fallbacks(result: dict, ctx: IntentContext) -> dict:
 
 def looks_like_edit_instruction(text: str) -> bool:
     return any(hint in text for hint in _EDIT_HINTS)
+
+
+def looks_like_memory_lookup(text: str) -> bool:
+    if any(hint in text for hint in ("什么意思", "什么含义", "这个词", "这个概念")):
+        return False
+    return (
+        "我的" in text
+        or text.startswith(("查询", "查一下", "插入", "输入", "填入"))
+        or text.endswith(("是什么", "是多少", "是啥"))
+        or "打出来" in text
+    )
 
 
 def looks_like_multi_step_instruction(text: str) -> bool:

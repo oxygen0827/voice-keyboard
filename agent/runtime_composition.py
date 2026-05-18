@@ -119,8 +119,10 @@ def build_audio_runtime(
     if providers.text_operation_editor is not None and providers.instruction_stt is not None:
         try:
             from agent.ai_handler import AIHandler
+            from agent.ai_intent import IntentFallbackOptions
             from agent.memo_store import MemoStore
             memo_store = MemoStore()
+            instruction_cfg = cfg.get("instruction_mode", {})
             ai_handler = AIHandler(
                 providers.instruction_stt,
                 providers.text_operation_editor,
@@ -129,6 +131,9 @@ def build_audio_runtime(
                 status_window=status_window,
                 history=history,
                 input_environment=input_environment,
+                intent_fallbacks=IntentFallbackOptions.from_config(
+                    instruction_cfg.get("intent_fallbacks", {})
+                ),
             )
             ai_key_name = audio_cfg.get("ai_key", "cmd_r")
             existing = memo_store.keys()

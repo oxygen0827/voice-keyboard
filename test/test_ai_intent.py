@@ -1,11 +1,11 @@
 import unittest
 from unittest.mock import MagicMock
 
-from agent.ai_intent import IntentContext, classify_intent
+from agent.ai_intent import IntentContext, IntentFallbackOptions, classify_intent
 
 
 class AIIntentTests(unittest.TestCase):
-    def test_selected_edit_instruction_overrides_chat(self):
+    def test_selected_edit_instruction_does_not_override_chat_by_default(self):
         llm = MagicMock()
         llm.chat.return_value = '{"type":"chat","reply":"请提供内容"}'
 
@@ -14,9 +14,24 @@ class AIIntentTests(unittest.TestCase):
             selected="这是一段原文",
         ))
 
+        self.assertEqual(result, {"type": "chat", "reply": "请提供内容"})
+
+    def test_selected_edit_instruction_can_override_chat_when_enabled(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"请提供内容"}'
+
+        result = classify_intent(
+            llm,
+            IntentContext(
+                text="帮我润色一下",
+                selected="这是一段原文",
+            ),
+            IntentFallbackOptions(edit_hint_override=True),
+        )
+
         self.assertEqual(result, {"type": "edit"})
 
-    def test_edit_hint_without_selection_but_recent_text_is_still_edit_operation(self):
+    def test_edit_hint_without_selection_but_recent_text_does_not_override_by_default(self):
         llm = MagicMock()
         llm.chat.return_value = '{"type":"chat","reply":"请提供内容"}'
 
@@ -24,6 +39,21 @@ class AIIntentTests(unittest.TestCase):
             text="把上一句翻译成英文",
             recent_text="上一句",
         ))
+
+        self.assertEqual(result, {"type": "chat", "reply": "请提供内容"})
+
+    def test_edit_hint_without_selection_but_recent_text_can_override_when_enabled(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"请提供内容"}'
+
+        result = classify_intent(
+            llm,
+            IntentContext(
+                text="把上一句翻译成英文",
+                recent_text="上一句",
+            ),
+            IntentFallbackOptions(edit_hint_override=True),
+        )
 
         self.assertEqual(result, {"type": "edit"})
 
@@ -45,6 +75,32 @@ class AIIntentTests(unittest.TestCase):
         ))
 
         self.assertEqual(result, {"type": "memo_recall", "key": "手机号"})
+
+    def test_chat_does_not_fuzzy_match_saved_memo_key_without_lookup_shape(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"不知道"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="手机号这个词是什么意思",
+            memo_keys=("手机号",),
+        ))
+
+        self.assertEqual(result, {"type": "chat", "reply": "不知道"})
+
+    def test_memo_fuzzy_recall_can_be_disabled(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"不知道"}'
+
+        result = classify_intent(
+            llm,
+            IntentContext(
+                text="我的手机号是多少",
+                memo_keys=("手机号",),
+            ),
+            IntentFallbackOptions(memo_fuzzy_recall=False),
+        )
+
+        self.assertEqual(result, {"type": "chat", "reply": "不知道"})
 
     def test_classifier_keeps_structured_result(self):
         llm = MagicMock()

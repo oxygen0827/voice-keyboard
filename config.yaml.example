@@ -166,6 +166,13 @@ instruction_mode:
   # false 时，没有 Explicit Selection 也会尝试使用当前输入环境的可安全文本窗口。
   # 如果当前窗口不可获取，再退回到安全的 Tracked Segment。
   require_selection_for_edit: false
+  intent_fallbacks:
+    # 安全类兜底：当前运行时不自动执行多步骤指令。
+    multi_step_guard: true
+    # 语义纠错兜底：默认关闭，避免把用户的询问/分析误改成编辑操作。
+    edit_hint_override: false
+    # 便利类兜底：仅在“我的 X 是什么 / 插入 X”等查询或插入句式下模糊匹配可复用文本。
+    memo_fuzzy_recall: true
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 打字与自定义快捷键

@@ -11,7 +11,12 @@ Instruction Mode orchestration：speech recognition → intent classification �
 
 import threading
 
-from agent.ai_intent import IntentContext, classify_intent, memo_keys
+from agent.ai_intent import (
+    IntentContext,
+    IntentFallbackOptions,
+    classify_intent,
+    memo_keys,
+)
 from agent.input_environment import TyperInputEnvironment
 from agent.instruction_executor import InstructionModeExecutor
 from agent.operation_history import OperationHistory
@@ -22,13 +27,14 @@ _AI_PREFIX = " [AI]: "
 
 class AIHandler:
     def __init__(self, stt_client, llm_editor, buf, memo_store=None, status_window=None,
-                 history=None, input_environment=None):
+                 history=None, input_environment=None, intent_fallbacks=None):
         self._stt             = stt_client
         self._llm             = llm_editor
         self._env             = input_environment or TyperInputEnvironment(buf)
         self._memos           = memo_store
         self._status          = status_window
         self._history         = history
+        self._intent_fallbacks = intent_fallbacks or IntentFallbackOptions()
         self._io_lock         = threading.Lock()   # 串行化所有输入框 IO（删+打）
         self._operation_history = OperationHistory(limit=5)
         self._executor = InstructionModeExecutor(
@@ -109,7 +115,7 @@ class AIHandler:
                 active_application=self._env.active_application(),
                 shortcuts=self._env.shortcuts(),
                 memo_keys=memo_keys(self._memos),
-            ))
+            ), self._intent_fallbacks)
         except Exception as e:
             print(f"[ai] 意图分类失败: {e}，回退到聊天")
             self._record("ai", text, "error", f"LLM: {e}")

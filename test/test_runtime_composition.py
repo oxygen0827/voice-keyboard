@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+from agent.ai_intent import IntentFallbackOptions
 from agent.runtime_composition import RuntimeBackend, RuntimeOptions, build_runtime_backend, options_from_args
 
 
@@ -95,6 +96,43 @@ class RuntimeCompositionTests(unittest.TestCase):
         self.assertIs(backend.mouse_monitor, mouse)
         keyboard.start.assert_called_once_with()
         mouse.start.assert_called_once_with()
+
+    def test_build_audio_runtime_passes_intent_fallback_options_to_ai_handler(self):
+        from agent.runtime_composition import build_audio_runtime
+
+        providers = MagicMock()
+        providers.text_operation_editor = MagicMock()
+        providers.instruction_stt = MagicMock()
+        providers.utterance_stt = MagicMock()
+        with (
+            patch("agent.runtime_composition.SpeechInterpretationProviderFactory") as factory_cls,
+            patch("agent.ai_handler.AIHandler") as handler_cls,
+            patch("agent.memo_store.MemoStore"),
+            patch("agent.main.make_utterance_handler", return_value=MagicMock()),
+            patch("agent.push_to_talk.PushToTalk") as ptt_cls,
+        ):
+            factory_cls.return_value.create_provider_set.return_value = providers
+
+            build_audio_runtime({
+                "audio": {"mode": "ptt"},
+                "instruction_mode": {
+                    "intent_fallbacks": {
+                        "multi_step_guard": False,
+                        "edit_hint_override": True,
+                        "memo_fuzzy_recall": False,
+                    },
+                },
+            }, MagicMock())
+
+        self.assertEqual(
+            handler_cls.call_args.kwargs["intent_fallbacks"],
+            IntentFallbackOptions(
+                multi_step_guard=False,
+                edit_hint_override=True,
+                memo_fuzzy_recall=False,
+            ),
+        )
+        ptt_cls.return_value.start.assert_called_once_with()
 
 
 if __name__ == "__main__":
