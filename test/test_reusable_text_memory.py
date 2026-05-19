@@ -205,6 +205,14 @@ class ReusableTextMemoryResolverTests(unittest.TestCase):
 
         self.assertEqual(result.status, "none")
 
+    def test_ssh_endpoint_is_not_treated_as_email_memory(self):
+        result = self.resolve(
+            "我的邮箱是什么",
+            ReusableTextMemoryRecord("访问我家服务器的地址", "ssh -p 10281 wq@5.tcp.cpolar.cn"),
+        )
+
+        self.assertEqual(result.status, "none")
+
     def test_personal_alias_resolves_memory_key(self):
         result = self.resolve(
             "小白说什么",

@@ -954,6 +954,7 @@ def _set_clipboard_win(text: str) -> None:
 
 def send_shortcut(name: str) -> bool:
     """按名称触发快捷键，返回是否找到该指令"""
+    name = _canonical_shortcut_name(name)
     if not shortcut_policy_for_invocation(name).allowed:
         return False
     app = current_application()
@@ -1084,6 +1085,17 @@ def shortcut_policy_for_invocation(
 
 def _shortcut_is_blocked(name: str, keys: list | None = None) -> bool:
     return name in _BLOCKED_SHORTCUT_NAMES or _shortcut_key_signature(keys) in _BLOCKED_SHORTCUT_KEY_SEQUENCES
+
+
+def _canonical_shortcut_name(name: str) -> str:
+    if name in _BLOCKED_SHORTCUT_NAMES:
+        return name
+    for entry in shortcut_catalog():
+        if entry.name == name:
+            return name
+        if entry.kind == "app_launch" and entry.name.lower() == name.lower():
+            return entry.name
+    return name
 
 
 def _app_launch(name: str) -> ApplicationLaunchSpec | None:

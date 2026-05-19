@@ -442,14 +442,14 @@ def detect_memory_query_type(query_text: str) -> str:
 def detect_memory_value_type(key: str, value: str) -> str:
     key_text = normalize_memory_text(key)
     value_text = value or ""
-    if _EMAIL_RE.search(value_text) or any(marker in key_text for marker in ("邮箱", "email")):
-        return "contact.email"
-    if _PHONE_RE.search(value_text) or any(marker in key_text for marker in ("手机号", "联系电话")):
-        return "contact.phone"
     if "github.com" in value_text.lower() or ("仓库" in key_text and "地址" in key_text):
         return "repo_url"
     if re.search(r"\bssh\b", value_text, re.IGNORECASE) or "服务器" in key_text:
         return "ssh_endpoint"
+    if _EMAIL_RE.search(value_text) or any(marker in key_text for marker in ("邮箱", "email")):
+        return "contact.email"
+    if _PHONE_RE.search(value_text) or any(marker in key_text for marker in ("手机号", "联系电话")):
+        return "contact.phone"
     if is_sensitive_memory(key, value) and any(
         marker in key_text for marker in ("api", "密钥", "秘钥", "key", "token")
     ):

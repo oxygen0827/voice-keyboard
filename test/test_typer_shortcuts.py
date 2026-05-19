@@ -910,6 +910,27 @@ class TyperShortcutTests(unittest.TestCase):
             ):
                 self.assertIn("打开终端", typer.list_shortcuts())
 
+    def test_macos_discovered_stocks_app_has_chinese_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "Stocks.app"
+            contents = app / "Contents"
+            contents.mkdir(parents=True)
+            (contents / "Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": "com.apple.stocks",
+                "CFBundleName": "Stocks",
+            }))
+
+            with (
+                patch.object(typer, "_OS", "Darwin"),
+                patch.object(app_launcher, "MACOS_APP_SEARCH_DIRS", (tmp,)),
+                patch.object(app_launcher, "DYNAMIC_APP_LAUNCH_CACHE", None),
+                patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+            ):
+                names = set(typer.list_shortcuts())
+
+        self.assertIn("打开股市", names)
+        self.assertIn("打开股票", names)
+
     def test_send_shortcut_opens_builtin_macos_application_by_bundle_id(self):
         with (
             patch.object(typer, "_OS", "Darwin"),
@@ -950,6 +971,27 @@ class TyperShortcutTests(unittest.TestCase):
                 self.assertTrue(typer.send_shortcut("打开Obsidian"))
 
         popen.assert_called_once_with(["open", "-b", "md.obsidian"])
+
+    def test_send_shortcut_opens_discovered_app_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "Stocks.app"
+            contents = app / "Contents"
+            contents.mkdir(parents=True)
+            (contents / "Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": "com.apple.stocks",
+                "CFBundleName": "Stocks",
+            }))
+
+            with (
+                patch.object(typer, "_OS", "Darwin"),
+                patch.object(app_launcher, "MACOS_APP_SEARCH_DIRS", (tmp,)),
+                patch.object(app_launcher, "DYNAMIC_APP_LAUNCH_CACHE", None),
+                patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+                patch.object(app_launcher.subprocess, "Popen") as popen,
+            ):
+                self.assertTrue(typer.send_shortcut("打开stocks"))
+
+        popen.assert_called_once_with(["open", "-b", "com.apple.stocks"])
 
     def test_init_loads_custom_app_launch_actions_from_config(self):
         with (

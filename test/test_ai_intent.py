@@ -80,6 +80,7 @@ class AIIntentTests(unittest.TestCase):
         ))
 
         self.assertEqual(result, {"type": "reusable_text_recall", "key": "手机号"})
+        llm.chat.assert_not_called()
 
     def test_reusable_text_recall_from_llm_is_validated_against_request(self):
         llm = MagicMock()
@@ -178,7 +179,7 @@ class AIIntentTests(unittest.TestCase):
         llm.chat.return_value = '{"type":"shortcut","name":"发送"}'
 
         classify_intent(llm, IntentContext(
-            text="发送",
+            text="这个按钮怎么发送",
             active_application="Codex (com.openai.codex)",
             shortcuts=("发送",),
         ))
@@ -243,6 +244,18 @@ class AIIntentTests(unittest.TestCase):
 
         self.assertEqual(result, {"type": "shortcut", "name": "打开谷歌浏览器"})
 
+    def test_open_app_utterance_matches_catalog_case_insensitively(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"x"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="打开stocks。",
+            shortcuts=("打开Stocks",),
+        ))
+
+        self.assertEqual(result, {"type": "shortcut", "name": "打开Stocks"})
+        llm.chat.assert_not_called()
+
     def test_macos_window_utterance_matches_system_shortcut_catalog(self):
         llm = MagicMock()
         llm.chat.return_value = '{"type":"chat","reply":"我不能调整窗口"}'
@@ -253,6 +266,31 @@ class AIIntentTests(unittest.TestCase):
         ))
 
         self.assertEqual(result, {"type": "shortcut", "name": "窗口左半屏"})
+        llm.chat.assert_not_called()
+
+    def test_undo_utterance_is_classified_locally(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"x"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="撤回。",
+            shortcuts=("撤销",),
+        ))
+
+        self.assertEqual(result, {"type": "shortcut", "name": "撤销"})
+        llm.chat.assert_not_called()
+
+    def test_exact_shortcut_utterance_is_classified_locally(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"x"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="加粗。",
+            shortcuts=("加粗", "撤销", "确认"),
+        ))
+
+        self.assertEqual(result, {"type": "shortcut", "name": "加粗"})
+        llm.chat.assert_not_called()
 
     def test_plain_left_side_utterance_matches_window_shortcut_catalog(self):
         llm = MagicMock()

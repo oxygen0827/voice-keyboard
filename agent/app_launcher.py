@@ -41,6 +41,7 @@ COMMON_APP_LAUNCH_ALIASES = {
     "iTerm": ("终端",),
     "iTerm2": ("终端",),
     "Terminal": ("终端",),
+    "Stocks": ("股市", "股票"),
 }
 
 
@@ -61,7 +62,15 @@ def load_app_launches(app_launches) -> None:
 def app_launch(name: str, os_name: str, blocked_names: set[str] | None = None) -> ApplicationLaunchSpec | None:
     if blocked_names and name in blocked_names:
         return None
-    return app_launches_for_system(os_name).get(name)
+    launches = app_launches_for_system(os_name)
+    spec = launches.get(name)
+    if spec is not None:
+        return spec
+    lowered = name.lower()
+    for action, candidate in launches.items():
+        if action.lower() == lowered:
+            return candidate
+    return None
 
 
 def app_launches_for_system(os_name: str) -> dict[str, ApplicationLaunchSpec]:

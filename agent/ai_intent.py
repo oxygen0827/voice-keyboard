@@ -124,9 +124,54 @@ def classify_intent(
     ctx: IntentContext,
     fallbacks: IntentFallbackOptions | None = None,
 ) -> dict:
+    fallbacks = fallbacks or IntentFallbackOptions()
+    local_result = classify_local_intent(ctx, fallbacks)
+    if local_result is not None:
+        return local_result
     raw = llm.chat(_CLASSIFY_SYSTEM, _build_user_message(ctx))
     result = _parse_json_object(raw)
-    return apply_intent_fallbacks(result, ctx, fallbacks or IntentFallbackOptions())
+    return apply_intent_fallbacks(result, ctx, fallbacks)
+
+
+def classify_local_intent(
+    ctx: IntentContext,
+    fallbacks: IntentFallbackOptions | None = None,
+) -> dict | None:
+    fallbacks = fallbacks or IntentFallbackOptions()
+    if fallbacks.multi_step_guard and looks_like_multi_step_instruction(ctx.text):
+        return {"type": "chat", "reply": _MULTI_STEP_FEEDBACK}
+
+    window_shortcut = _macos_window_shortcut_from_text(ctx.text, ctx.shortcuts)
+    if window_shortcut:
+        return {"type": "shortcut", "name": window_shortcut}
+
+    if _looks_like_open_app_instruction(ctx.text):
+        shortcut_name = _open_app_shortcut_from_text(ctx.text, ctx.shortcuts)
+        if shortcut_name:
+            return {"type": "shortcut", "name": shortcut_name}
+        return {"type": "chat", "reply": "没有找到可打开的应用"}
+
+    if _looks_like_undo_instruction(ctx.text) and "撤销" in ctx.shortcuts:
+        return {"type": "shortcut", "name": "撤销"}
+
+    if (
+        fallbacks.selected_edit_override
+        and ctx.selected
+        and looks_like_edit_instruction(ctx.text)
+    ):
+        return {"type": "edit"}
+
+    exact_shortcut = _exact_shortcut_from_text(ctx.text, ctx.shortcuts)
+    if exact_shortcut:
+        return {"type": "shortcut", "name": exact_shortcut}
+
+    if fallbacks.reusable_text_memory_fuzzy_recall and looks_like_memory_lookup(ctx.text):
+        resolution = resolve_memory_key(ctx.text, ctx.reusable_text_memory_records)
+        if resolution.can_recall:
+            return {"type": "reusable_text_recall", "key": resolution.key}
+        return {"type": "chat", "reply": resolution.feedback()}
+
+    return None
 
 
 def apply_intent_fallbacks(
@@ -218,18 +263,35 @@ def _looks_like_open_app_instruction(text: str) -> bool:
     return bool(_open_app_target(text))
 
 
+def _looks_like_undo_instruction(text: str) -> bool:
+    compact = _compact_shortcut_text(text)
+    return compact in {"撤销", "撤回", "恢复上一步", "退回上一步"}
+
+
+def _exact_shortcut_from_text(text: str, shortcuts: tuple[str, ...]) -> str:
+    compact = _compact_shortcut_text(text).lower()
+    if not compact:
+        return ""
+    for shortcut in shortcuts:
+        if _compact_shortcut_text(shortcut).lower() == compact:
+            return shortcut
+    return ""
+
+
 def _open_app_shortcut_from_text(text: str, shortcuts: tuple[str, ...]) -> str:
     target = _open_app_target(text)
     if not target:
         return ""
+    normalized_target = target.lower()
     fuzzy_matches: list[tuple[int, str]] = []
     for shortcut in shortcuts:
         shortcut_target = _open_app_target(shortcut)
         if not shortcut_target:
             continue
-        if shortcut_target == target:
+        normalized_shortcut_target = shortcut_target.lower()
+        if normalized_shortcut_target == normalized_target:
             return shortcut
-        if shortcut_target in target or target in shortcut_target:
+        if normalized_shortcut_target in normalized_target or normalized_target in normalized_shortcut_target:
             fuzzy_matches.append((len(shortcut_target), shortcut))
     if fuzzy_matches:
         return max(fuzzy_matches)[1]
