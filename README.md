@@ -124,6 +124,12 @@ Run the test suite:
 pytest
 ```
 
+Run local non-interactive tests without the focused-input typing smoke test:
+
+```bash
+scripts/test-local.sh
+```
+
 Run a typing smoke test after granting required OS permissions:
 
 ```bash
