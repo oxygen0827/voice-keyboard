@@ -6,6 +6,7 @@ from pynput.keyboard import Controller, Key, KeyCode
 
 from agent import app_launcher
 from agent import macos_window_actions
+from agent import windows_window_actions
 from agent.app_shortcut_presets import MACOS_APP_SHORTCUT_PRESETS
 from agent.local_operation_catalog import (
     LocalOperationCandidate,
@@ -205,6 +206,8 @@ def _focused_accessibility_element():
 
 
 def _frontmost_app_identity() -> tuple[str, str, int | None]:
+    if _OS == "Windows":
+        return _frontmost_app_identity_windows()
     if _OS != "Darwin":
         return "", "", None
     try:
@@ -216,6 +219,21 @@ def _frontmost_app_identity() -> tuple[str, str, int | None]:
             str(app.bundleIdentifier() or ""),
             app.processIdentifier(),
         )
+    except Exception:
+        return "", "", None
+
+
+def _frontmost_app_identity_windows() -> tuple[str, str, int | None]:
+    try:
+        hwnd = _user32.GetForegroundWindow()
+        if not hwnd:
+            return "", "", None
+        pid = ctypes.wintypes.DWORD()
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        length = _user32.GetWindowTextLengthW(hwnd)
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        _user32.GetWindowTextW(hwnd, buffer, length + 1)
+        return str(buffer.value or "Windows foreground window"), "", int(pid.value) or None
     except Exception:
         return "", "", None
 
@@ -759,8 +777,11 @@ def _find_original_location(
 
 
 def replace_selection(text: str, original: str = "") -> None:
-    """将 text 写入剪贴板并粘贴，替换当前选中内容（选区失效时在光标处插入）。"""
+    """Replace the current selection without using clipboard on direct-typing paths."""
     if _replace_accessibility_selection(text, original=original):
+        return
+    if _OS == "Windows":
+        type_text(text)
         return
     global _simulating
     _set_clipboard(text)
@@ -797,6 +818,9 @@ def replace_text_window(original: str, replacement: str) -> bool:
 def delete_selection(original: str = "") -> None:
     """删除当前选中内容，只发送一次 Backspace，并让热键监听忽略该合成事件。"""
     if _replace_accessibility_selection("", original=original):
+        return
+    if _OS == "Windows":
+        _press_key(Key.backspace)
         return
     global _simulating
     _simulating = True
@@ -993,6 +1017,8 @@ def _run_system_action(action: str) -> bool:
         return True
     if action.startswith("macos_window_"):
         return _run_macos_window_action(action.removeprefix("macos_window_"))
+    if action.startswith("windows_window_"):
+        return _run_windows_window_action(action.removeprefix("windows_window_"))
     return False
 
 
@@ -1002,6 +1028,11 @@ def _system_actions_for_platform() -> dict[str, str]:
         actions.update({
             name: f"macos_window_{action}"
             for name, action in macos_window_actions.WINDOW_ACTIONS.items()
+        })
+    elif _OS == "Windows":
+        actions.update({
+            name: f"windows_window_{action}"
+            for name, action in windows_window_actions.WINDOW_ACTIONS.items()
         })
     return actions
 
@@ -1015,6 +1046,12 @@ def _run_macos_window_action(action: str) -> bool:
         ApplicationServices,
         NSScreen,
     )
+
+
+def _run_windows_window_action(action: str) -> bool:
+    if _OS != "Windows":
+        return False
+    return windows_window_actions.run_window_action(action)
 
 
 def register_shortcut(name: str, keys: list) -> None:
@@ -1054,7 +1091,11 @@ def _local_operation_candidates() -> list[LocalOperationCandidate]:
             key_signature=_shortcut_key_signature(keys),
         ))
     for name, action in _system_actions_for_platform().items():
-        kind = "system_window_action" if action.startswith("macos_window_") else "system_action"
+        kind = (
+            "system_window_action"
+            if action.startswith(("macos_window_", "windows_window_"))
+            else "system_action"
+        )
         candidates.append(LocalOperationCandidate(
             name=name,
             source="system",

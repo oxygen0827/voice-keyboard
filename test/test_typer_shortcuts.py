@@ -9,6 +9,7 @@ from pynput.keyboard import Key
 from agent import app_launcher
 from agent import macos_window_actions
 from agent import typer
+from agent import windows_window_actions
 
 
 class TyperShortcutTests(unittest.TestCase):
@@ -307,9 +308,28 @@ class TyperShortcutTests(unittest.TestCase):
         run.assert_called_once_with("macos_window_left_half")
         press_keys.assert_not_called()
 
-    def test_macos_window_actions_are_not_exposed_on_other_platforms(self):
+    def test_windows_window_actions_are_system_actions_without_key_chords(self):
         with (
             patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+            patch.object(typer, "_run_system_action", return_value=True) as run,
+            patch.object(typer, "_press_keys") as press_keys,
+        ):
+            names = set(typer.list_shortcuts())
+            self.assertIn("窗口左半屏", names)
+            self.assertIn("窗口右半屏", names)
+            self.assertIn("窗口最大化", names)
+            self.assertIn("窗口居中", names)
+            left_half = next(entry for entry in typer.shortcut_catalog() if entry.name == "窗口左半屏")
+            self.assertEqual(left_half.kind, "system_window_action")
+            self.assertTrue(typer.send_shortcut("窗口左半屏"))
+
+        run.assert_called_once_with("windows_window_left_half")
+        press_keys.assert_not_called()
+
+    def test_window_actions_are_not_exposed_on_linux(self):
+        with (
+            patch.object(typer, "_OS", "Linux"),
             patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
         ):
             self.assertNotIn("窗口左半屏", typer.list_shortcuts())
@@ -334,6 +354,51 @@ class TyperShortcutTests(unittest.TestCase):
             macos_window_actions.target_window_rect("center", current, screen),
             macos_window_actions.MacWindowRect(320, 162, 800, 600),
         )
+
+    def test_windows_window_target_rects_keep_slice_small_and_predictable(self):
+        screen = windows_window_actions.WinWindowRect(0, 0, 1440, 900)
+        current = windows_window_actions.WinWindowRect(200, 120, 800, 600)
+
+        self.assertEqual(
+            windows_window_actions.target_window_rect("left_half", current, screen),
+            windows_window_actions.WinWindowRect(0, 0, 720, 900),
+        )
+        self.assertEqual(
+            windows_window_actions.target_window_rect("right_half", current, screen),
+            windows_window_actions.WinWindowRect(720, 0, 720, 900),
+        )
+        self.assertEqual(
+            windows_window_actions.target_window_rect("maximize", current, screen),
+            windows_window_actions.WinWindowRect(0, 0, 1440, 900),
+        )
+        self.assertEqual(
+            windows_window_actions.target_window_rect("center", current, screen),
+            windows_window_actions.WinWindowRect(320, 150, 800, 600),
+        )
+
+    def test_windows_replace_selection_types_directly_without_clipboard(self):
+        with (
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "_replace_accessibility_selection", return_value=False),
+            patch.object(typer, "type_text") as type_text,
+            patch.object(typer, "_set_clipboard") as set_clipboard,
+        ):
+            typer.replace_selection("earth", original="world")
+
+        type_text.assert_called_once_with("earth")
+        set_clipboard.assert_not_called()
+
+    def test_windows_delete_selection_sends_backspace_without_clipboard(self):
+        with (
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "_replace_accessibility_selection", return_value=False),
+            patch.object(typer, "_press_key") as press_key,
+            patch.object(typer, "_set_clipboard") as set_clipboard,
+        ):
+            typer.delete_selection(original="world")
+
+        press_key.assert_called_once_with(Key.backspace)
+        set_clipboard.assert_not_called()
 
     def test_macos_window_action_sets_accessibility_frame(self):
         window = object()
