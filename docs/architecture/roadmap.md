@@ -6,7 +6,7 @@ This roadmap uses the domain language from `CONTEXT.md` and the architecture lan
 
 Status: in progress, accepted by ADR-0002 and ADR-0005.
 
-Deepen the module that owns Explicit Selection, insertion, replacement, deletion, and current-input-window behavior. This is the first priority because Instruction Mode depends on these rules for Text Revision, Text Removal, Text Generation, Reusable Text Operation, and Shortcut Invocation.
+Deepen the module that owns Explicit Selection, insertion, replacement, deletion, and current-input-window behavior. This is the first priority because Instruction Mode depends on these rules for Text Revision, Text Removal, Text Generation, Memo Operation, and Shortcut Invocation.
 
 Initial implementation:
 
@@ -14,11 +14,11 @@ Initial implementation:
 - `agent/text_io.py`
 - `AIHandler` now uses the Input Environment seam for text-side effects.
 - Input Environment now owns Text Revision / Text Removal target lookup and text-side effects.
-- Input Environment now owns generated-text insertion around Explicit Selection for Text Generation and Reusable Text Operation output.
+- Input Environment now owns generated-text insertion around Explicit Selection for Text Generation and Memo Operation output.
 - Platform text IO calls now sit behind a small adapter used by the Input Environment implementation.
-- Text Revision and specific Text Removal now require Explicit Selection unless the user clearly asks for the whole current Operation Window.
+- Text Revision now defaults to the current Tracked Segment when there is no Explicit Selection; specific Text Removal still requires Explicit Selection unless the user clearly asks for the whole current Operation Window.
 - Generic delete can remove the current Operation Window, or fall back to Select All + Delete when no window is available.
-- Next targeting work should broaden platform support for focused-field Operation Windows while preserving the rule that no-selection local partial edits fail closed.
+- Next targeting work should broaden platform support for focused-field Operation Windows while preserving the rule that no-selection local partial removal fails closed.
 
 ## 2. Instruction Mode Execution
 
@@ -31,18 +31,18 @@ Target direction:
 - Convert classifier output into explicit operation objects or structured operation results.
 - Keep prompt construction and deterministic fallbacks in `ai_intent`.
 - Move text-side effects into the Input Environment interface.
-- Keep Reusable Text Memory behind a small interface.
+- Keep Memo behind a small interface.
 - Treat spoken undo as a Shortcut Invocation of the current application undo action.
 
 Initial implementation:
 
 - `agent/voice_text_operation.py`
 - `agent/instruction_executor.py`
-- `agent/reusable_text_memory.py`
+- `agent/memo.py`
 - `AIHandler` now leaves undo to the executor as a Shortcut Invocation.
 - `AIHandler` now dispatches typed Voice Text Operation values instead of raw classifier dictionaries.
 - Instruction Mode execution now lives behind an executor seam, leaving `AIHandler` focused on runtime orchestration.
-- Reusable Text Operation rules and Reusable Text Memory key matching now live behind a Reusable Text Memory module; the executor only applies insert/show results to the Input Environment.
+- Memo Operation rules and Memo key matching now live behind a Memo module; the executor only applies insert/show results to the Input Environment.
 - Text Revision and Text Removal use structured Replacement Plans for selected text and whole-scope requests instead of full-context rewrites.
 - Atomic Operation Stack support should be a later slice after stack data structures, local risk policy, and executor sequencing exist. Until then, the classifier should ask users to split explicit multi-step instructions.
 

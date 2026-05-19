@@ -1,6 +1,6 @@
 """
 Voice Keyboard 主窗口：单 NSWindow + NSTabView：
-  设置 / 快捷键 / 历史 / 可复用文本 / 权限自检
+  设置 / 快捷键 / 历史 / 备忘 / 权限自检
 所有 UI 操作必须在主线程；从其他线程调用通过 PyObjCTools.AppHelper.callAfter 入队。
 """
 
@@ -593,11 +593,11 @@ class _HistoryTab(NSObject):
         a.setMessageText_(title); a.setInformativeText_(msg); a.runModal()
 
 
-# ── 可复用文本 tab ───────────────────────────────────────────────
+# ── 备忘 tab ───────────────────────────────────────────────
 
-class _ReusableTextMemoryTab(NSObject):
+class _MemoTab(NSObject):
     def initWithApp_(self, app):
-        self = objc.super(_ReusableTextMemoryTab, self).init()
+        self = objc.super(_MemoTab, self).init()
         if self is None:
             return None
         self._app = app
@@ -646,16 +646,16 @@ class _ReusableTextMemoryTab(NSObject):
 
         # 操作按钮
         v.addSubview_(_button("新建", NSMakeRect(20, 20, 70, 28), self, b"addNew:"))
-        v.addSubview_(_button("保存", NSMakeRect(95, 20, 70, 28), self, b"saveReusableTextMemory:"))
-        v.addSubview_(_button("删除", NSMakeRect(170, 20, 70, 28), self, b"deleteReusableTextMemory:"))
+        v.addSubview_(_button("保存", NSMakeRect(95, 20, 70, 28), self, b"saveMemo:"))
+        v.addSubview_(_button("删除", NSMakeRect(170, 20, 70, 28), self, b"deleteMemo:"))
         v.addSubview_(_button("刷新", NSMakeRect(245, 20, 70, 28), self, b"reload:"))
         return v
 
     def reload_(self, sender):
         try:
-            self._keys = sorted(self._app.reusable_text_memory.keys())
+            self._keys = sorted(self._app.memo.keys())
         except Exception as e:
-            print(f"[ui] reusable_text_memory load 失败: {e}")
+            print(f"[ui] memo load 失败: {e}")
             self._keys = []
         self._table.reloadData()
 
@@ -674,7 +674,7 @@ class _ReusableTextMemoryTab(NSObject):
         if idx < 0 or idx >= len(self._keys):
             return
         k = self._keys[idx]
-        v = self._app.reusable_text_memory.get(k) or ""
+        v = self._app.memo.get(k) or ""
         self._key_input.setStringValue_(k)
         self._val_input.setString_(v)
 
@@ -684,30 +684,30 @@ class _ReusableTextMemoryTab(NSObject):
         self._table.deselectAll_(None)
         self._key_input.becomeFirstResponder()
 
-    def saveReusableTextMemory_(self, sender):
+    def saveMemo_(self, sender):
         k = self._key_input.stringValue().strip()
         v = self._val_input.string()
         if not k:
             self._alert("键名不能为空", "")
             return
-        self._app.reusable_text_memory.save(k, v)
+        self._app.memo.save(k, v)
         self.reload_(None)
         # 选中刚保存的
         if k in self._keys:
             i = self._keys.index(k)
             self._table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(i), False)
 
-    def deleteReusableTextMemory_(self, sender):
+    def deleteMemo_(self, sender):
         k = self._key_input.stringValue().strip()
         if not k:
             return
         a = NSAlert.alloc().init()
-        a.setMessageText_(f"删除可复用文本「{k}」？")
+        a.setMessageText_(f"删除备忘「{k}」？")
         a.addButtonWithTitle_("删除")
         a.addButtonWithTitle_("取消")
         if a.runModal() != NSAlertFirstButtonReturn:
             return
-        self._app.reusable_text_memory.delete(k)
+        self._app.memo.delete(k)
         self._key_input.setStringValue_("")
         self._val_input.setString_("")
         self.reload_(None)
@@ -823,7 +823,7 @@ class MainWindow(NSObject):
             ("settings", "设置",   _SettingsTab),
             ("shortcuts", "快捷键", _ShortcutsTab),
             ("history",  "历史",   _HistoryTab),
-            ("reusable_text_memory",    "可复用文本", _ReusableTextMemoryTab),
+            ("memo",    "备忘", _MemoTab),
             ("perms",    "权限",   _PermsTab),
         ):
             tab = cls.alloc().initWithApp_(self._app)

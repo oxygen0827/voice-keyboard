@@ -36,10 +36,10 @@ class DictationModeModuleTests(unittest.TestCase):
         stt.transcribe.assert_called_once_with(b"pcm")
         env.insert_output_text.assert_called_once_with("hello")
         history.append.assert_called_once_with("dictate", "hello", "ok", "")
-        status.show_typing_message.assert_called_once_with("hello", 2.0)
-        status.set_state.assert_not_called()
+        status.show_typing_message.assert_not_called()
+        status.set_state.assert_called_once_with("idle")
 
-    def test_normal_dictation_previews_text_before_output_attempt(self):
+    def test_normal_dictation_outputs_without_status_preview(self):
         stt = MagicMock(spec=["transcribe"])
         stt.transcribe.return_value = "hello"
         calls = []
@@ -59,9 +59,9 @@ class DictationModeModuleTests(unittest.TestCase):
         module.handle_utterance(b"pcm")
 
         self.assertEqual(calls, [
-            ("preview", "hello", 2.0),
             ("insert", "hello"),
         ])
+        status.show_typing_message.assert_not_called()
 
     def test_normal_dictation_clears_status_when_preview_is_unavailable(self):
         module, _stt, env, status, history = self.make_module("hello")
@@ -91,18 +91,14 @@ class DictationModeModuleTests(unittest.TestCase):
         env.insert_output_text.assert_called_once_with("例如：苹果香蕉！")
         history.append.assert_called_once_with("dictate", "例如：苹果香蕉！", "ok", "")
 
-    def test_normal_dictation_applies_personal_lexicon_before_insert(self):
+    def test_normal_dictation_inserts_recognized_text_without_personal_dictionary(self):
         module, _stt, env, _status, history = self.make_module("白光雨最喜欢说的话")
-        lexicon = MagicMock()
-        lexicon.normalize.return_value = "白光宇最喜欢说的话"
-        module.personal_lexicon = lexicon
 
         module.handle_utterance(b"pcm")
 
-        lexicon.normalize.assert_called_once_with("白光雨最喜欢说的话")
-        env.insert_output_text.assert_called_once_with("白光宇最喜欢说的话")
-        history.append.assert_called_once_with("dictate", "白光宇最喜欢说的话", "ok", "")
-        _status.show_typing_message.assert_called_once_with("白光宇最喜欢说的话", 2.0)
+        env.insert_output_text.assert_called_once_with("白光雨最喜欢说的话")
+        history.append.assert_called_once_with("dictate", "白光雨最喜欢说的话", "ok", "")
+        _status.show_typing_message.assert_not_called()
 
     def test_polish_stt_uses_dedicated_transcription_method_when_available(self):
         stt = MagicMock(spec=["transcribe", "transcribe_polished"])
@@ -129,7 +125,7 @@ class DictationModeModuleTests(unittest.TestCase):
 
         env.insert_output_text.assert_called_once_with("Hello.")
         self.assertEqual(status.set_state.call_args_list[0].args, ("polishing",))
-        status.show_typing_message.assert_called_once_with("Hello.", 2.0)
+        status.show_typing_message.assert_not_called()
         history.append.assert_called_once_with("polish", "Hello.", "ok", "")
 
     def test_polish_failure_keeps_original_text(self):

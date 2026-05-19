@@ -1,18 +1,20 @@
 """Execution of typed Voice Text Operations for Instruction Mode."""
 
 from contextlib import nullcontext
+from dataclasses import replace
 import queue
 import threading
 from typing import Callable, ContextManager
 
-from agent.input_environment import ReplacementPlan
+from agent.input_environment import OperationWindow, ReplacementPlan, TextTarget
 from agent.punctuation import normalize_spoken_punctuation
-from agent.reusable_text_memory import ReusableTextOperationResult, ReusableTextMemory
+from agent.memo import MemoOperationResult, Memo
+from agent.ai_intent import looks_like_whole_delete_instruction
 from agent.voice_text_operation import VoiceTextOperation
 
 _WRITE_SYSTEM = """你是一个写作助手。根据用户的要求直接输出所需内容，不要有任何前缀、解释或额外说明。只输出内容本身。不要使用换行，所有内容写成连续的段落。必须使用完整的中文标点符号，常用标点包括逗号、句号、冒号、分号、问号、感叹号、破折号、省略号，不得省略任何必要标点。"""
 
-_SENTENCE_END = frozenset('。！？.!?…，,；;')
+_SENTENCE_END = frozenset('。！？.!?…')
 _LOCAL_BREAK = 28
 _HARD_BREAK = 52
 _CLAUSE_HINTS = (
@@ -31,7 +33,7 @@ class InstructionModeExecutor:
         self,
         llm_editor,
         input_environment,
-        reusable_text_memory_store=None,
+        memo_store=None,
         show: Callable[[str], None] | None = None,
         set_status: Callable[[str], None] | None = None,
         text_io: ContextManager | None = None,
@@ -39,13 +41,19 @@ class InstructionModeExecutor:
     ):
         self._llm = llm_editor
         self._env = input_environment
-        self._memory = ReusableTextMemory(reusable_text_memory_store)
+        self._memo = Memo(memo_store)
         self._show = show or (lambda message: print(message))
         self._set_status = set_status or (lambda state: None)
         self._text_io = text_io
         self._provider_call_timeout = provider_call_timeout
 
-    def execute(self, operation: VoiceTextOperation, instruction: str, selected: str) -> bool:
+    def execute(
+        self,
+        operation: VoiceTextOperation,
+        instruction: str,
+        selected: str,
+        target: TextTarget | None = None,
+    ) -> bool:
         if operation.kind == "shortcut":
             policy = self._env.shortcut_policy_for_invocation(operation.name)
             if not policy.found:
@@ -69,17 +77,17 @@ class InstructionModeExecutor:
         elif operation.kind == "delete":
             self._do_delete(instruction, selected)
         elif operation.kind == "edit":
-            self._do_edit(instruction, selected)
+            self._do_edit(instruction, selected, target)
         elif operation.kind == "write":
             return bool(self._do_write(instruction, selected))
-        elif operation.kind == "reusable_text_save":
-            self._do_reusable_text_save(operation.key, operation.value, selected)
-        elif operation.kind == "reusable_text_recall":
-            return bool(self._do_reusable_text_recall(operation.key, selected))
-        elif operation.kind == "reusable_text_delete":
-            self._do_reusable_text_delete(operation.key)
-        elif operation.kind == "reusable_text_list":
-            return bool(self._do_reusable_text_list(selected))
+        elif operation.kind == "memo_save":
+            self._do_memo_save(operation.key, operation.value, selected)
+        elif operation.kind == "memo_recall":
+            return bool(self._do_memo_recall(operation.key, selected))
+        elif operation.kind == "memo_delete":
+            self._do_memo_delete(operation.key)
+        elif operation.kind == "memo_list":
+            return bool(self._do_memo_list(selected))
         else:
             return self._do_chat(instruction, operation)
         return False
@@ -87,7 +95,7 @@ class InstructionModeExecutor:
     def _io(self) -> ContextManager:
         return self._text_io if self._text_io is not None else nullcontext()
 
-    def _handle_memory_result(self, result: ReusableTextOperationResult, selected: str = "") -> bool:
+    def _handle_memo_result(self, result: MemoOperationResult, selected: str = "") -> bool:
         if result.action == "insert":
             insertion = self._env.insert_generated_text(result.text)
             if insertion.failure == "no_focused_input":
@@ -114,15 +122,37 @@ class InstructionModeExecutor:
         self._show(reply)
         return True
 
-    def _do_edit(self, instruction: str, selected: str) -> None:
-        window = self._operation_window_or_prompt("修改", "编辑")
+    def _do_edit(
+        self,
+        instruction: str,
+        selected: str,
+        target: TextTarget | None = None,
+    ) -> None:
+        whole_scope = _is_whole_scope_edit_instruction(instruction)
+        window = self._operation_window_or_prompt(
+            "修改",
+            "编辑",
+            target=target,
+            prefer_tracked_segment=not whole_scope,
+        )
         if window is None:
             return
-        if window.source != "explicit_selection" and not _is_whole_scope_edit_instruction(
-            instruction
+        if (
+            window.source == "caret"
+            and window.target.tracked_segment
+            and not whole_scope
         ):
-            self._show("请先选中你想修改的内容")
-            return
+            window = replace(
+                window,
+                text=window.target.tracked_segment,
+                source="tracked_segment",
+            )
+        if window.source != "explicit_selection" and not whole_scope:
+            if window.source == "tracked_segment":
+                print("[ai] 未框选内容，默认编辑最后一次输出")
+            else:
+                self._show("请先选中你想修改的内容")
+                return
 
         try:
             plan = self._replacement_plan(window.text, instruction)
@@ -214,65 +244,32 @@ class InstructionModeExecutor:
             + "出现“例如、比如、包括、如下”这类引出举例或列表的词时，后面优先使用冒号；"
             + "每20到35个汉字至少使用一个逗号或句号，禁止输出无标点长段。）"
         )
-        pending = ""
-        total = ""
+        generated = ""
         try:
             for chunk in self._llm.chat_stream(_WRITE_SYSTEM, write_instruction):
                 chunk = chunk.replace('\n', ' ').replace('\r', ' ')
-                pending += chunk
-                while True:
-                    idx = next((i for i, c in enumerate(pending) if c in _SENTENCE_END), -1)
-                    if idx == -1:
-                        forced = _forced_punctuation_break(pending)
-                        if forced is not None:
-                            emit, pending = forced
-                            insertion = self._env.insert_generated_text(
-                                normalize_spoken_punctuation(emit)
-                            )
-                            if insertion.ok:
-                                total += insertion.inserted_text
-                            elif insertion.failure == "no_focused_input":
-                                self._show("未点击到输入框，已取消输出")
-                                return False
-                            elif insertion.failure == "copied_to_clipboard":
-                                self._show_copied(insertion.copied_text or emit)
-                                return True
-                        break
-                    sentence = pending[:idx + 1]
-                    pending = pending[idx + 1:]
-                    insertion = self._env.insert_generated_text(
-                        normalize_spoken_punctuation(sentence)
-                    )
-                    if insertion.ok:
-                        total += insertion.inserted_text
-                    elif insertion.failure == "no_focused_input":
-                        self._show("未点击到输入框，已取消输出")
-                        return False
-                    elif insertion.failure == "copied_to_clipboard":
-                        self._show_copied(insertion.copied_text or sentence)
-                        return True
+                generated += chunk
         except Exception as e:
             print(f"[ai] 写作失败: {e}")
             return False
 
-        if pending.strip():
-            tail = _finish_write_tail(pending)
-            insertion = self._env.insert_generated_text(tail)
-            if insertion.ok:
-                total += insertion.inserted_text
-            elif insertion.failure == "no_focused_input":
-                self._show("未点击到输入框，已取消输出")
-                return False
-            elif insertion.failure == "copied_to_clipboard":
-                self._show_copied(insertion.copied_text or tail)
-                return True
+        text = _finish_write_tail(generated)
+        if not text:
+            return False
+        insertion = self._env.insert_generated_text(text)
+        if insertion.failure == "no_focused_input":
+            self._show("未点击到输入框，已取消输出")
+            return False
+        if insertion.failure == "copied_to_clipboard":
+            self._show_copied(insertion.copied_text or text)
+            return True
 
         return False
 
     def _do_delete(self, instruction: str, selected: str) -> None:
         whole_window_delete = _is_whole_window_delete_instruction(instruction)
         if whole_window_delete:
-            lookup = self._env.operation_window_for_instruction()
+            lookup = self._env.operation_window_for_instruction(prefer_tracked_segment=False)
             if not lookup.ok:
                 if not self._env.delete_all_text_by_shortcut():
                     self._show("没有可删除的内容")
@@ -302,8 +299,29 @@ class InstructionModeExecutor:
         else:
             self._show("没有可删除的内容")
 
-    def _operation_window_or_prompt(self, action: str, noun: str):
-        lookup = self._env.operation_window_for_instruction()
+    def _operation_window_or_prompt(
+        self,
+        action: str,
+        noun: str,
+        target: TextTarget | None = None,
+        prefer_tracked_segment: bool = True,
+    ):
+        if prefer_tracked_segment:
+            if target is not None and target.selected:
+                return OperationWindow(
+                    text=target.selected,
+                    target=target,
+                    source="explicit_selection",
+                )
+            if target is not None and target.tracked_segment:
+                return OperationWindow(
+                    text=target.tracked_segment,
+                    target=target,
+                    source="tracked_segment",
+                )
+        lookup = self._env.operation_window_for_instruction(
+            prefer_tracked_segment=prefer_tracked_segment
+        )
         if not lookup.ok:
             self._show(f"没有可{noun}的内容")
             return None
@@ -315,17 +333,17 @@ class InstructionModeExecutor:
             return
         self._show("没有找到快捷键：撤销")
 
-    def _do_reusable_text_save(self, key: str, value: str, selected: str) -> None:
-        self._handle_memory_result(self._memory.save(key, value, selected), selected)
+    def _do_memo_save(self, key: str, value: str, selected: str) -> None:
+        self._handle_memo_result(self._memo.save(key, value, selected), selected)
 
-    def _do_reusable_text_recall(self, key: str, selected: str) -> bool:
-        return self._handle_memory_result(self._memory.recall(key), selected)
+    def _do_memo_recall(self, key: str, selected: str) -> bool:
+        return self._handle_memo_result(self._memo.recall(key), selected)
 
-    def _do_reusable_text_list(self, selected: str) -> bool:
-        return self._handle_memory_result(self._memory.list_all(), selected)
+    def _do_memo_list(self, selected: str) -> bool:
+        return self._handle_memo_result(self._memo.list_all(), selected)
 
-    def _do_reusable_text_delete(self, key: str) -> None:
-        self._handle_memory_result(self._memory.delete(key))
+    def _do_memo_delete(self, key: str) -> None:
+        self._handle_memo_result(self._memo.delete(key))
 
     def _show_copied(self, text: str) -> None:
         preview = str(text or "").replace("\n", " ")[:60]
@@ -374,22 +392,7 @@ def _finish_write_tail(text: str) -> str:
 
 
 def _is_whole_window_delete_instruction(text: str) -> bool:
-    compact = "".join(str(text or "").split()).strip("。.!！？?，,；;：:")
-    return compact in {
-        "删除",
-        "删掉",
-        "删了",
-        "清除",
-        "清空",
-        "全部删除",
-        "删除全部",
-        "删掉全部",
-        "全部删掉",
-        "清空全部",
-        "全部清空",
-        "都删掉",
-        "都删除",
-    }
+    return looks_like_whole_delete_instruction(text)
 
 
 def _is_whole_scope_edit_instruction(text: str) -> bool:

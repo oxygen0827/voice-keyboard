@@ -112,17 +112,13 @@ _Avoid_: Default hotkey dump
 A **Shortcut Catalog** for named shortcut actions in the current application context.
 _Avoid_: App macro list, provider shortcut guess
 
-**Reusable Text Operation**:
-A **Voice Text Operation** that saves, recalls, deletes, or lists user-provided reusable text snippets.
+**Memo Operation**:
+A **Voice Text Operation** that saves, recalls, deletes, or lists user-provided memos.
 _Avoid_: Memory Operation, memory command
 
-**Reusable Text Memory**:
+**Memo**:
 A short user-provided text snippet saved for later insertion into the **Input Environment**.
 _Avoid_: Knowledge base, long-term memory, user profile
-
-**Personal Lexicon**:
-A local set of user-taught spoken forms, corrections, and aliases that helps normalize speech before the engine resolves a **Voice Keyboard Operation**.
-_Avoid_: Knowledge base, user profile, chat memory
 
 **Speech Interpretation Provider**:
 An external capability used by the **Voice Keyboard Engine** to turn speech or text context into text or operation decisions.
@@ -141,11 +137,12 @@ _Avoid_: STT provider, LLM provider, model, backend
 - A **Capture Path** supplies speech to either **Dictation Mode** or **Instruction Mode**.
 - A **Software Capture Path** and a **Hardware Capture Path** are both **Capture Paths**.
 - An **Explicit Selection** takes precedence for operations that modify existing text.
-- When there is no **Explicit Selection**, replacement-style operations may use the current safe text range exposed by the **Input Environment** only when the user asks for the whole scope.
-- Local partial replacement or removal without an **Explicit Selection** should fail closed and ask the user to select the text.
+- When there is no **Explicit Selection**, replacement-style edit operations default to the current **Tracked Segment** when one exists.
+- Without an **Explicit Selection** or **Tracked Segment**, local partial replacement should fail closed and ask the user to select the text.
+- Local partial removal without an **Explicit Selection** should fail closed and ask the user to select the text unless the user asks for the whole scope.
 - An **Operation Window** is context for a replacement-style operation; it is not automatically the **Operation Target**.
 - A **Replacement Plan** must be checked against the current **Operation Window** before the engine applies it.
-- **Instruction Mode** may produce a **Text Revision**, **Text Generation**, **Text Removal**, **Shortcut Invocation**, **Application Launch**, **System Window Action**, or **Reusable Text Operation**.
+- **Instruction Mode** may produce a **Text Revision**, **Text Generation**, **Text Removal**, **Shortcut Invocation**, **Application Launch**, **System Window Action**, or **Memo Operation**.
 - Spoken undo is a **Shortcut Invocation** of the current **Input Environment** undo action, not a separate local text history feature.
 - A **Shortcut Invocation** is a **Voice Keyboard Operation** but not a **Voice Text Operation** unless it changes text in the **Input Environment**.
 - **Shortcut Invocation** is a core operation type for common repeated keyboard-style work, not an exhaustive automation surface.
@@ -156,11 +153,10 @@ _Avoid_: STT provider, LLM provider, model, backend
 - **System Window Action** is core only when it affects the current local desktop window through a local adapter.
 - A **Global Shortcut Catalog** supplies common actions; an **Application Shortcut Catalog** supplies current-application actions.
 - When shortcut names conflict, the **Application Shortcut Catalog** takes precedence over the **Global Shortcut Catalog**.
-- A **Reusable Text Operation** acts on **Reusable Text Memory**.
-- **Personal Lexicon** can help resolve a **Reusable Text Operation**, but it does not store insertable snippets.
+- A **Memo Operation** acts on **Memo**.
 - **Text Generation** is core only when the generated text is meant to enter the **Input Environment**.
 - **Text Insertion** inserts text that is already provided or resolved; **Text Generation** creates new insertable text from requirements.
-- **Reusable Text Operation** recall may produce a **Text Insertion** after it resolves a saved text snippet.
+- **Memo Operation** recall may produce a **Text Insertion** after it resolves a saved text snippet.
 - **High-Risk Operation** is an execution policy label, not a separate operation type.
 - Auxiliary feedback is not a core **Voice Keyboard Operation** unless it changes or drives the current **Input Environment**.
 - A **Voice Keyboard Engine** may rely on a **Speech Interpretation Provider** but does not own that provider's account, billing, quota, or model lifecycle.
@@ -182,9 +178,8 @@ _Avoid_: STT provider, LLM provider, model, backend
 - `TextBuffer` and `current_segment` are implementation terms; resolved: the domain term is **Tracked Segment**.
 - "operation object" can mean either the safe context range or the text actually changed; resolved: use **Operation Window** for the safe context and **Operation Target** for the replace/remove span.
 - "chat" exists as an auxiliary feedback behavior, but is not a core **Voice Keyboard Operation** unless it changes or drives the **Input Environment**.
-- Older reusable-snippet operation names were ambiguous; resolved: the domain term is **Reusable Text Operation**.
-- "memory" is limited to **Reusable Text Memory**; it does not mean chat memory, user profiling, cross-device knowledge sync, or a personal knowledge base.
-- "personalization" can mean user profiling or knowledge sync; resolved: inside this context, **Personal Lexicon** only means local speech normalization and aliases.
+- Older reusable-snippet operation names were ambiguous; resolved: the domain term is **Memo Operation**.
+- "memory" is limited to **Memo**; it does not mean chat memory, user profiling, cross-device knowledge sync, or a personal knowledge base.
 - "shortcut" can sound like power-user hotkey automation; resolved: inside this context, **Shortcut Invocation** means a curated low-conflict keyboard-style action for ordinary repeated work.
 - Provider names such as Xunfei, OpenAI, Aliyun, Volcengine, ZhipuAI, and TypeUp Backend are integration choices, not domain terms.
 - "Agent" names a local process and code package, not a domain concept; resolved: domain language uses **Voice Keyboard Engine**.

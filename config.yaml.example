@@ -119,7 +119,7 @@ llm:
 #   provider: glm_asr_2512
 #   api_key: "..."           # 智谱 AI API Key，也可用 .env 的 GLM_API_KEY
 #   model: glm-asr-2512
-#   hotwords: ["Voice Keyboard", "可复用文本", "备忘录", "撤回"]
+#   hotwords: ["Voice Keyboard", "备忘", "撤回"]
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 微润色专用 STT（可选）
@@ -169,8 +169,8 @@ instruction_mode:
     # 目标明确兜底：已有 Explicit Selection 且语音明显是翻译/润色/改写时，
     # 即使模型误判成写作/聊天，也按编辑当前选区处理。
     selected_edit_override: true
-    # 便利类兜底：仅在“我的 X 是什么 / 插入 X”等查询或插入句式下模糊匹配可复用文本。
-    reusable_text_memory_fuzzy_recall: true
+    # 便利类兜底：仅在“我的 X 是什么 / 插入 X”等查询或插入句式下模糊匹配备忘。
+    memo_fuzzy_recall: true
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 打字与自定义快捷键

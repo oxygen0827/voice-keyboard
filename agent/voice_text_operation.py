@@ -10,10 +10,10 @@ OperationKind = Literal[
     "delete",
     "edit",
     "write",
-    "reusable_text_save",
-    "reusable_text_recall",
-    "reusable_text_delete",
-    "reusable_text_list",
+    "memo_save",
+    "memo_recall",
+    "memo_delete",
+    "memo_list",
     "chat",
 ]
 
@@ -39,24 +39,16 @@ def operation_from_intent(result: dict) -> VoiceTextOperation:
 
 
 def _normalize_kind(raw: object) -> OperationKind:
-    legacy_kinds = {
-        "memo_save": "reusable_text_save",
-        "memo_recall": "reusable_text_recall",
-        "memo_delete": "reusable_text_delete",
-        "memo_list": "reusable_text_list",
-    }
-    if raw in legacy_kinds:
-        return legacy_kinds[raw]
     if raw in {
         "shortcut",
         "undo",
         "delete",
         "edit",
         "write",
-        "reusable_text_save",
-        "reusable_text_recall",
-        "reusable_text_delete",
-        "reusable_text_list",
+        "memo_save",
+        "memo_recall",
+        "memo_delete",
+        "memo_list",
         "chat",
     }:
         return raw

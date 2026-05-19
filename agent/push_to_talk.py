@@ -23,7 +23,6 @@ from agent.capture_path_runtime import CapturePathRuntime, PolishToggle
 import agent.typer as _typer
 
 SAMPLE_RATE = 16000
-_DICTATION_STATUS_DELAY_SECONDS = 0.42
 
 try:
     import webrtcvad as _webrtcvad
@@ -242,15 +241,7 @@ class PushToTalk:
             else:
                 label = "录音中"
                 state = "recording"
-            self._recording_status_timer = threading.Timer(
-                _DICTATION_STATUS_DELAY_SECONDS,
-                lambda expected_mode="dictate", expected_state=state: self._show_recording_status_if_active(
-                    expected_mode,
-                    expected_state,
-                ),
-            )
-            self._recording_status_timer.daemon = True
-            self._recording_status_timer.start()
+            self._set_status(state)
         elif self._capture_runtime.active_mode == "ai":
             label = "AI 指令录音中"
             self._set_status("ai_recording")

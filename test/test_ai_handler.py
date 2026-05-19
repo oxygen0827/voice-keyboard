@@ -119,7 +119,7 @@ class InputEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(
             text_io.calls,
-            [("get_selection",), ("jump_to_end",), ("can_insert_text",), ("type_text", "new")],
+            [("get_selection",), ("jump_to_end",), ("type_text", "new")],
         )
         self.assertEqual(buf.current_segment, "new")
 
@@ -208,7 +208,7 @@ class InputEnvironmentTests(unittest.TestCase):
         self.assertIn(("type_text", "dictated"), text_io.calls)
         self.assertEqual(buf.current_segment, "dictated")
 
-    def test_insert_dictation_pastes_when_focus_probe_falls_back(self):
+    def test_insert_dictation_ignores_focus_probe_and_types_directly(self):
         buf = TextBuffer()
         text_io = FakeTextIO()
         text_io.can_insert = False
@@ -220,9 +220,7 @@ class InputEnvironmentTests(unittest.TestCase):
         self.assertEqual(
             text_io.calls,
             [
-                ("can_insert_text",),
-                ("confirm_paste_text", "dictated"),
-                ("paste_text", "dictated"),
+                ("type_text", "dictated"),
             ],
         )
         self.assertTrue(result.ok)
@@ -237,12 +235,11 @@ class InputEnvironmentTests(unittest.TestCase):
 
         result = env.insert_generated_text("generated")
 
-        self.assertFalse(result.ok)
-        self.assertEqual(result.failure, "no_focused_input")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.inserted_text, "generated")
         self.assertEqual(text_io.calls, [
             ("get_selection",),
-            ("can_insert_text",),
-            ("confirm_paste_text", "generated"),
+            ("type_text", "generated"),
         ])
 
     def test_insert_generated_text_moves_out_of_current_explicit_selection(self):
@@ -291,7 +288,7 @@ class InputEnvironmentTests(unittest.TestCase):
         self.assertEqual(result.window.text, "world")
         self.assertEqual(result.window.source, "explicit_selection")
 
-    def test_operation_window_uses_caret_window_without_explicit_selection(self):
+    def test_operation_window_uses_caret_window_without_explicit_selection_or_tracked_output(self):
         text_io = FakeTextIO()
         text_io.caret_window = CaretTextWindow("current sentence.", "caret_sentence")
         env = TyperInputEnvironment(TextBuffer(), text_io=text_io)
@@ -302,6 +299,39 @@ class InputEnvironmentTests(unittest.TestCase):
         self.assertIsNotNone(result.window)
         self.assertEqual(result.window.text, "current sentence.")
         self.assertEqual(result.window.source, "caret")
+
+    def test_operation_window_prefers_last_output_over_caret_window(self):
+        buf = TextBuffer()
+        buf.push("last dictated output")
+        text_io = FakeTextIO()
+        text_io.caret_window = CaretTextWindow("current sentence.", "caret_sentence")
+        env = TyperInputEnvironment(buf, text_io=text_io)
+
+        result = env.operation_window_for_instruction()
+
+        self.assertTrue(result.ok)
+        self.assertIsNotNone(result.window)
+        self.assertEqual(result.window.text, "last dictated output")
+        self.assertEqual(result.window.source, "tracked_segment")
+        self.assertEqual(text_io.calls, [("get_selection",)])
+
+    def test_operation_window_can_prefer_caret_window_for_explicit_whole_scope(self):
+        buf = TextBuffer()
+        buf.push("last dictated output")
+        text_io = FakeTextIO()
+        text_io.caret_window = CaretTextWindow("whole input text", "caret_sentence")
+        env = TyperInputEnvironment(buf, text_io=text_io)
+
+        result = env.operation_window_for_instruction(prefer_tracked_segment=False)
+
+        self.assertTrue(result.ok)
+        self.assertIsNotNone(result.window)
+        self.assertEqual(result.window.text, "whole input text")
+        self.assertEqual(result.window.source, "caret")
+        self.assertEqual(
+            text_io.calls,
+            [("get_selection",), ("get_caret_text_window",)],
+        )
 
     def test_operation_window_prefers_selection_over_caret_window(self):
         text_io = FakeTextIO(selected="selected")
@@ -315,7 +345,7 @@ class InputEnvironmentTests(unittest.TestCase):
         self.assertEqual(result.window.text, "selected")
         self.assertEqual(result.window.source, "explicit_selection")
 
-    def test_operation_window_does_not_fall_back_to_tracked_segment(self):
+    def test_operation_window_falls_back_to_tracked_segment(self):
         buf = TextBuffer()
         buf.push("safe tracked")
         text_io = FakeTextIO()
@@ -324,12 +354,30 @@ class InputEnvironmentTests(unittest.TestCase):
 
         result = env.operation_window_for_instruction()
 
-        self.assertFalse(result.ok)
-        self.assertEqual(result.failure, "no_tracked_segment")
+        self.assertTrue(result.ok)
+        self.assertIsNotNone(result.window)
+        self.assertEqual(result.window.text, "safe tracked")
+        self.assertEqual(result.window.source, "tracked_segment")
         self.assertEqual(
             text_io.calls,
-            [("get_selection",), ("get_caret_text_window",)],
+            [("get_selection",)],
         )
+
+    def test_operation_window_tracks_last_output_not_joined_segment(self):
+        buf = TextBuffer()
+        buf.push("first output")
+        buf.push("second output")
+        text_io = FakeTextIO()
+        text_io.caret_window = None
+        env = TyperInputEnvironment(buf, text_io=text_io)
+
+        result = env.operation_window_for_instruction()
+
+        self.assertTrue(result.ok)
+        self.assertIsNotNone(result.window)
+        self.assertEqual(result.window.text, "second output")
+        self.assertEqual(result.window.target.tracked_segment, "second output")
+        self.assertEqual(result.window.source, "tracked_segment")
 
     def test_replacement_plan_can_replace_subtarget_inside_selected_window(self):
         buf = TextBuffer()
@@ -419,6 +467,31 @@ class InputEnvironmentTests(unittest.TestCase):
             text_io.calls,
             [("replace_text_window", "hello world", "hello earth")],
         )
+
+    def test_replacement_plan_retypes_tracked_segment_when_controlled_replace_fails(self):
+        text_io = FakeTextIO()
+        text_io.can_replace_text_window = False
+        buf = TextBuffer()
+        buf.push("hello world")
+        env = TyperInputEnvironment(buf, text_io=text_io)
+        target = TextTarget(tracked_segment="hello world")
+        window = OperationWindow("hello world", target, "tracked_segment")
+
+        result = env.apply_replacement_plan(
+            window,
+            ReplacementPlan(target_text="world", replacement_text="earth"),
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            text_io.calls,
+            [
+                ("replace_text_window", "hello world", "hello earth"),
+                ("erase_last", "hello world"),
+                ("type_text", "hello earth"),
+            ],
+        )
+        self.assertEqual(buf.current_segment, "hello earth")
 
 
 if __name__ == "__main__":

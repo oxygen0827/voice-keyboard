@@ -1,11 +1,11 @@
-"""Reusable Text Memory operation rules for Instruction Mode."""
+"""Memo operation rules for Instruction Mode."""
 
 from dataclasses import dataclass
 import re
 from typing import Literal, Protocol
 
 
-class ReusableTextMemoryStore(Protocol):
+class MemoStore(Protocol):
     def save(self, key: str, value: str) -> None:
         ...
 
@@ -19,42 +19,42 @@ class ReusableTextMemoryStore(Protocol):
         ...
 
 
-ReusableTextOperationAction = Literal["show", "insert"]
-ReusableTextMemoryResolutionStatus = Literal["exact", "unique", "ambiguous", "none"]
+MemoOperationAction = Literal["show", "insert"]
+MemoResolutionStatus = Literal["exact", "unique", "ambiguous", "none"]
 
 
 @dataclass(frozen=True)
-class ReusableTextOperationResult:
-    action: ReusableTextOperationAction
+class MemoOperationResult:
+    action: MemoOperationAction
     message: str = ""
     text: str = ""
 
     @classmethod
-    def show(cls, message: str) -> "ReusableTextOperationResult":
+    def show(cls, message: str) -> "MemoOperationResult":
         return cls("show", message=message)
 
     @classmethod
-    def insert(cls, text: str) -> "ReusableTextOperationResult":
+    def insert(cls, text: str) -> "MemoOperationResult":
         return cls("insert", text=text)
 
 
 @dataclass(frozen=True)
-class ReusableTextMemoryEditCommand:
+class MemoEditCommand:
     target: str
     old: str
     new: str
 
 
 @dataclass(frozen=True)
-class ReusableTextMemoryRecord:
+class MemoRecord:
     key: str
     value: str = ""
     aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
-class ReusableTextMemoryResolution:
-    status: ReusableTextMemoryResolutionStatus
+class MemoResolution:
+    status: MemoResolutionStatus
     key: str = ""
     candidates: tuple[str, ...] = ()
     query: str = ""
@@ -66,103 +66,103 @@ class ReusableTextMemoryResolution:
 
     def feedback(self) -> str:
         if self.status == "ambiguous" and self.candidates:
-            return f"找到多个可复用文本：{'、'.join(self.candidates)}，请说得更具体"
-        return "没有找到匹配的可复用文本"
+            return f"找到多个备忘：{'、'.join(self.candidates)}，请说得更具体"
+        return "没有找到匹配的备忘"
 
 
-class ReusableTextMemory:
-    def __init__(self, store: ReusableTextMemoryStore | None):
+class Memo:
+    def __init__(self, store: MemoStore | None):
         self._store = store
 
-    def save(self, key: str, value: str, selected: str = "") -> ReusableTextOperationResult:
+    def save(self, key: str, value: str, selected: str = "") -> MemoOperationResult:
         if self._store is None:
-            return ReusableTextOperationResult.show("可复用文本功能未启用")
+            return MemoOperationResult.show("备忘功能未启用")
         key = (key or "").strip()
         final_value = selected.strip() or (value or "").strip()
         if not key:
-            return ReusableTextOperationResult.show("没听清楚要记成什么名字")
+            return MemoOperationResult.show("没听清楚要记成什么名字")
         if not final_value:
-            return ReusableTextOperationResult.show("没有要记的内容，请先选中或在话里说出来")
+            return MemoOperationResult.show("没有要记的内容，请先选中或在话里说出来")
         self._store.save(key, final_value)
-        print(f"[reusable-text-memory] 已保存 {key!r} ({_value_log_summary(key, final_value)})")
-        return ReusableTextOperationResult.show(f"已记住「{key}」")
+        print(f"[memo] 已保存 {key!r} ({_value_log_summary(key, final_value)})")
+        return MemoOperationResult.show(f"已记住「{key}」")
 
-    def recall(self, key: str) -> ReusableTextOperationResult:
+    def recall(self, key: str) -> MemoOperationResult:
         if self._store is None:
-            return ReusableTextOperationResult.show("可复用文本功能未启用")
+            return MemoOperationResult.show("备忘功能未启用")
         key = (key or "").strip()
         if not key:
-            return ReusableTextOperationResult.show("没听清楚要查什么")
+            return MemoOperationResult.show("没听清楚要查什么")
         value = self._store.get(key)
         if value is None:
-            return ReusableTextOperationResult.show(f"没记过「{key}」")
-        print(f"[reusable-text-memory] 读取 {key!r} ({_value_log_summary(key, value)})")
-        return ReusableTextOperationResult.insert(value)
+            return MemoOperationResult.show(f"没记过「{key}」")
+        print(f"[memo] 读取 {key!r} ({_value_log_summary(key, value)})")
+        return MemoOperationResult.insert(value)
 
-    def list_all(self) -> ReusableTextOperationResult:
+    def list_all(self) -> MemoOperationResult:
         if self._store is None:
-            return ReusableTextOperationResult.show("可复用文本功能未启用")
+            return MemoOperationResult.show("备忘功能未启用")
         keys = self._store.keys()
         if not keys:
-            return ReusableTextOperationResult.show("可复用文本是空的")
-        lines = [f"{key}: {redact_memory_value(key, self._store.get(key) or '')}" for key in keys]
-        print(f"[reusable-text-memory] 列出 {len(keys)} 条")
-        return ReusableTextOperationResult.insert("\n".join(lines))
+            return MemoOperationResult.show("备忘是空的")
+        lines = [f"{key}: {redact_memo_value(key, self._store.get(key) or '')}" for key in keys]
+        print(f"[memo] 列出 {len(keys)} 条")
+        return MemoOperationResult.insert("\n".join(lines))
 
-    def delete(self, key: str) -> ReusableTextOperationResult:
+    def delete(self, key: str) -> MemoOperationResult:
         if self._store is None:
-            return ReusableTextOperationResult.show("可复用文本功能未启用")
+            return MemoOperationResult.show("备忘功能未启用")
         key = (key or "").strip()
         if not key:
-            return ReusableTextOperationResult.show("没听清楚要删哪一条")
+            return MemoOperationResult.show("没听清楚要删哪一条")
         if self._store.delete(key):
-            print(f"[reusable-text-memory] 已删除 {key!r}")
-            return ReusableTextOperationResult.show(f"已忘掉「{key}」")
-        return ReusableTextOperationResult.show(f"没记过「{key}」")
+            print(f"[memo] 已删除 {key!r}")
+            return MemoOperationResult.show(f"已忘掉「{key}」")
+        return MemoOperationResult.show(f"没记过「{key}」")
 
-    def edit_text(self, target: str, old: str, new: str) -> ReusableTextOperationResult:
+    def edit_text(self, target: str, old: str, new: str) -> MemoOperationResult:
         if self._store is None:
-            return ReusableTextOperationResult.show("可复用文本功能未启用")
+            return MemoOperationResult.show("备忘功能未启用")
         target = (target or "").strip()
         old = (old or "").strip()
         new = (new or "").strip()
         if not old or not new:
-            return ReusableTextOperationResult.show("没听清楚要把什么改成什么")
+            return MemoOperationResult.show("没听清楚要把什么改成什么")
         keys = self._store.keys()
-        candidates = _memory_edit_candidates(keys, self._store.get, target, old)
+        candidates = _memo_edit_candidates(keys, self._store.get, target, old)
         if not candidates:
-            return ReusableTextOperationResult.show("没有找到要编辑的可复用文本")
+            return MemoOperationResult.show("没有找到要编辑的备忘")
         if len(candidates) > 1:
-            return ReusableTextOperationResult.show(
-                f"找到多个可复用文本：{'、'.join(candidates)}，请说得更具体"
+            return MemoOperationResult.show(
+                f"找到多个备忘：{'、'.join(candidates)}，请说得更具体"
             )
         key = candidates[0]
         value = self._store.get(key) or ""
         new_key = _replace_term(key, old, new)
         new_value = _replace_term(value, old, new)
         if new_key == key and new_value == value:
-            return ReusableTextOperationResult.show(f"没有在「{key}」里找到「{old}」")
+            return MemoOperationResult.show(f"没有在「{key}」里找到「{old}」")
         self._store.save(new_key, new_value)
         if new_key != key:
             self._store.delete(key)
         print(
-            "[reusable-text-memory] 已编辑 "
+            "[memo] 已编辑 "
             f"{key!r} -> {new_key!r} ({_value_log_summary(new_key, new_value)})"
         )
-        return ReusableTextOperationResult.show(f"已更新「{new_key}」")
+        return MemoOperationResult.show(f"已更新「{new_key}」")
 
 
 @dataclass(frozen=True)
-class ReusableTextMemoryMatcher:
-    """Matches spoken memory requests to saved Reusable Text Memory names."""
+class MemoMatcher:
+    """Matches spoken memory requests to saved Memo names."""
 
     minimum_overlap: int = 2
     minimum_key_score: float = 0.7
     minimum_request_score: float = 0.6
 
     def match_key(self, text: str, keys: tuple[str, ...]) -> str | None:
-        records = tuple(ReusableTextMemoryRecord(key=key) for key in keys)
-        result = ReusableTextMemoryResolver(
+        records = tuple(MemoRecord(key=key) for key in keys)
+        result = MemoResolver(
             minimum_overlap=self.minimum_overlap,
             minimum_key_score=self.minimum_key_score,
             minimum_request_score=self.minimum_request_score,
@@ -171,15 +171,15 @@ class ReusableTextMemoryMatcher:
 
 
 @dataclass(frozen=True)
-class _ScoredMemoryCandidate:
-    record: ReusableTextMemoryRecord
+class _ScoredMemoCandidate:
+    record: MemoRecord
     score: float
     match_kind: str
     value_type: str
 
 
 @dataclass(frozen=True)
-class ReusableTextMemoryResolver:
+class MemoResolver:
     minimum_overlap: int = 2
     minimum_key_score: float = 0.7
     minimum_request_score: float = 0.6
@@ -189,19 +189,19 @@ class ReusableTextMemoryResolver:
     def resolve(
         self,
         text: str,
-        records: tuple[ReusableTextMemoryRecord, ...],
-    ) -> ReusableTextMemoryResolution:
-        query = extract_memory_query(text)
-        query_text = normalize_memory_text(query)
+        records: tuple[MemoRecord, ...],
+    ) -> MemoResolution:
+        query = extract_memo_query(text)
+        query_text = normalize_memo_text(query)
         if len(query_text) < self.minimum_overlap or not records:
-            return ReusableTextMemoryResolution("none", query=query)
+            return MemoResolution("none", query=query)
 
         candidates = [
             candidate for record in records
             if (candidate := self._score_record(query_text, record)) is not None
         ]
         if not candidates:
-            return ReusableTextMemoryResolution("none", query=query)
+            return MemoResolution("none", query=query)
 
         candidates.sort(key=lambda candidate: candidate.score, reverse=True)
         top = candidates[0]
@@ -210,14 +210,14 @@ class ReusableTextMemoryResolver:
             if top.score - candidate.score <= self.ambiguity_margin
         ]
         if len(tied) > 1:
-            return ReusableTextMemoryResolution(
+            return MemoResolution(
                 "ambiguous",
                 candidates=tuple(candidate.record.key for candidate in tied),
                 query=query,
                 value_type=top.value_type,
             )
         if top.match_kind == "exact":
-            return ReusableTextMemoryResolution(
+            return MemoResolution(
                 "exact",
                 key=top.record.key,
                 candidates=(top.record.key,),
@@ -225,28 +225,28 @@ class ReusableTextMemoryResolver:
                 value_type=top.value_type,
             )
         if top.score >= self.unique_threshold:
-            return ReusableTextMemoryResolution(
+            return MemoResolution(
                 "unique",
                 key=top.record.key,
                 candidates=(top.record.key,),
                 query=query,
                 value_type=top.value_type,
             )
-        return ReusableTextMemoryResolution("none", query=query)
+        return MemoResolution("none", query=query)
 
     def _score_record(
         self,
         query_text: str,
-        record: ReusableTextMemoryRecord,
-    ) -> _ScoredMemoryCandidate | None:
-        key_text = normalize_memory_text(record.key)
-        value_type = detect_memory_value_type(record.key, record.value)
-        query_type = detect_memory_query_type(query_text)
+        record: MemoRecord,
+    ) -> _ScoredMemoCandidate | None:
+        key_text = normalize_memo_text(record.key)
+        value_type = detect_memo_value_type(record.key, record.value)
+        query_type = detect_memo_query_type(query_text)
         name_aliases = _record_name_aliases(record)
         type_aliases = _record_type_aliases(value_type)
         for alias in name_aliases:
             if alias and query_text == alias:
-                return _ScoredMemoryCandidate(record, 1.0, "exact", value_type)
+                return _ScoredMemoCandidate(record, 1.0, "exact", value_type)
 
         best_score = 0.0
         best_kind = "fuzzy"
@@ -269,7 +269,7 @@ class ReusableTextMemoryResolver:
 
         if best_score <= 0:
             return None
-        return _ScoredMemoryCandidate(record, best_score, best_kind, value_type)
+        return _ScoredMemoCandidate(record, best_score, best_kind, value_type)
 
     def _fuzzy_score(self, query_text: str, key_text: str) -> float:
         if len(query_text) < self.minimum_overlap or len(key_text) < self.minimum_overlap:
@@ -288,45 +288,45 @@ class ReusableTextMemoryResolver:
         return max(key_score, request_score)
 
 
-def fuzzy_match_memory_key(text: str, keys: tuple[str, ...]) -> str | None:
-    return ReusableTextMemoryMatcher().match_key(text, keys)
+def fuzzy_match_memo_key(text: str, keys: tuple[str, ...]) -> str | None:
+    return MemoMatcher().match_key(text, keys)
 
 
-def memory_key_matches_request(text: str, key: str) -> bool:
-    return fuzzy_match_memory_key(text, (key,)) == key
+def memo_key_matches_request(text: str, key: str) -> bool:
+    return fuzzy_match_memo_key(text, (key,)) == key
 
 
-def resolve_memory_key(
+def resolve_memo_key(
     text: str,
-    records: tuple[ReusableTextMemoryRecord, ...],
-) -> ReusableTextMemoryResolution:
-    return ReusableTextMemoryResolver().resolve(text, records)
+    records: tuple[MemoRecord, ...],
+) -> MemoResolution:
+    return MemoResolver().resolve(text, records)
 
 
-def parse_memory_edit_command(text: str) -> ReusableTextMemoryEditCommand | None:
+def parse_memo_edit_command(text: str) -> MemoEditCommand | None:
     cleaned = str(text or "").strip().strip("。！？!? ")
-    recent = _parse_recent_memory_edit_command(cleaned)
+    recent = _parse_recent_memo_edit_command(cleaned)
     if recent is not None:
         return recent
     patterns = (
-        r"^把(.+?)这条(?:记忆|备忘|可复用文本)(?:里|中的)?(.+?)(?:改成|替换成|写成)(.+)$",
-        r"^(?:把)?(?:记忆|备忘|可复用文本)(?:里|中的)?(.+?)(?:改成|替换成|写成)(.+)$",
+        r"^把(.+?)这条(?:记忆|备忘|备忘)(?:里|中的)?(.+?)(?:改成|替换成|写成)(.+)$",
+        r"^(?:把)?(?:记忆|备忘|备忘)(?:里|中的)?(.+?)(?:改成|替换成|写成)(.+)$",
     )
     for pattern in patterns:
         match = re.match(pattern, cleaned)
         if not match:
             continue
-        groups = tuple(_clean_memory_edit_part(group) for group in match.groups())
+        groups = tuple(_clean_memo_edit_part(group) for group in match.groups())
         if len(groups) == 3:
             target, old, new = groups
         else:
             target, old, new = "", groups[0], groups[1]
         if old and new and old != new:
-            return ReusableTextMemoryEditCommand(target=target, old=old, new=new)
+            return MemoEditCommand(target=target, old=old, new=new)
     return None
 
 
-def _parse_recent_memory_edit_command(cleaned: str) -> ReusableTextMemoryEditCommand | None:
+def _parse_recent_memo_edit_command(cleaned: str) -> MemoEditCommand | None:
     if not cleaned.startswith("刚刚说的"):
         return None
     body = cleaned[len("刚刚说的"):]
@@ -334,16 +334,16 @@ def _parse_recent_memory_edit_command(cleaned: str) -> ReusableTextMemoryEditCom
     if not marker_match:
         return None
     before = body[:marker_match.start()]
-    new = _clean_memory_edit_part(body[marker_match.end():])
+    new = _clean_memo_edit_part(body[marker_match.end():])
     split_match = re.search(r"[，,]?(那个|其中的)", before)
     if split_match:
-        target = _clean_memory_edit_part(before[:split_match.start()])
-        old = _clean_memory_edit_part(before[split_match.end():])
+        target = _clean_memo_edit_part(before[:split_match.start()])
+        old = _clean_memo_edit_part(before[split_match.end():])
     else:
         target = ""
-        old = _clean_memory_edit_part(before)
+        old = _clean_memo_edit_part(before)
     if old and new and old != new:
-        return ReusableTextMemoryEditCommand(target=target, old=old, new=new)
+        return MemoEditCommand(target=target, old=old, new=new)
     return None
 
 
@@ -381,7 +381,7 @@ _TYPE_ALIASES = {
 }
 
 
-def extract_memory_query(text: str) -> str:
+def extract_memo_query(text: str) -> str:
     query = (text or "").strip()
     for prefix in _QUERY_PREFIXES:
         if query.startswith(prefix):
@@ -400,7 +400,7 @@ def extract_memory_query(text: str) -> str:
     return query
 
 
-def normalize_memory_text(text: str) -> str:
+def normalize_memo_text(text: str) -> str:
     normalized = _PUNCTUATION_RE.sub("", text or "").lower()
     replacements = (
         ("手机号码", "手机号"),
@@ -419,10 +419,10 @@ def normalize_memory_text(text: str) -> str:
     return normalized
 
 
-def detect_memory_query_type(query_text: str) -> str:
-    text = normalize_memory_text(query_text)
+def detect_memo_query_type(query_text: str) -> str:
+    text = normalize_memo_text(query_text)
     for value_type, aliases in _TYPE_ALIASES.items():
-        if any(normalize_memory_text(alias) == text for alias in aliases):
+        if any(normalize_memo_text(alias) == text for alias in aliases):
             return value_type
     if any(marker in text for marker in ("邮箱", "email")):
         return "contact.email"
@@ -439,8 +439,8 @@ def detect_memory_query_type(query_text: str) -> str:
     return ""
 
 
-def detect_memory_value_type(key: str, value: str) -> str:
-    key_text = normalize_memory_text(key)
+def detect_memo_value_type(key: str, value: str) -> str:
+    key_text = normalize_memo_text(key)
     value_text = value or ""
     if "github.com" in value_text.lower() or ("仓库" in key_text and "地址" in key_text):
         return "repo_url"
@@ -450,7 +450,7 @@ def detect_memory_value_type(key: str, value: str) -> str:
         return "contact.email"
     if _PHONE_RE.search(value_text) or any(marker in key_text for marker in ("手机号", "联系电话")):
         return "contact.phone"
-    if is_sensitive_memory(key, value) and any(
+    if is_sensitive_memo(key, value) and any(
         marker in key_text for marker in ("api", "密钥", "秘钥", "key", "token")
     ):
         return "api_key"
@@ -459,14 +459,14 @@ def detect_memory_value_type(key: str, value: str) -> str:
     return "text"
 
 
-def redact_memory_value(key: str, value: str) -> str:
-    if is_sensitive_memory(key, value):
+def redact_memo_value(key: str, value: str) -> str:
+    if is_sensitive_memo(key, value):
         return "[已隐藏]"
     return value
 
 
-def is_sensitive_memory(key: str, value: str) -> bool:
-    key_text = normalize_memory_text(key)
+def is_sensitive_memo(key: str, value: str) -> bool:
+    key_text = normalize_memo_text(key)
     value_text = value or ""
     if any(hint in key_text for hint in _SENSITIVE_KEY_HINTS):
         return True
@@ -474,11 +474,11 @@ def is_sensitive_memory(key: str, value: str) -> bool:
 
 
 def _value_log_summary(key: str, value: str) -> str:
-    visibility = "sensitive, hidden" if is_sensitive_memory(key, value) else "value hidden"
+    visibility = "sensitive, hidden" if is_sensitive_memo(key, value) else "value hidden"
     return f"{visibility}, {len(value or '')} chars"
 
 
-def _record_name_aliases(record: ReusableTextMemoryRecord) -> tuple[str, ...]:
+def _record_name_aliases(record: MemoRecord) -> tuple[str, ...]:
     return _merge_aliases((record.key, *record.aliases))
 
 
@@ -489,7 +489,7 @@ def _record_type_aliases(value_type: str) -> tuple[str, ...]:
 def _merge_aliases(raw_aliases: tuple[str, ...]) -> tuple[str, ...]:
     aliases = []
     for alias in raw_aliases:
-        normalized = normalize_memory_text(alias)
+        normalized = normalize_memo_text(alias)
         if normalized and normalized not in aliases:
             aliases.append(normalized)
     return tuple(aliases)
@@ -497,7 +497,7 @@ def _merge_aliases(raw_aliases: tuple[str, ...]) -> tuple[str, ...]:
 
 def _is_generic_type_alias(text: str) -> bool:
     generic_aliases = {
-        normalize_memory_text(alias)
+        normalize_memo_text(alias)
         for aliases in _TYPE_ALIASES.values()
         for alias in aliases
     }
@@ -514,14 +514,14 @@ def _substring_score(query_text: str, alias: str) -> float:
     return 0.0
 
 
-def _memory_edit_candidates(keys: list[str], get_value, target: str, old: str) -> list[str]:
-    target_text = normalize_memory_text(target)
-    old_text = normalize_memory_text(old)
+def _memo_edit_candidates(keys: list[str], get_value, target: str, old: str) -> list[str]:
+    target_text = normalize_memo_text(target)
+    old_text = normalize_memo_text(old)
     matches = []
     for key in keys:
         value = get_value(key) or ""
-        key_text = normalize_memory_text(key)
-        value_text = normalize_memory_text(value)
+        key_text = normalize_memo_text(key)
+        value_text = normalize_memo_text(value)
         if target_text and target_text not in key_text and target_text not in value_text:
             continue
         if old_text in key_text or old_text in value_text:
@@ -536,5 +536,5 @@ def _replace_term(text: str, old: str, new: str) -> str:
     return re.sub(re.escape(old), new, text, flags=flags)
 
 
-def _clean_memory_edit_part(text: str) -> str:
+def _clean_memo_edit_part(text: str) -> str:
     return str(text or "").strip().strip("\"'“”‘’ ，,")

@@ -14,8 +14,8 @@
 | **Shortcut Catalog** | A local catalog of named user-visible shortcut actions available for the current system or application context. | Provider-generated shortcut list, freeform hotkey map |
 | **Global Shortcut Catalog** | A Shortcut Catalog for common system or broadly reusable shortcut actions. | Default hotkey dump |
 | **Application Shortcut Catalog** | A Shortcut Catalog for named shortcut actions in the current application context. | App macro list, provider shortcut guess |
-| **Reusable Text Operation** | A Voice Text Operation that saves, recalls, deletes, or lists user-provided reusable text snippets. | Memory Operation, memory command |
-| **Reusable Text Memory** | A short user-provided text snippet saved for later insertion into the Input Environment. | Knowledge base, long-term memory, user profile |
+| **Memo Operation** | A Voice Text Operation that saves, recalls, deletes, or lists user-provided memos. | Memory Operation, memory command |
+| **Memo** | A short user-provided text snippet saved for later insertion into the Input Environment. | Knowledge base, long-term memory, user profile |
 | **Input Environment** | The application, field, cursor position, and selected text that will receive engine output. | App, editor, textbox |
 | **Speech Interpretation Provider** | An external capability used to turn speech or text context into text or operation decisions. | STT provider, LLM provider, model, backend |
 
@@ -56,8 +56,8 @@
 - **Dictation Mode** produces **Dictation**, which is a **Voice Text Operation**.
 - **Dictation** produces a **Text Insertion** from recognized speech.
 - **Text Insertion** inserts text that is already provided or resolved; **Text Generation** creates new insertable text from requirements.
-- **Reusable Text Operation** recall may produce a **Text Insertion** after it resolves a saved text snippet.
-- In an **Atomic Operation Stack**, **Text Insertion** should come from explicit user text or resolved **Reusable Text Memory**.
+- **Memo Operation** recall may produce a **Text Insertion** after it resolves a saved text snippet.
+- In an **Atomic Operation Stack**, **Text Insertion** should come from explicit user text or resolved **Memo**.
 - An **Atomic Operation Stack** should not combine **Text Generation** with high-risk submission shortcuts without a separate confirmation design.
 - **High-Risk Operation** is an execution policy label, not a separate operation type.
 - Local execution policy has final authority over whether a **Voice Keyboard Operation** is high risk.
@@ -72,7 +72,7 @@
 - A **Speech Interpretation Provider** may choose from a **Shortcut Catalog** but should not invent shortcut actions or key sequences.
 - A **Global Shortcut Catalog** supplies common actions; an **Application Shortcut Catalog** supplies current-application actions.
 - When shortcut names conflict, the **Application Shortcut Catalog** takes precedence over the **Global Shortcut Catalog**.
-- A **Reusable Text Operation** acts on **Reusable Text Memory** and is not AI memory, user profiling, or a personal knowledge base.
+- A **Memo Operation** acts on **Memo** and is not AI memory, user profiling, or a personal knowledge base.
 - A **Speech Interpretation Provider** may help classify or generate an operation, but the product identity is voice-driven keyboard efficiency, not chat-first or AI-native interaction.
 
 ## Example dialogue
@@ -82,7 +82,7 @@
 > **Dev:** "So saying 'save', 'undo', or 'send' should be modeled beside editing text?"
 > **Domain expert:** "Yes. Those are **Voice Keyboard Operations**. Text edits are **Voice Text Operations**, while app shortcuts are **Shortcut Invocations**."
 > **Dev:** "What about saving my email or a common reply?"
-> **Domain expert:** "That is a **Reusable Text Operation** over **Reusable Text Memory**, not AI memory."
+> **Domain expert:** "That is a **Memo Operation** over **Memo**, not AI memory."
 > **Dev:** "Where does the model provider fit?"
 > **Domain expert:** "A **Speech Interpretation Provider** can help understand speech, but it does not define the product boundary."
 
@@ -92,5 +92,5 @@
 - "Voice typing" is too narrow; **Dictation** is only one **Voice Text Operation**.
 - "Voice command" is vague; use **Voice Keyboard Operation** for the general operation and **Shortcut Invocation** for named shortcut execution.
 - "AI key mode" describes an implementation trigger; use **Instruction Mode** for the user intent.
-- "Memory Operation" implies AI memory; use **Reusable Text Operation** for saving, recalling, deleting, and listing reusable text snippets.
+- "Memory Operation" implies AI memory; use **Memo Operation** for saving, recalling, deleting, and listing memos.
 - "Operation Sequence" makes permission, confirmation, and rollback too broad when it implies autonomous planning; use **Atomic Operation Stack** only for user-explicit ordered operations.

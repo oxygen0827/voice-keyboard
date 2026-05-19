@@ -9,21 +9,21 @@ from typing import Callable, Optional
 from PyObjCTools import AppHelper
 
 from agent.history import History
-from agent.reusable_text_memory_store import ReusableTextMemoryStore
+from agent.memo_store import MemoStore
 
 
 class UIApp:
-    """生命周期组合：history / reusable_text_memory / 后端 reload 回调 / 菜单栏 / 主窗口。"""
+    """生命周期组合：history / memo / 后端 reload 回调 / 菜单栏 / 主窗口。"""
 
     def __init__(
         self,
         history: History,
-        reusable_text_memory: ReusableTextMemoryStore,
+        memo: MemoStore,
         reload_backend: Callable[[], None],
         retype_callback: Callable[[str], None],
     ):
         self.history = history
-        self.reusable_text_memory = reusable_text_memory
+        self.memo = memo
         self._reload_backend = reload_backend
         self._retype_callback = retype_callback
         self.menubar = None

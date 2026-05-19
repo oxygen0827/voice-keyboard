@@ -107,6 +107,7 @@ class _TypeUpBackendLLM:
 class LLMEditor:
     def __init__(self, cfg: dict):
         provider = cfg.get("provider", "openai")
+        self.supports_streaming = False
 
         if provider == "openai":
             from openai import OpenAI
@@ -116,6 +117,7 @@ class LLMEditor:
             self._client = OpenAI(**kwargs)
             self._model  = cfg.get("model", "gpt-4o-mini")
             self._edit   = self._openai_edit
+            self.supports_streaming = True
 
         elif provider == "aliyun":
             # 通义千问，兼容 OpenAI SDK
@@ -127,6 +129,7 @@ class LLMEditor:
             )
             self._model = cfg.get("model", "qwen-turbo")
             self._edit  = self._openai_edit
+            self.supports_streaming = True
 
         elif provider == "volcengine":
             # 豆包，兼容 OpenAI SDK
@@ -138,6 +141,7 @@ class LLMEditor:
             )
             self._model = cfg.get("model", "doubao-lite-4k")
             self._edit  = self._openai_edit
+            self.supports_streaming = True
 
         elif provider == "zhipuai":
             # 智谱 AI GLM，使用原生 zhipuai SDK，但显式注入带 certifi 的 httpx client，
@@ -154,6 +158,7 @@ class LLMEditor:
             )
             self._model        = cfg.get("model", "glm-4-flash")
             self._edit         = self._zhipu_edit
+            self.supports_streaming = True
 
         elif provider == "typeup_backend":
             self._backend_client = _TypeUpBackendLLM(cfg)
@@ -178,7 +183,7 @@ class LLMEditor:
         return _parse_replacement_plan(text)
 
     def chat_stream(self, system_prompt: str, user_message: str):
-        """流式调用，逐 token yield 文字片段。"""
+        """流式调用，逐 token yield 文字片段；非流式 provider 只 yield 一次完整文本。"""
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_message},

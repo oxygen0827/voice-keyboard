@@ -13,7 +13,7 @@ The original friction was that Instruction Mode crossed several shallow interfac
 
 The result was poor locality. The current implementation concentrates text-side effects in `TyperInputEnvironment`; `TextBuffer` remains an implementation detail inside that adapter.
 
-The current design pressure is simpler: behave like a lightweight voice keyboard. An Explicit Selection takes precedence. Without one, local partial editing should ask the user to select text. Whole-scope requests such as "translate the whole input box" may use the current safe Operation Window exposed by the Input Environment.
+The current design pressure is simpler: behave like a lightweight voice keyboard. An Explicit Selection takes precedence. Without one, local partial editing may use the current Tracked Segment when the engine can still prove it owns that text. Whole-scope requests such as "translate the whole input box" may use the current safe Operation Window exposed by the Input Environment. Partial removal without an Explicit Selection still asks the user to select text.
 
 ## Target Module
 
@@ -73,7 +73,7 @@ It owns:
 5. Done: update focused tests to assert through the Input Environment interface.
 6. Done: add atomic target-change operations for Text Revision and Text Removal so Instruction Mode no longer owns the Explicit Selection branch rules.
 7. Removed: local undo history; spoken undo is now the current application undo shortcut.
-8. Done: add generated-text insertion so Text Generation and Reusable Text Operation insertion no longer pass Explicit Selection state through Instruction Mode.
+8. Done: add generated-text insertion so Text Generation and Memo Operation insertion no longer pass Explicit Selection state through Instruction Mode.
 9. Done: route Dictation Mode insertion through the same adapter.
 10. Done: put platform text IO calls behind `agent/text_io.py` so Input Environment tests can use the seam without patching `agent.typer`.
 11. Done: introduce Operation Window and Replacement Plan types.
@@ -87,10 +87,10 @@ Tests should cover the interface:
 
 - Explicit Selection replacement updates the Tracked Segment when the selection is the suffix.
 - Explicit Selection deletion updates the Tracked Segment when the selection is the suffix.
-- Text Generation and Reusable Text Operation insertion move out of an Explicit Selection before inserting.
-- Text Generation and Reusable Text Operation insertion can be requested without passing Explicit Selection state through Instruction Mode.
+- Text Generation and Memo Operation insertion move out of an Explicit Selection before inserting.
+- Text Generation and Memo Operation insertion can be requested without passing Explicit Selection state through Instruction Mode.
 - An Operation Window can be larger than the Operation Target.
-- Without an Explicit Selection, local partial replacement/removal asks for selection.
+- Without an Explicit Selection, local partial replacement may use the current Tracked Segment; local partial removal asks for selection.
 - Without an Explicit Selection, whole-scope replacement/removal may use the current safe Operation Window.
 - Replacement Plan application refuses changes whose target text is absent, duplicated ambiguously, or outside the current Operation Window.
 

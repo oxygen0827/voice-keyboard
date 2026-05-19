@@ -159,7 +159,7 @@ def make_serial_handlers(buf: TextBuffer, history: History | None = None, input_
 
 def make_utterance_handler(stt_client, buf: TextBuffer, editor=None,
                            status_window=None, history: History | None = None,
-                           input_environment=None, personal_lexicon=None):
+                           input_environment=None):
     return _make_dictation_utterance_handler(
         stt_client,
         buf,
@@ -167,7 +167,6 @@ def make_utterance_handler(stt_client, buf: TextBuffer, editor=None,
         status_window=status_window,
         history=history,
         input_environment=input_environment,
-        personal_lexicon=personal_lexicon,
     )
 
 
@@ -309,10 +308,10 @@ def main():
     if status_window is not None and not args.no_ui:
         try:
             from agent.ui.app import UIApp
-            from agent.reusable_text_memory_store import ReusableTextMemoryStore
+            from agent.memo_store import MemoStore
             ui_app = UIApp(
                 history=history,
-                reusable_text_memory=ReusableTextMemoryStore(),
+                memo=MemoStore(),
                 reload_backend=reload_backend,
                 retype_callback=retype,
             )

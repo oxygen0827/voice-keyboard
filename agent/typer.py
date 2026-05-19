@@ -94,7 +94,7 @@ def init(cfg: dict) -> None:
     global _use_clipboard_mode
     _use_clipboard_mode = cfg.get("method", "unicode") == "clip"
     if _use_clipboard_mode:
-        print("[typer] 剪贴板粘贴模式（适合微信等应用）")
+        print("[typer] 直接打字模式（已禁用焦点检测和剪贴板粘贴）")
     _load_blocked_shortcuts(cfg)
     _load_custom_shortcuts(cfg.get("shortcuts", {}))
     _APP_SHORTCUTS.clear()
@@ -161,78 +161,16 @@ def type_text(text: str) -> None:
     if not text:
         return
     if _OS == "Darwin":
-        if _use_clipboard_mode:
-            replace_selection(text)
-        else:
-            _type_via_quartz(text)
+        _type_via_quartz(text)
     elif _OS == "Windows":
-        if _use_clipboard_mode:
-            _type_via_clipboard_win(text)
-        else:
-            _type_via_sendinput(text)
+        _type_via_sendinput(text)
     else:
         _type_via_xtest(text)  # Linux
 
 
 def has_focused_text_input() -> bool:
-    """Best-effort focus check before emitting text."""
-    global _last_focus_fallback_log
-    if _OS != "Darwin":
-        return True
-    try:
-        app = NSWorkspace.sharedWorkspace().frontmostApplication()
-        pid = app.processIdentifier() if app is not None else None
-        if not pid:
-            print("[typer] focus check: no frontmost app")
-            return False
-        app_name = str(app.localizedName() or "")
-        bundle_id = str(app.bundleIdentifier() or "")
-        elem = ApplicationServices.AXUIElementCreateApplication(pid)
-        err, focused = ApplicationServices.AXUIElementCopyAttributeValue(elem, "AXFocusedUIElement", None)
-        if err != 0 or focused is None:
-            if (
-                _allows_typing_without_focused_element(bundle_id, app_name)
-                or _allows_clipboard_paste_when_focus_uncertain(bundle_id, app_name)
-            ):
-                key = (bundle_id or app_name, pid)
-                if key != _last_focus_fallback_log:
-                    print(
-                        f"[typer] focus check: {app_name} no focused element err={err}, "
-                        "allowed by app fallback"
-                    )
-                    _last_focus_fallback_log = key
-                return True
-            _last_focus_fallback_log = None
-            print(f"[typer] focus check: {app_name} no focused element err={err}")
-            return False
-        err, role = ApplicationServices.AXUIElementCopyAttributeValue(focused, "AXRole", None)
-        if err != 0:
-            print(f"[typer] focus check: {app_name} no role err={err}")
-            return False
-        role_name = str(role)
-        subrole = _ax_string(focused, "AXSubrole")
-        description = _ax_string(focused, "AXDescription")
-        settable_value = _ax_settable(focused, "AXValue")
-        settable_range = _ax_settable(focused, "AXSelectedTextRange")
-        ok = (
-            role_name in {"AXTextField", "AXTextArea", "AXTextView", "AXComboBox"}
-            and (settable_value or settable_range)
-            and not _looks_like_browser_document(bundle_id, role_name, subrole, description)
-        )
-        if not ok and _allows_clipboard_paste_when_focus_uncertain(bundle_id, app_name):
-            ok = True
-        print(
-            "[typer] focus check: "
-            f"app={app_name!r} bundle={bundle_id!r} role={role_name!r} "
-            f"subrole={subrole!r} desc={description!r} "
-            f"value_settable={settable_value} range_settable={settable_range} ok={ok}"
-        )
-        _last_focus_fallback_log = None
-        return ok
-    except Exception as e:
-        _last_focus_fallback_log = None
-        print(f"[typer] focus check failed: {e}")
-        return False
+    """Do not probe focus before typing; emit keys and let the OS/app decide."""
+    return True
 
 
 def _ax_string(element, attr: str) -> str:
@@ -356,6 +294,41 @@ def _allows_clipboard_paste_when_focus_uncertain(bundle_id: str, app_name: str) 
         marker in bundle or marker in name
         for marker in blocked_markers
     )
+
+
+def _should_paste_for_frontmost_app() -> bool:
+    if _OS != "Darwin" or not _use_clipboard_mode:
+        return False
+    app_name, bundle_id, _pid = _frontmost_app_identity()
+    return _should_paste_for_app(bundle_id, app_name)
+
+
+def _should_paste_for_app(bundle_id: str, app_name: str) -> bool:
+    bundle = (bundle_id or "").lower()
+    name = (app_name or "").lower()
+    paste_markers = (
+        "wechat",
+        "weixin",
+        "xinwechat",
+        "wework",
+        "wxwork",
+        "wecom",
+        "lark",
+        "feishu",
+        "dingtalk",
+        "dingding",
+        "slack",
+        "telegram",
+        "discord",
+        "codex",
+        "electron",
+        "googlecode.iterm2",
+        "com.apple.terminal",
+        "iterm",
+        "terminal",
+        "终端",
+    )
+    return any(marker in bundle or marker in name for marker in paste_markers)
 
 
 def confirm_paste_without_focused_input(text: str) -> bool:

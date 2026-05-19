@@ -118,7 +118,7 @@ class InstructionModeExecutorTests(unittest.TestCase):
         replace_selection.assert_not_called()
         self.assertEqual(messages, ["没有找到明确可替换的内容"])
 
-    def test_no_selection_local_edit_prompts_for_selection(self):
+    def test_no_selection_caret_edit_prompts_for_selection(self):
         llm = MagicMock()
         env = MagicMock()
         env.operation_window_for_instruction.return_value = OperationWindowLookupResult.found(
@@ -136,6 +136,106 @@ class InstructionModeExecutorTests(unittest.TestCase):
         llm.plan_replacement.assert_not_called()
         env.apply_replacement_plan.assert_not_called()
         self.assertEqual(messages, ["请先选中你想修改的内容"])
+
+    def test_no_selection_edit_defaults_to_tracked_segment(self):
+        llm = MagicMock()
+        llm.plan_replacement.return_value = ReplacementPlan(
+            target_text="最后一句",
+            replacement_text="Last sentence.",
+        )
+        env = MagicMock()
+        window = OperationWindow(
+            "最后一句",
+            TextTarget(tracked_segment="最后一句"),
+            "tracked_segment",
+        )
+        env.operation_window_for_instruction.return_value = OperationWindowLookupResult.found(
+            window
+        )
+        env.apply_replacement_plan.return_value = TargetChangeResult.changed(
+            "最后一句",
+            "Last sentence.",
+        )
+        executor = InstructionModeExecutor(llm, env)
+
+        executor.execute(VoiceTextOperation("edit"), "翻译成英文", "")
+
+        llm.plan_replacement.assert_called_once_with("最后一句", "翻译成英文")
+        env.apply_replacement_plan.assert_called_once_with(
+            window,
+            ReplacementPlan(target_text="最后一句", replacement_text="Last sentence."),
+        )
+
+    def test_no_selection_edit_prefers_tracked_segment_over_caret_window(self):
+        llm = MagicMock()
+        llm.plan_replacement.return_value = ReplacementPlan(
+            target_text="最后输出",
+            replacement_text="Last output.",
+        )
+        env = MagicMock()
+        original_window = OperationWindow(
+            "输入框里的其他内容。最后输出",
+            TextTarget(tracked_segment="最后输出"),
+            "caret",
+        )
+        env.operation_window_for_instruction.return_value = OperationWindowLookupResult.found(
+            original_window
+        )
+        env.apply_replacement_plan.return_value = TargetChangeResult.changed(
+            "最后输出",
+            "Last output.",
+        )
+        executor = InstructionModeExecutor(llm, env)
+
+        executor.execute(VoiceTextOperation("edit"), "翻译成英文", "")
+
+        llm.plan_replacement.assert_called_once_with("最后输出", "翻译成英文")
+        applied_window = env.apply_replacement_plan.call_args.args[0]
+        self.assertEqual(applied_window.text, "最后输出")
+        self.assertEqual(applied_window.source, "tracked_segment")
+
+    def test_whole_scope_edit_does_not_default_to_tracked_segment(self):
+        llm = MagicMock()
+        llm.plan_replacement.return_value = ReplacementPlan(
+            target_text="输入框里的全部内容",
+            replacement_text="All input text.",
+        )
+        env = MagicMock()
+        caret_window = OperationWindow(
+            "输入框里的全部内容",
+            TextTarget(tracked_segment="最后输出"),
+            "caret",
+        )
+        env.operation_window_for_instruction.return_value = OperationWindowLookupResult.found(
+            caret_window
+        )
+        env.apply_replacement_plan.return_value = TargetChangeResult.changed(
+            "输入框里的全部内容",
+            "All input text.",
+        )
+        executor = InstructionModeExecutor(llm, env)
+
+        executor.execute(
+            VoiceTextOperation("edit"),
+            "把全文翻译成英文",
+            "",
+            TextTarget(tracked_segment="最后输出"),
+        )
+
+        env.operation_window_for_instruction.assert_called_once_with(
+            prefer_tracked_segment=False
+        )
+        llm.plan_replacement.assert_called_once_with(
+            "输入框里的全部内容",
+            "把全文翻译成英文",
+        )
+        env.apply_replacement_plan.assert_called_once_with(
+            caret_window,
+            ReplacementPlan(
+                target_text="输入框里的全部内容",
+                replacement_text="All input text.",
+            ),
+        )
 
     def test_no_selection_local_delete_prompts_for_selection(self):
         llm = MagicMock()
@@ -300,6 +400,26 @@ class InstructionModeExecutorTests(unittest.TestCase):
             ReplacementPlan(target_text="整段内容", replacement_text=""),
         )
 
+    def test_delete_full_text_removes_entire_operation_window_without_selection(self):
+        llm = MagicMock()
+        env = MagicMock()
+        env.operation_window_for_instruction.return_value = OperationWindowLookupResult.found(
+            OperationWindow("全文内容", TextTarget(tracked_segment="最后一句"), "caret")
+        )
+        env.apply_replacement_plan.return_value = TargetChangeResult.changed("全文内容", "")
+        executor = InstructionModeExecutor(llm, env)
+
+        executor.execute(VoiceTextOperation("delete"), "删除全文", "")
+
+        llm.plan_replacement.assert_not_called()
+        env.operation_window_for_instruction.assert_called_once_with(
+            prefer_tracked_segment=False
+        )
+        env.apply_replacement_plan.assert_called_once_with(
+            env.operation_window_for_instruction.return_value.window,
+            ReplacementPlan(target_text="全文内容", replacement_text=""),
+        )
+
     def test_generic_delete_with_punctuation_uses_select_all_fallback_without_window(self):
         llm = MagicMock()
         env = MagicMock()
@@ -316,14 +436,14 @@ class InstructionModeExecutorTests(unittest.TestCase):
         env.delete_all_text_by_shortcut.assert_called_once_with()
         self.assertEqual(messages, [])
 
-    def test_reusable_text_recall_inserts_reusable_text_after_selection(self):
+    def test_memo_recall_inserts_memo_after_selection(self):
         buf = TextBuffer()
-        reusable_text_memory = MagicMock()
-        reusable_text_memory.get.return_value = "me@example.com"
+        memo = MagicMock()
+        memo.get.return_value = "me@example.com"
         executor = InstructionModeExecutor(
             MagicMock(),
             TyperInputEnvironment(buf),
-            reusable_text_memory_store=reusable_text_memory,
+            memo_store=memo,
         )
 
         with (
@@ -332,15 +452,30 @@ class InstructionModeExecutorTests(unittest.TestCase):
             patch("agent.typer.jump_to_end") as jump_to_end,
             patch("agent.typer.type_text") as type_text,
         ):
-            executor.execute(VoiceTextOperation("reusable_text_recall", key="邮箱"), "我的邮箱", "")
+            executor.execute(VoiceTextOperation("memo_recall", key="邮箱"), "我的邮箱", "")
 
-        reusable_text_memory.get.assert_called_once_with("邮箱")
+        memo.get.assert_called_once_with("邮箱")
         jump_to_end.assert_called_once_with()
         type_text.assert_called_once_with("me@example.com")
         self.assertEqual(buf.current_segment, "me@example.com")
 
     def test_write_uses_generated_text_insertion_seam(self):
         llm = MagicMock()
+        llm.chat_stream.return_value = ["第一句。", "第二句。"]
+        llm.supports_streaming = False
+        env = MagicMock()
+        env.insert_generated_text.side_effect = (
+            lambda text: TextInsertionResult(inserted_text=text)
+        )
+        executor = InstructionModeExecutor(llm, env)
+
+        executor.execute(VoiceTextOperation("write"), "写两句", "")
+
+        env.insert_generated_text.assert_called_once_with("第一句。第二句。")
+
+    def test_write_streaming_provider_still_inserts_once_after_completion(self):
+        llm = MagicMock()
+        llm.supports_streaming = True
         llm.chat_stream.return_value = ["第一句。", "第二句。"]
         env = MagicMock()
         env.insert_generated_text.side_effect = (
@@ -350,9 +485,21 @@ class InstructionModeExecutorTests(unittest.TestCase):
 
         executor.execute(VoiceTextOperation("write"), "写两句", "")
 
-        self.assertEqual(env.insert_generated_text.call_count, 2)
-        env.insert_generated_text.assert_any_call("第一句。")
-        env.insert_generated_text.assert_any_call("第二句。")
+        env.insert_generated_text.assert_called_once_with("第一句。第二句。")
+
+    def test_write_waits_for_full_sentence_after_comma(self):
+        llm = MagicMock()
+        llm.supports_streaming = True
+        llm.chat_stream.return_value = ["这是前半句，", "这是后半句。"]
+        env = MagicMock()
+        env.insert_generated_text.side_effect = (
+            lambda text: TextInsertionResult(inserted_text=text)
+        )
+        executor = InstructionModeExecutor(llm, env)
+
+        executor.execute(VoiceTextOperation("write"), "写一句", "")
+
+        env.insert_generated_text.assert_called_once_with("这是前半句，这是后半句。")
 
     def test_write_adds_local_punctuation_when_provider_stream_has_none(self):
         llm = MagicMock()
@@ -368,7 +515,6 @@ class InstructionModeExecutorTests(unittest.TestCase):
         executor.execute(VoiceTextOperation("write"), "介绍北京天安门", "")
 
         inserted = "".join(call.args[0] for call in env.insert_generated_text.call_args_list)
-        self.assertIn("，", inserted)
         self.assertIn("。", inserted)
 
     def test_write_normalizes_common_spoken_punctuation_names(self):
@@ -384,6 +530,30 @@ class InstructionModeExecutorTests(unittest.TestCase):
 
         inserted = "".join(call.args[0] for call in env.insert_generated_text.call_args_list)
         self.assertEqual(inserted, "常见水果例如：苹果香蕉！")
+
+    def test_write_output_can_be_used_as_next_default_edit_target(self):
+        buf = TextBuffer()
+        text_io = MagicMock()
+        text_io.get_selection.return_value = ""
+        text_io.type_text.side_effect = lambda text: buf.push(text)
+        text_io.get_caret_text_window.return_value = None
+        text_io.replace_text_window.return_value = False
+        env = TyperInputEnvironment(buf, text_io=text_io)
+        llm = MagicMock()
+        llm.chat_stream.return_value = ["AI 写出来的内容"]
+        llm.plan_replacement.return_value = ReplacementPlan(
+            target_text="AI 写出来的内容。",
+            replacement_text="编辑后的内容。",
+        )
+        executor = InstructionModeExecutor(llm, env)
+
+        executor.execute(VoiceTextOperation("write"), "写一句", "")
+        executor.execute(VoiceTextOperation("edit"), "编辑一下", "")
+
+        llm.plan_replacement.assert_called_once_with("AI 写出来的内容。", "编辑一下")
+        text_io.erase_last.assert_called_once_with("AI 写出来的内容。")
+        text_io.type_text.assert_any_call("编辑后的内容。")
+        self.assertEqual(buf.last, "编辑后的内容。")
 
     def test_forced_punctuation_break_waits_for_reasonable_length(self):
         self.assertIsNone(_forced_punctuation_break("北京天安门"))

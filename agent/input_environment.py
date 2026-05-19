@@ -21,7 +21,7 @@ class TextTarget:
 class OperationWindow:
     text: str
     target: TextTarget
-    source: Literal["explicit_selection", "caret"]
+    source: Literal["explicit_selection", "caret", "tracked_segment"]
 
 
 @dataclass(frozen=True)
@@ -105,11 +105,17 @@ class TyperInputEnvironment:
         selected = self._text_io.get_selection()
         return TextTarget(
             selected=selected,
-            tracked_segment=self._buf.current_segment,
+            tracked_segment=self._buf.last,
         )
 
-    def operation_window_for_instruction(self) -> OperationWindowLookupResult:
-        return self._operation_window_for_text_change()
+    def operation_window_for_instruction(
+        self,
+        *,
+        prefer_tracked_segment: bool = True,
+    ) -> OperationWindowLookupResult:
+        return self._operation_window_for_text_change(
+            prefer_tracked_segment=prefer_tracked_segment
+        )
 
     def insert_text(self, text: str) -> None:
         self._text_io.type_text(text)
@@ -123,13 +129,7 @@ class TyperInputEnvironment:
     def insert_output_text(self, text: str) -> TextInsertionResult:
         if not text:
             return TextInsertionResult(inserted_text="")
-        if self._text_io.can_insert_text():
-            self.insert_text(text)
-            return TextInsertionResult(inserted_text=text)
-        if not self._text_io.confirm_paste_text(text):
-            return TextInsertionResult(failure="no_focused_input")
-        self._text_io.paste_text(text)
-        self._buf.push(text)
+        self.insert_text(text)
         return TextInsertionResult(inserted_text=text)
 
     def insert_text_after_selection(self, text: str, selected: str = "") -> None:
@@ -176,13 +176,18 @@ class TyperInputEnvironment:
             self.replace_selection(window.text, replacement)
             return TargetChangeResult.changed(window.text, replacement)
 
-        if window.source == "caret":
+        if window.source in {"caret", "tracked_segment"}:
             replacement = window.text.replace(
                 target_text,
                 plan.replacement_text,
                 1,
             )
             if not self._text_io.replace_text_window(window.text, replacement):
+                if window.source == "tracked_segment":
+                    self._text_io.erase_last(window.text)
+                    self._text_io.type_text(replacement)
+                    self._sync_selected_replacement(window.text, replacement)
+                    return TargetChangeResult.changed(window.text, replacement)
                 return TargetChangeResult.failed("target_not_found")
             self._sync_selected_replacement(window.text, replacement)
             return TargetChangeResult.changed(window.text, replacement)
@@ -222,7 +227,11 @@ class TyperInputEnvironment:
     def active_application(self) -> str:
         return self._text_io.current_application_label()
 
-    def _operation_window_for_text_change(self) -> OperationWindowLookupResult:
+    def _operation_window_for_text_change(
+        self,
+        *,
+        prefer_tracked_segment: bool = True,
+    ) -> OperationWindowLookupResult:
         target = self.target_for_instruction()
         if target.selected:
             return OperationWindowLookupResult.found(
@@ -230,6 +239,14 @@ class TyperInputEnvironment:
                     text=target.selected,
                     target=target,
                     source="explicit_selection",
+                )
+            )
+        if prefer_tracked_segment and target.tracked_segment:
+            return OperationWindowLookupResult.found(
+                OperationWindow(
+                    text=target.tracked_segment,
+                    target=target,
+                    source="tracked_segment",
                 )
             )
         caret_window = self._text_io.get_caret_text_window()
@@ -241,13 +258,21 @@ class TyperInputEnvironment:
                     source="caret",
                 )
             )
+        if target.tracked_segment:
+            return OperationWindowLookupResult.found(
+                OperationWindow(
+                    text=target.tracked_segment,
+                    target=target,
+                    source="tracked_segment",
+                )
+            )
         return OperationWindowLookupResult.failed("no_tracked_segment")
 
     def _sync_selected_replacement(self, selected: str, replacement: str) -> None:
-        segment = self._buf.current_segment
-        if segment == selected:
-            self._buf.replace_segment(replacement)
-        elif selected and segment.endswith(selected):
+        last = self._buf.last
+        if last == selected:
+            self._buf.replace_last(replacement)
+        elif selected and last.endswith(selected):
             self._buf.trim_end(len(selected))
             if replacement:
                 self._buf.push(replacement)

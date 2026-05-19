@@ -5,14 +5,14 @@ from agent.ai_intent import (
     IntentContext,
     IntentFallbackOptions,
     classify_intent,
-    reusable_text_memory_records,
+    memo_records,
 )
-from agent.reusable_text_memory import ReusableTextMemoryRecord
+from agent.memo import MemoRecord
 
 
 class AIIntentTests(unittest.TestCase):
-    def reusable_text_record(self, key: str, value: str = "") -> ReusableTextMemoryRecord:
-        return ReusableTextMemoryRecord(key=key, value=value)
+    def memo_record(self, key: str, value: str = "") -> MemoRecord:
+        return MemoRecord(key=key, value=value)
 
     def test_selected_edit_instruction_overrides_chat_by_default(self):
         llm = MagicMock()
@@ -51,7 +51,7 @@ class AIIntentTests(unittest.TestCase):
 
         self.assertEqual(result, {"type": "write"})
 
-    def test_edit_hint_without_selection_but_recent_text_does_not_override_by_default(self):
+    def test_edit_hint_without_selection_uses_recent_text_by_default(self):
         llm = MagicMock()
         llm.chat.return_value = '{"type":"chat","reply":"请提供内容"}'
 
@@ -60,7 +60,32 @@ class AIIntentTests(unittest.TestCase):
             recent_text="上一句",
         ))
 
-        self.assertEqual(result, {"type": "chat", "reply": "请提供内容"})
+        self.assertEqual(result, {"type": "edit"})
+        llm.chat.assert_not_called()
+
+    def test_edit_word_without_selection_uses_recent_text_by_default(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"请提供内容"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="编辑一下",
+            recent_text="刚写出来的内容",
+        ))
+
+        self.assertEqual(result, {"type": "edit"})
+        llm.chat.assert_not_called()
+
+    def test_compliance_hint_without_selection_uses_recent_text_by_default(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"请提供内容"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="改得合规一点",
+            recent_text="刚写出来的内容",
+        ))
+
+        self.assertEqual(result, {"type": "edit"})
+        llm.chat.assert_not_called()
 
     def test_write_request_with_edit_hint_without_target_stays_write(self):
         llm = MagicMock()
@@ -70,55 +95,76 @@ class AIIntentTests(unittest.TestCase):
 
         self.assertEqual(result, {"type": "write"})
 
-    def test_chat_can_fuzzy_match_saved_reusable_text_key(self):
+    def test_whole_delete_instruction_is_classified_locally(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"请先选中"}'
+
+        result = classify_intent(llm, IntentContext(text="删除全文"))
+
+        self.assertEqual(result, {"type": "delete"})
+        llm.chat.assert_not_called()
+
+    def test_whole_delete_fallback_overrides_llm_chat(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"请先选中"}'
+
+        result = classify_intent(
+            llm,
+            IntentContext(text="把输入框里面的内容全部删掉"),
+            IntentFallbackOptions(selected_edit_override=False),
+        )
+
+        self.assertEqual(result, {"type": "delete"})
+
+    def test_chat_can_fuzzy_match_saved_memo_key(self):
         llm = MagicMock()
         llm.chat.return_value = '{"type":"chat","reply":"不知道"}'
 
         result = classify_intent(llm, IntentContext(
             text="我的手机号是多少",
-            reusable_text_memory_records=(self.reusable_text_record("手机号"),),
+            memo_records=(self.memo_record("手机号"),),
         ))
 
-        self.assertEqual(result, {"type": "reusable_text_recall", "key": "手机号"})
+        self.assertEqual(result, {"type": "memo_recall", "key": "手机号"})
         llm.chat.assert_not_called()
 
-    def test_reusable_text_recall_from_llm_is_validated_against_request(self):
+    def test_memo_recall_from_llm_is_validated_against_request(self):
         llm = MagicMock()
-        llm.chat.return_value = '{"type":"reusable_text_recall","key":"儿子"}'
+        llm.chat.return_value = '{"type":"memo_recall","key":"儿子"}'
 
         result = classify_intent(llm, IntentContext(
             text="我的手机号码是多少",
-            reusable_text_memory_records=(
-                self.reusable_text_record("儿子"),
-                self.reusable_text_record("手机号"),
+            memo_records=(
+                self.memo_record("儿子"),
+                self.memo_record("手机号"),
             ),
         ))
 
-        self.assertEqual(result, {"type": "reusable_text_recall", "key": "手机号"})
+        self.assertEqual(result, {"type": "memo_recall", "key": "手机号"})
 
-    def test_reusable_text_recall_from_llm_rejects_unrelated_key(self):
+    def test_memo_recall_from_llm_rejects_unrelated_key(self):
         llm = MagicMock()
-        llm.chat.return_value = '{"type":"reusable_text_recall","key":"儿子"}'
+        llm.chat.return_value = '{"type":"memo_recall","key":"儿子"}'
 
         result = classify_intent(llm, IntentContext(
             text="我的手机号码是多少",
-            reusable_text_memory_records=(self.reusable_text_record("儿子"),),
+            memo_records=(self.memo_record("儿子"),),
         ))
 
-        self.assertEqual(result, {"type": "chat", "reply": "没有找到匹配的可复用文本"})
+        self.assertEqual(result, {"type": "chat", "reply": "没有找到匹配的备忘"})
 
-    def test_chat_does_not_fuzzy_match_saved_reusable_text_key_without_lookup_shape(self):
+    def test_chat_does_not_fuzzy_match_saved_memo_key_without_lookup_shape(self):
         llm = MagicMock()
         llm.chat.return_value = '{"type":"chat","reply":"不知道"}'
 
         result = classify_intent(llm, IntentContext(
             text="手机号这个词是什么意思",
-            reusable_text_memory_records=(self.reusable_text_record("手机号"),),
+            memo_records=(self.memo_record("手机号"),),
         ))
 
         self.assertEqual(result, {"type": "chat", "reply": "不知道"})
 
-    def test_reusable_text_memory_fuzzy_recall_can_be_disabled(self):
+    def test_memo_fuzzy_recall_can_be_disabled(self):
         llm = MagicMock()
         llm.chat.return_value = '{"type":"chat","reply":"不知道"}'
 
@@ -126,30 +172,29 @@ class AIIntentTests(unittest.TestCase):
             llm,
             IntentContext(
                 text="我的手机号是多少",
-                reusable_text_memory_records=(self.reusable_text_record("手机号"),),
+                memo_records=(self.memo_record("手机号"),),
             ),
-            IntentFallbackOptions(reusable_text_memory_fuzzy_recall=False),
+            IntentFallbackOptions(memo_fuzzy_recall=False),
         )
 
         self.assertEqual(result, {"type": "chat", "reply": "不知道"})
 
-    def test_legacy_memo_fuzzy_recall_config_still_disables_reusable_text_fallback(self):
+    def test_legacy_memo_fuzzy_recall_config_still_disables_memo_fallback(self):
         self.assertEqual(
             IntentFallbackOptions.from_config({"memo_fuzzy_recall": False}),
-            IntentFallbackOptions(reusable_text_memory_fuzzy_recall=False),
+            IntentFallbackOptions(memo_fuzzy_recall=False),
         )
 
-    def test_reusable_text_memory_records_include_personal_aliases(self):
+    def test_memo_records_include_saved_values(self):
         memory_entries = MagicMock()
         memory_entries.keys.return_value = ["白光宇最喜欢说的话"]
         memory_entries.get.return_value = "大美女"
-        lexicon = MagicMock()
-        lexicon.aliases_for.return_value = ("小白",)
 
-        records = reusable_text_memory_records(memory_entries, lexicon)
+        records = memo_records(memory_entries)
 
-        self.assertEqual(records[0].aliases, ("小白",))
-        lexicon.aliases_for.assert_called_once_with("白光宇最喜欢说的话")
+        self.assertEqual(records[0].key, "白光宇最喜欢说的话")
+        self.assertEqual(records[0].value, "大美女")
+        self.assertEqual(records[0].aliases, ())
 
     def test_classifier_keeps_structured_result(self):
         llm = MagicMock()
