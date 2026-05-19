@@ -18,6 +18,7 @@ class ShortcutCatalogEntry:
     source: str
     risk: str = "normal"
     application: str = ""
+    kind: str = "shortcut"
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class ShortcutPolicyDecision:
     source: str = ""
     application: str = ""
     reason: str = ""
+    kind: str = "shortcut"
 
     @classmethod
     def missing(cls, name: str) -> "ShortcutPolicyDecision":
@@ -145,6 +147,7 @@ class TyperTextIO:
                 source=entry.source,
                 risk=entry.risk,
                 application=entry.application,
+                kind=entry.kind,
             )
             for entry in typer.shortcut_catalog()
         ]
@@ -167,6 +170,7 @@ class TyperTextIO:
             source=decision.source,
             application=decision.application,
             reason=decision.reason,
+            kind=decision.kind,
         )
 
     def send_shortcut(self, name: str) -> bool:

@@ -13,7 +13,7 @@ The application, field, cursor position, and selected text that will receive eng
 _Avoid_: App, editor, textbox
 
 **Voice Keyboard Operation**:
-A user-requested text change or keyboard-style action applied to the current **Input Environment** based on speech.
+A user-requested local keyboard, text, or desktop efficiency action based on speech.
 _Avoid_: AI command, prompt, agent action
 
 **Atomic Operation Stack**:
@@ -89,11 +89,19 @@ A **Voice Text Operation** that deletes an **Explicit Selection** or, for a gene
 _Avoid_: Delete command
 
 **Shortcut Invocation**:
-A **Voice Keyboard Operation** that triggers a named system or application shortcut.
-_Avoid_: Macro, command, hotkey command
+A **Voice Keyboard Operation** that triggers a named low-conflict local keyboard-style action.
+_Avoid_: Macro, hotkey dump, power-user automation
+
+**Application Launch**:
+A **Voice Keyboard Operation** that opens a locally installed application by a discovered or configured name.
+_Avoid_: App automation, provider-guessed executable
+
+**System Window Action**:
+A **Voice Keyboard Operation** that moves or resizes the current desktop window through local system capabilities.
+_Avoid_: Window macro, layout automation
 
 **Shortcut Catalog**:
-A local catalog of named user-visible shortcut actions available for the current system or application context.
+A local catalog of named low-conflict keyboard-style actions available for the current system or application context.
 _Avoid_: Provider-generated shortcut list, freeform hotkey map
 
 **Global Shortcut Catalog**:
@@ -106,11 +114,15 @@ _Avoid_: App macro list, provider shortcut guess
 
 **Reusable Text Operation**:
 A **Voice Text Operation** that saves, recalls, deletes, or lists user-provided reusable text snippets.
-_Avoid_: Memory Operation, memo feature, memory command
+_Avoid_: Memory Operation, memory command
 
 **Reusable Text Memory**:
 A short user-provided text snippet saved for later insertion into the **Input Environment**.
 _Avoid_: Knowledge base, long-term memory, user profile
+
+**Personal Lexicon**:
+A local set of user-taught spoken forms, corrections, and aliases that helps normalize speech before the engine resolves a **Voice Keyboard Operation**.
+_Avoid_: Knowledge base, user profile, chat memory
 
 **Speech Interpretation Provider**:
 An external capability used by the **Voice Keyboard Engine** to turn speech or text context into text or operation decisions.
@@ -133,16 +145,19 @@ _Avoid_: STT provider, LLM provider, model, backend
 - Local partial replacement or removal without an **Explicit Selection** should fail closed and ask the user to select the text.
 - An **Operation Window** is context for a replacement-style operation; it is not automatically the **Operation Target**.
 - A **Replacement Plan** must be checked against the current **Operation Window** before the engine applies it.
-- **Instruction Mode** may produce a **Text Revision**, **Text Generation**, **Text Removal**, **Shortcut Invocation**, or **Reusable Text Operation**.
+- **Instruction Mode** may produce a **Text Revision**, **Text Generation**, **Text Removal**, **Shortcut Invocation**, **Application Launch**, **System Window Action**, or **Reusable Text Operation**.
 - Spoken undo is a **Shortcut Invocation** of the current **Input Environment** undo action, not a separate local text history feature.
 - A **Shortcut Invocation** is a **Voice Keyboard Operation** but not a **Voice Text Operation** unless it changes text in the **Input Environment**.
-- **Shortcut Invocation** is a core operation type; app-aware shortcut catalogs are an implementation capability.
+- **Shortcut Invocation** is a core operation type for common repeated keyboard-style work, not an exhaustive automation surface.
 - A **Shortcut Invocation** is atomic when it names one user-visible shortcut action, even if the implementation sends multiple low-level key events.
 - **Shortcut Invocation** should target a named action from a local **Shortcut Catalog**.
 - A **Speech Interpretation Provider** may choose from a **Shortcut Catalog** but should not invent shortcut actions or key sequences.
+- **Application Launch** is core only for locally discovered or explicitly configured applications.
+- **System Window Action** is core only when it affects the current local desktop window through a local adapter.
 - A **Global Shortcut Catalog** supplies common actions; an **Application Shortcut Catalog** supplies current-application actions.
 - When shortcut names conflict, the **Application Shortcut Catalog** takes precedence over the **Global Shortcut Catalog**.
 - A **Reusable Text Operation** acts on **Reusable Text Memory**.
+- **Personal Lexicon** can help resolve a **Reusable Text Operation**, but it does not store insertable snippets.
 - **Text Generation** is core only when the generated text is meant to enter the **Input Environment**.
 - **Text Insertion** inserts text that is already provided or resolved; **Text Generation** creates new insertable text from requirements.
 - **Reusable Text Operation** recall may produce a **Text Insertion** after it resolves a saved text snippet.
@@ -167,7 +182,9 @@ _Avoid_: STT provider, LLM provider, model, backend
 - `TextBuffer` and `current_segment` are implementation terms; resolved: the domain term is **Tracked Segment**.
 - "operation object" can mean either the safe context range or the text actually changed; resolved: use **Operation Window** for the safe context and **Operation Target** for the replace/remove span.
 - "chat" exists as an auxiliary feedback behavior, but is not a core **Voice Keyboard Operation** unless it changes or drives the **Input Environment**.
-- "memory operation" used to describe reusable snippets; resolved: the domain term is **Reusable Text Operation**, while implementation may still use `memo` names.
+- Older reusable-snippet operation names were ambiguous; resolved: the domain term is **Reusable Text Operation**.
 - "memory" is limited to **Reusable Text Memory**; it does not mean chat memory, user profiling, cross-device knowledge sync, or a personal knowledge base.
+- "personalization" can mean user profiling or knowledge sync; resolved: inside this context, **Personal Lexicon** only means local speech normalization and aliases.
+- "shortcut" can sound like power-user hotkey automation; resolved: inside this context, **Shortcut Invocation** means a curated low-conflict keyboard-style action for ordinary repeated work.
 - Provider names such as Xunfei, OpenAI, Aliyun, Volcengine, ZhipuAI, and TypeUp Backend are integration choices, not domain terms.
 - "Agent" names a local process and code package, not a domain concept; resolved: domain language uses **Voice Keyboard Engine**.

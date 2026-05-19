@@ -1,5 +1,5 @@
 """
-顶部菜单栏 NSStatusItem。点击展开菜单：状态 / 打开设置 / 历史 / 可复用文本 / 权限 / 重启 / 退出。
+顶部菜单栏 NSStatusItem。点击展开菜单：状态 / 打开设置 / 快捷键 / 历史 / 可复用文本 / 权限 / 重启 / 退出。
 LSUIElement=true 的应用没有 dock 图标，菜单栏图标是用户唯一可见的入口。
 """
 
@@ -55,8 +55,9 @@ class MenuBar(NSObject):
 
         for title, sel in (
             ("打开设置…", b"openSettings:"),
+            ("快捷键…", b"openShortcuts:"),
             ("转写历史…", b"openHistory:"),
-            ("可复用文本…", b"openMemos:"),
+            ("可复用文本…", b"openReusableTextMemory:"),
             ("权限自检…", b"openPerms:"),
         ):
             mi = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, sel, "")
@@ -86,11 +87,14 @@ class MenuBar(NSObject):
     def openSettings_(self, sender):
         self._app.main_window.show_tab("settings")
 
+    def openShortcuts_(self, sender):
+        self._app.main_window.show_tab("shortcuts")
+
     def openHistory_(self, sender):
         self._app.main_window.show_tab("history")
 
-    def openMemos_(self, sender):
-        self._app.main_window.show_tab("memos")
+    def openReusableTextMemory_(self, sender):
+        self._app.main_window.show_tab("reusable_text_memory")
 
     def openPerms_(self, sender):
         self._app.main_window.show_tab("perms")

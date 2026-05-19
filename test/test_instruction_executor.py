@@ -52,6 +52,28 @@ class InstructionModeExecutorTests(unittest.TestCase):
         env.send_shortcut.assert_called_once_with("发送")
         self.assertEqual(messages, [])
 
+    def test_shortcut_execution_failure_keeps_feedback_visible(self):
+        env = MagicMock()
+        env.shortcut_policy_for_invocation.return_value = ShortcutPolicyDecision(
+            name="窗口左半屏",
+            found=True,
+            allowed=True,
+            source="system",
+            kind="system_window_action",
+        )
+        env.send_shortcut.return_value = False
+        messages = []
+        executor = InstructionModeExecutor(MagicMock(), env, show=messages.append)
+
+        keep_status = executor.execute(
+            VoiceTextOperation("shortcut", name="窗口左半屏"),
+            "应用窗口放左边",
+            "",
+        )
+
+        self.assertTrue(keep_status)
+        self.assertEqual(messages, ["快捷键执行失败：窗口左半屏"])
+
     def test_selected_edit_uses_structured_replacement_plan_for_subtarget(self):
         buf = TextBuffer()
         buf.push("hello world")
@@ -294,14 +316,14 @@ class InstructionModeExecutorTests(unittest.TestCase):
         env.delete_all_text_by_shortcut.assert_called_once_with()
         self.assertEqual(messages, [])
 
-    def test_memo_recall_inserts_memory_after_selection(self):
+    def test_reusable_text_recall_inserts_reusable_text_after_selection(self):
         buf = TextBuffer()
-        memos = MagicMock()
-        memos.get.return_value = "me@example.com"
+        reusable_text_memory = MagicMock()
+        reusable_text_memory.get.return_value = "me@example.com"
         executor = InstructionModeExecutor(
             MagicMock(),
             TyperInputEnvironment(buf),
-            memo_store=memos,
+            reusable_text_memory_store=reusable_text_memory,
         )
 
         with (
@@ -310,9 +332,9 @@ class InstructionModeExecutorTests(unittest.TestCase):
             patch("agent.typer.jump_to_end") as jump_to_end,
             patch("agent.typer.type_text") as type_text,
         ):
-            executor.execute(VoiceTextOperation("memo_recall", key="邮箱"), "我的邮箱", "")
+            executor.execute(VoiceTextOperation("reusable_text_recall", key="邮箱"), "我的邮箱", "")
 
-        memos.get.assert_called_once_with("邮箱")
+        reusable_text_memory.get.assert_called_once_with("邮箱")
         jump_to_end.assert_called_once_with()
         type_text.assert_called_once_with("me@example.com")
         self.assertEqual(buf.current_segment, "me@example.com")

@@ -23,6 +23,7 @@ from agent.capture_path_runtime import CapturePathRuntime, PolishToggle
 import agent.typer as _typer
 
 SAMPLE_RATE = 16000
+_DICTATION_STATUS_DELAY_SECONDS = 0.42
 
 try:
     import webrtcvad as _webrtcvad
@@ -73,6 +74,7 @@ class PushToTalk:
         self._buf: list[bytes]  = []
         self._stream: Optional[sd.RawInputStream] = None
         self._listener: Optional[kb.Listener]     = None
+        self._recording_status_timer: Optional[threading.Timer] = None
 
         # 双击 PTT 切换微润色模式
         self._double_tap_window       = self._capture_runtime.double_tap_window
@@ -117,11 +119,18 @@ class PushToTalk:
     def stop(self):
         if self._listener:
             self._listener.stop()
+        self._cancel_recording_status_timer()
         self._close_stream()
 
     def _set_status(self, state: str) -> None:
         if self._status is not None:
             self._status.set_state(state)
+
+    def _cancel_recording_status_timer(self) -> None:
+        timer = self._recording_status_timer
+        self._recording_status_timer = None
+        if timer is not None:
+            timer.cancel()
 
     # ── 键盘事件 ─────────────────────────────────────────────────
 
@@ -135,6 +144,7 @@ class PushToTalk:
             now = time.monotonic()
             start = self._capture_runtime.press_dictation(key, now)
             if isinstance(start, PolishToggle):
+                self._cancel_recording_status_timer()
                 mode_name = "微润色" if start.polish else "原文"
                 self._set_status("polish_mode" if start.polish else "dictation_mode")
                 print(f"[ptt] 切换为「{mode_name}」模式")
@@ -209,6 +219,7 @@ class PushToTalk:
         self._vad_in_speech     = False
 
     def _start_recording(self):
+        self._cancel_recording_status_timer()
         self._buf = []
         self._vad_raw           = bytearray()
         self._vad_speech_frames = []
@@ -227,10 +238,19 @@ class PushToTalk:
         if self._capture_runtime.active_mode == "dictate":
             if self._capture_runtime.polish_mode:
                 label = "微润色 录音中"
-                self._set_status("polish_recording")
+                state = "polish_recording"
             else:
                 label = "录音中"
-                self._set_status("recording")
+                state = "recording"
+            self._recording_status_timer = threading.Timer(
+                _DICTATION_STATUS_DELAY_SECONDS,
+                lambda expected_mode="dictate", expected_state=state: self._show_recording_status_if_active(
+                    expected_mode,
+                    expected_state,
+                ),
+            )
+            self._recording_status_timer.daemon = True
+            self._recording_status_timer.start()
         elif self._capture_runtime.active_mode == "ai":
             label = "AI 指令录音中"
             self._set_status("ai_recording")
@@ -240,6 +260,7 @@ class PushToTalk:
         print(f"[ptt] {label}... ", end="\r", flush=True)
 
     def _stop_recording(self, mode: str):
+        self._cancel_recording_status_timer()
         self._close_stream()
 
         if mode == "dictate" and self._vad is not None:
@@ -297,6 +318,10 @@ class PushToTalk:
             self._set_status("ai_processing")
         print(f"[ptt] {label}...    ", end="\r", flush=True)
         self._dispatch_utterance(event, name=f"PTT-{mode}")
+
+    def _show_recording_status_if_active(self, expected_mode: str, state: str) -> None:
+        if self._capture_runtime.active_mode == expected_mode:
+            self._set_status(state)
 
     def _dispatch_utterance(self, event: UtteranceEvent, name: str) -> None:
         if event.mode == "dictation":

@@ -29,7 +29,7 @@ def main():
         ("TEXT", "这是一段中文测试，Voice Keyboard 项目"),
         ("CMD",  "保存"),
         ("TEXT", "Hello, 混合中英文 input test 123"),
-        ("CMD",  "截图"),
+        ("CMD",  "撤销"),
         ("TEXT", "今天天气真不错，适合写代码。"),
     ]
 

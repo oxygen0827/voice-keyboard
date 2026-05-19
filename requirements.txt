@@ -8,6 +8,7 @@ sounddevice
 openai
 requests
 pyyaml
+pypinyin
 pyobjc-framework-Quartz; sys_platform == "darwin"
 pyobjc-framework-Cocoa; sys_platform == "darwin"
 pyobjc-framework-AVFoundation; sys_platform == "darwin"

@@ -121,6 +121,7 @@ class DictationMode:
     text_polisher: TextPolisher | None = None
     status_window: object | None = None
     history: object | None = None
+    personal_lexicon: object | None = None
 
     def handle_utterance(
         self,
@@ -141,6 +142,11 @@ class DictationMode:
             return
 
         text = normalize_dictation_punctuation(clean_generated_text(text))
+        if self.personal_lexicon is not None and hasattr(self.personal_lexicon, "normalize"):
+            normalized_text = self.personal_lexicon.normalize(text)
+            if normalized_text != text:
+                print(f"[lexicon] Dictation 归一化: {text!r} -> {normalized_text!r}")
+                text = normalized_text
         if not text:
             print("[stt] 识别结果为空")
             self._append_history(mode, "", "empty")
@@ -154,6 +160,7 @@ class DictationMode:
                 self._set_status("polishing")
             text = self._polish_text(text)
 
+        preview_shown = self._show_output_preview(text)
         try:
             result = self.input_environment.insert_output_text(text)
             if not result.ok:
@@ -176,8 +183,9 @@ class DictationMode:
             return
 
         self._append_history(mode, text, "ok")
-        if clear_status:
+        if clear_status and not preview_shown:
             self._set_status("idle")
+        if clear_status:
             print("[typeup] 输入完成")
 
     def _transcribe(self, pcm: bytes, polish: bool) -> str:
@@ -204,6 +212,15 @@ class DictationMode:
             self.status_window.show_message(message, 5.0)
         else:
             print(f"[stt] {message}")
+
+    def _show_output_preview(self, text: str) -> bool:
+        if self.status_window is None:
+            return False
+        show_typing = getattr(self.status_window, "show_typing_message", None)
+        if not callable(show_typing):
+            return False
+        show_typing(str(text or ""), 2.0)
+        return True
 
     def _show_copied_message(self, text: str) -> None:
         preview = str(text or "").replace("\n", " ")[:60]
@@ -237,6 +254,7 @@ def make_utterance_handler(
     status_window=None,
     history=None,
     input_environment=None,
+    personal_lexicon=None,
 ):
     env = input_environment or TyperInputEnvironment(buf)
     mode = DictationMode(
@@ -245,5 +263,6 @@ def make_utterance_handler(
         text_polisher=editor,
         status_window=status_window,
         history=history,
+        personal_lexicon=personal_lexicon,
     )
     return mode.handle_utterance

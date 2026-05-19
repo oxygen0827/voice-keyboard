@@ -55,10 +55,17 @@ Deepen Shortcut Invocation around local application-aware catalogs so Voice Keyb
 Initial implementation:
 
 - `agent/app_shortcut_presets.py`
-- macOS built-in presets now cover Microsoft Word, Microsoft Excel, Microsoft PowerPoint, WPS Office, and Feishu/Lark.
-- `agent.typer` still owns key parsing, shortcut policy lookup, and key emission while consuming the built-in presets.
+- Universal editing actions such as undo, redo, bold, italic, underline, and find now live in the Global Shortcut Catalog instead of being repeated per application.
+- macOS built-in presets intentionally cover only the current product slice: Microsoft Word, Microsoft Excel, Microsoft PowerPoint, WPS Office, and Feishu/Lark.
+- macOS application launch actions are discovered from installed `.app` bundles, with built-in aliases for common spoken names such as Feishu/Lark, Word, Excel, PowerPoint/PPT, WPS, and Google Chrome.
+- macOS system window actions are exposed as built-in System Actions and execute through Accessibility frame updates rather than physical key chords.
+- The macOS menu bar UI now includes a `快捷键` tab for catalog visibility, disabling/restoring named actions, and adding custom global shortcut actions.
+- `agent.local_operation_catalog` now owns catalog entry metadata, de-duplication, blocking, and high-risk policy decisions.
+- `agent.app_launcher` now owns application-launch discovery, aliases, config parsing, and launch execution.
+- `agent.macos_window_actions` now owns macOS Accessibility window frame actions.
+- `agent.typer` still owns key parsing and key emission while delegating catalog policy, app launch, and window actions to deeper modules.
 - Instruction Mode already receives the current active application and local Shortcut Catalog names, so a Speech Interpretation Provider can choose a named Shortcut Invocation without inventing key sequences.
-- Next work should move catalog composition, aliases, and risk metadata out of `agent.typer` into a deeper Shortcut Catalog module, then add Windows app identities and presets.
+- Next work should add Windows app identities and presets for the same narrow slice.
 
 ## 4. Capture Path
 

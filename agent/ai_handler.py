@@ -15,30 +15,39 @@ from agent.ai_intent import (
     IntentContext,
     IntentFallbackOptions,
     classify_intent,
-    memo_keys,
+    reusable_text_memory_records,
 )
 from agent.input_environment import TyperInputEnvironment
 from agent.instruction_executor import InstructionModeExecutor
+from agent.personal_lexicon import (
+    is_lexicon_list_request,
+    parse_lexicon_forget,
+    parse_lexicon_learning,
+    parse_selection_lexicon_learning,
+)
+from agent.reusable_text_memory import ReusableTextMemory, parse_memory_edit_command
 from agent.voice_text_operation import operation_from_intent
 
 _AI_PREFIX = " [AI]: "
 
 
 class AIHandler:
-    def __init__(self, stt_client, llm_editor, buf, memo_store=None, status_window=None,
-                 history=None, input_environment=None, intent_fallbacks=None):
+    def __init__(self, stt_client, llm_editor, buf, reusable_text_memory_store=None,
+                 status_window=None, history=None, input_environment=None, intent_fallbacks=None,
+                 personal_lexicon=None):
         self._stt             = stt_client
         self._llm             = llm_editor
         self._env             = input_environment or TyperInputEnvironment(buf)
-        self._memos           = memo_store
+        self._reusable_text_memory_store = reusable_text_memory_store
         self._status          = status_window
         self._history         = history
         self._intent_fallbacks = intent_fallbacks or IntentFallbackOptions()
+        self._lexicon         = personal_lexicon
         self._io_lock         = threading.Lock()   # 串行化所有输入框 IO（删+打）
         self._executor = InstructionModeExecutor(
             self._llm,
             self._env,
-            memo_store=self._memos,
+            reusable_text_memory_store=self._reusable_text_memory_store,
             show=self._show,
             set_status=self._set_status,
             text_io=self._io_lock,
@@ -83,6 +92,55 @@ class AIHandler:
                 self._status.set_state("empty_stt")
             return True
         print(f"[ai] 识别: {text!r}")
+        memory_edit = parse_memory_edit_command(text)
+        if memory_edit is not None:
+            result = ReusableTextMemory(self._reusable_text_memory_store).edit_text(
+                memory_edit.target,
+                memory_edit.old,
+                memory_edit.new,
+            )
+            self._record("ai", text, "ok", "reusable_text_memory_edit")
+            self._show(result.message)
+            return True
+        if self._lexicon is not None:
+            if is_lexicon_list_request(text):
+                self._record("ai", text, "ok", "lexicon_list")
+                self._show(self._lexicon.list_text())
+                return True
+            forget_spoken = parse_lexicon_forget(text)
+            if forget_spoken:
+                if self._lexicon.forget(forget_spoken):
+                    self._record("ai", text, "ok", "lexicon_forget")
+                    self._show(f"已忘记：{forget_spoken}")
+                else:
+                    self._show(f"个人词库里没有：{forget_spoken}")
+                return True
+            selection_learning = parse_selection_lexicon_learning(text)
+            if selection_learning is not None:
+                target = self._env.target_for_instruction()
+                selected = target.selected.strip()
+                if not selected:
+                    self._show("请先选中正确写法")
+                    return True
+                remembered = self._lexicon.remember_with_variants(
+                    selection_learning.spoken,
+                    selected,
+                    selection_learning.kind,
+                )
+                if remembered:
+                    self._record("ai", text, "ok", "lexicon_selection")
+                    self._show(f"已记住：{'、'.join(remembered)} → {selected}")
+                    return True
+            learning = parse_lexicon_learning(text)
+            if learning is not None:
+                if self._lexicon.remember(learning.spoken, learning.written, learning.kind):
+                    self._record("ai", text, "ok", "lexicon")
+                    self._show(f"已记住：{learning.spoken} → {learning.written}")
+                    return True
+            normalized_text = self._lexicon.normalize(text)
+            if normalized_text != text:
+                print(f"[lexicon] AI 归一化: {text!r} -> {normalized_text!r}")
+                text = normalized_text
         self._record("ai", text, "ok")
 
         # 2. 读取上下文（优先用 Explicit Selection，其次用 Tracked Segment）
@@ -100,7 +158,10 @@ class AIHandler:
                 recent_text=context,
                 active_application=self._env.active_application(),
                 shortcuts=self._env.shortcuts(),
-                memo_keys=memo_keys(self._memos),
+                reusable_text_memory_records=reusable_text_memory_records(
+                    self._reusable_text_memory_store,
+                    self._lexicon,
+                ),
             ), self._intent_fallbacks)
         except Exception as e:
             print(f"[ai] 意图分类失败: {e}，回退到聊天")

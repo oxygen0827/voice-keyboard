@@ -1,6 +1,6 @@
 """
-Voice Keyboard 主窗口：单 NSWindow + NSTabView，4 个标签：
-  设置 / 历史 / 可复用文本 / 权限自检
+Voice Keyboard 主窗口：单 NSWindow + NSTabView：
+  设置 / 快捷键 / 历史 / 可复用文本 / 权限自检
 所有 UI 操作必须在主线程；从其他线程调用通过 PyObjCTools.AppHelper.callAfter 入队。
 """
 
@@ -33,13 +33,38 @@ from PyObjCTools import AppHelper
 import sounddevice as sd
 import yaml
 
+from agent import typer as _typer
 from agent import permissions as _perm
 from agent.history import History
-from agent.memo_store import MemoStore
-
 
 _USER_DIR = Path.home() / ".voice-keyboard"
 _USER_CONFIG = _USER_DIR / "config.yaml"
+
+
+def _load_user_config() -> dict:
+    if not _USER_CONFIG.exists():
+        return {}
+    try:
+        return yaml.safe_load(_USER_CONFIG.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        print(f"[ui] 读取 config 失败: {e}")
+        return {}
+
+
+def _write_user_config(cfg: dict) -> None:
+    _USER_DIR.mkdir(parents=True, exist_ok=True)
+    _USER_CONFIG.write_text(
+        yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def _typing_config(cfg: dict) -> dict:
+    typing_cfg = cfg.get("typing")
+    if not isinstance(typing_cfg, dict):
+        typing_cfg = {}
+        cfg["typing"] = typing_cfg
+    return typing_cfg
 
 
 # ── 通用控件辅助 ─────────────────────────────────────────────────
@@ -172,12 +197,7 @@ class _SettingsTab(NSObject):
 
     @objc.python_method
     def _load(self):
-        cfg = {}
-        if _USER_CONFIG.exists():
-            try:
-                cfg = yaml.safe_load(_USER_CONFIG.read_text(encoding="utf-8")) or {}
-            except Exception as e:
-                print(f"[ui] 读取 config 失败: {e}")
+        cfg = _load_user_config()
         for path, ctrl in self._fields.items():
             head, key = path.split(".", 1)
             val = (cfg.get(head) or {}).get(key, "")
@@ -221,18 +241,12 @@ class _SettingsTab(NSObject):
     def save_(self, sender):
         new_cfg = self._gather()
         try:
-            existing = {}
-            if _USER_CONFIG.exists():
-                existing = yaml.safe_load(_USER_CONFIG.read_text(encoding="utf-8")) or {}
+            existing = _load_user_config()
             # 合并，保留 existing 中本表单不涉及的子字段
             for h, sub in new_cfg.items():
                 existing.setdefault(h, {})
                 existing[h].update(sub)
-            _USER_DIR.mkdir(parents=True, exist_ok=True)
-            _USER_CONFIG.write_text(
-                yaml.safe_dump(existing, allow_unicode=True, sort_keys=False),
-                encoding="utf-8",
-            )
+            _write_user_config(existing)
         except Exception as e:
             self._alert("保存失败", str(e))
             return
@@ -244,6 +258,219 @@ class _SettingsTab(NSObject):
 
     @objc.python_method
     def _alert(self, title: str, msg: str):
+        a = NSAlert.alloc().init()
+        a.setMessageText_(title)
+        a.setInformativeText_(msg)
+        a.runModal()
+
+
+# ── 快捷键 tab ───────────────────────────────────────────────────
+
+_SHORTCUT_SOURCE_LABEL = {
+    "global": "通用",
+    "application": "应用",
+    "system": "系统",
+}
+
+_SHORTCUT_KIND_LABEL = {
+    "shortcut": "按键",
+    "app_launch": "打开应用",
+    "system_action": "系统动作",
+    "system_window_action": "窗口动作",
+}
+
+_SHORTCUT_RISK_LABEL = {
+    "normal": "普通",
+    "high": "需确认",
+}
+
+
+class _ShortcutsTab(NSObject):
+    def initWithApp_(self, app):
+        self = objc.super(_ShortcutsTab, self).init()
+        if self is None:
+            return None
+        self._app = app
+        self._rows = []
+        self._blocked_names: list[str] = []
+        self.view = self._build()
+        self.reload_(None)
+        return self
+
+    @objc.python_method
+    def _build(self) -> NSView:
+        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 600, 480))
+
+        v.addSubview_(_label("当前快捷键", NSMakeRect(20, 444, 120, 20)))
+        v.addSubview_(_button("刷新", NSMakeRect(500, 438, 80, 28), self, b"reload:"))
+
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 210, 560, 225))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(1)
+        table = NSTableView.alloc().initWithFrame_(scroll.bounds())
+        table.setUsesAlternatingRowBackgroundColors_(True)
+        for ident, title, w in (
+            ("name", "动作", 180),
+            ("source", "类型", 80),
+            ("risk", "风险", 60),
+            ("application", "应用", 230),
+        ):
+            col = NSTableColumn.alloc().initWithIdentifier_(ident)
+            col.headerCell().setStringValue_(title)
+            col.setWidth_(w)
+            table.addTableColumn_(col)
+        table.setDelegate_(self)
+        table.setDataSource_(self)
+        scroll.setDocumentView_(table)
+        v.addSubview_(scroll)
+        self._catalog_table = table
+
+        v.addSubview_(_button("禁用所选", NSMakeRect(20, 172, 100, 28), self, b"disableSelected:"))
+        v.addSubview_(_label("macOS 系统动作", NSMakeRect(132, 178, 180, 20)))
+
+        v.addSubview_(_label("已禁用", NSMakeRect(20, 138, 120, 20)))
+        blocked_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 58, 250, 76))
+        blocked_scroll.setHasVerticalScroller_(True)
+        blocked_scroll.setBorderType_(1)
+        blocked_table = NSTableView.alloc().initWithFrame_(blocked_scroll.bounds())
+        blocked_col = NSTableColumn.alloc().initWithIdentifier_("blocked")
+        blocked_col.headerCell().setStringValue_("动作")
+        blocked_col.setWidth_(230)
+        blocked_table.addTableColumn_(blocked_col)
+        blocked_table.setDelegate_(self)
+        blocked_table.setDataSource_(self)
+        blocked_scroll.setDocumentView_(blocked_table)
+        v.addSubview_(blocked_scroll)
+        self._blocked_table = blocked_table
+        v.addSubview_(_button("恢复所选", NSMakeRect(20, 20, 100, 28), self, b"enableSelected:"))
+
+        v.addSubview_(_label("自定义动作", NSMakeRect(300, 138, 120, 20)))
+        v.addSubview_(_label("语音动作", NSMakeRect(300, 104, 70, 20)))
+        self._custom_name = _input("", NSMakeRect(370, 100, 210, 24))
+        v.addSubview_(self._custom_name)
+        v.addSubview_(_label("按键", NSMakeRect(300, 70, 70, 20)))
+        self._custom_keys = _input("", NSMakeRect(370, 66, 210, 24))
+        v.addSubview_(self._custom_keys)
+        v.addSubview_(_button("保存自定义", NSMakeRect(370, 20, 120, 28), self, b"saveCustom:"))
+        return v
+
+    def reload_(self, sender):
+        try:
+            self._rows = list(_typer.shortcut_catalog())
+        except Exception as e:
+            print(f"[ui] shortcut catalog load 失败: {e}")
+            self._rows = []
+        cfg = _load_user_config()
+        typing_cfg = cfg.get("typing") or {}
+        blocked = typing_cfg.get("blocked_shortcuts", []) or []
+        self._blocked_names = sorted({
+            str(name).strip()
+            for name in blocked
+            if isinstance(name, str) and name.strip()
+        })
+        self._catalog_table.reloadData()
+        self._blocked_table.reloadData()
+
+    def numberOfRowsInTableView_(self, table):
+        if table == self._blocked_table:
+            return len(self._blocked_names)
+        return len(self._rows)
+
+    def tableView_objectValueForTableColumn_row_(self, table, col, row):
+        if table == self._blocked_table:
+            if row < 0 or row >= len(self._blocked_names):
+                return ""
+            return self._blocked_names[row]
+        if row < 0 or row >= len(self._rows):
+            return ""
+        entry = self._rows[row]
+        ident = col.identifier()
+        if ident == "name":
+            return entry.name
+        if ident == "source":
+            return _SHORTCUT_KIND_LABEL.get(
+                getattr(entry, "kind", "shortcut"),
+                _SHORTCUT_SOURCE_LABEL.get(entry.source, entry.source),
+            )
+        if ident == "risk":
+            return _SHORTCUT_RISK_LABEL.get(entry.risk, entry.risk)
+        if ident == "application":
+            return entry.application
+        return ""
+
+    def disableSelected_(self, sender):
+        idx = self._catalog_table.selectedRow()
+        if idx < 0 or idx >= len(self._rows):
+            return
+        name = self._rows[idx].name
+        try:
+            cfg = _load_user_config()
+            typing_cfg = _typing_config(cfg)
+            blocked = typing_cfg.get("blocked_shortcuts")
+            if not isinstance(blocked, list):
+                blocked = []
+            if name not in blocked:
+                blocked.append(name)
+            typing_cfg["blocked_shortcuts"] = blocked
+            _write_user_config(cfg)
+            self._reload_backend()
+            self.reload_(None)
+        except Exception as e:
+            self._alert("禁用失败", str(e))
+
+    def enableSelected_(self, sender):
+        idx = self._blocked_table.selectedRow()
+        if idx < 0 or idx >= len(self._blocked_names):
+            return
+        name = self._blocked_names[idx]
+        try:
+            cfg = _load_user_config()
+            typing_cfg = _typing_config(cfg)
+            blocked = typing_cfg.get("blocked_shortcuts")
+            if isinstance(blocked, list):
+                typing_cfg["blocked_shortcuts"] = [
+                    item for item in blocked
+                    if not (isinstance(item, str) and item.strip() == name)
+                ]
+            _write_user_config(cfg)
+            self._reload_backend()
+            self.reload_(None)
+        except Exception as e:
+            self._alert("恢复失败", str(e))
+
+    def saveCustom_(self, sender):
+        name = self._custom_name.stringValue().strip()
+        keys = self._custom_keys.stringValue().strip()
+        if not name or not keys:
+            self._alert("保存失败", "语音动作和按键都不能为空。")
+            return
+        try:
+            _typer._parse_shortcut_keys(keys)
+        except Exception as e:
+            self._alert("按键格式不正确", str(e))
+            return
+        try:
+            cfg = _load_user_config()
+            typing_cfg = _typing_config(cfg)
+            shortcuts = typing_cfg.get("shortcuts")
+            if not isinstance(shortcuts, dict):
+                shortcuts = {}
+            shortcuts[name] = keys
+            typing_cfg["shortcuts"] = shortcuts
+            _write_user_config(cfg)
+            self._reload_backend()
+            self._custom_name.setStringValue_("")
+            self._custom_keys.setStringValue_("")
+            self.reload_(None)
+        except Exception as e:
+            self._alert("保存失败", str(e))
+
+    @objc.python_method
+    def _reload_backend(self):
+        self._app.reload()
+
+    @objc.python_method
+    def _alert(self, title, msg):
         a = NSAlert.alloc().init()
         a.setMessageText_(title)
         a.setInformativeText_(msg)
@@ -364,9 +591,9 @@ class _HistoryTab(NSObject):
 
 # ── 可复用文本 tab ───────────────────────────────────────────────
 
-class _MemosTab(NSObject):
+class _ReusableTextMemoryTab(NSObject):
     def initWithApp_(self, app):
-        self = objc.super(_MemosTab, self).init()
+        self = objc.super(_ReusableTextMemoryTab, self).init()
         if self is None:
             return None
         self._app = app
@@ -415,16 +642,16 @@ class _MemosTab(NSObject):
 
         # 操作按钮
         v.addSubview_(_button("新建", NSMakeRect(20, 20, 70, 28), self, b"addNew:"))
-        v.addSubview_(_button("保存", NSMakeRect(95, 20, 70, 28), self, b"saveMemo:"))
-        v.addSubview_(_button("删除", NSMakeRect(170, 20, 70, 28), self, b"deleteMemo:"))
+        v.addSubview_(_button("保存", NSMakeRect(95, 20, 70, 28), self, b"saveReusableTextMemory:"))
+        v.addSubview_(_button("删除", NSMakeRect(170, 20, 70, 28), self, b"deleteReusableTextMemory:"))
         v.addSubview_(_button("刷新", NSMakeRect(245, 20, 70, 28), self, b"reload:"))
         return v
 
     def reload_(self, sender):
         try:
-            self._keys = sorted(self._app.memos.keys())
+            self._keys = sorted(self._app.reusable_text_memory.keys())
         except Exception as e:
-            print(f"[ui] memos load 失败: {e}")
+            print(f"[ui] reusable_text_memory load 失败: {e}")
             self._keys = []
         self._table.reloadData()
 
@@ -443,7 +670,7 @@ class _MemosTab(NSObject):
         if idx < 0 or idx >= len(self._keys):
             return
         k = self._keys[idx]
-        v = self._app.memos.get(k) or ""
+        v = self._app.reusable_text_memory.get(k) or ""
         self._key_input.setStringValue_(k)
         self._val_input.setString_(v)
 
@@ -453,20 +680,20 @@ class _MemosTab(NSObject):
         self._table.deselectAll_(None)
         self._key_input.becomeFirstResponder()
 
-    def saveMemo_(self, sender):
+    def saveReusableTextMemory_(self, sender):
         k = self._key_input.stringValue().strip()
         v = self._val_input.string()
         if not k:
             self._alert("键名不能为空", "")
             return
-        self._app.memos.save(k, v)
+        self._app.reusable_text_memory.save(k, v)
         self.reload_(None)
         # 选中刚保存的
         if k in self._keys:
             i = self._keys.index(k)
             self._table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(i), False)
 
-    def deleteMemo_(self, sender):
+    def deleteReusableTextMemory_(self, sender):
         k = self._key_input.stringValue().strip()
         if not k:
             return
@@ -476,7 +703,7 @@ class _MemosTab(NSObject):
         a.addButtonWithTitle_("取消")
         if a.runModal() != NSAlertFirstButtonReturn:
             return
-        self._app.memos.delete(k)
+        self._app.reusable_text_memory.delete(k)
         self._key_input.setStringValue_("")
         self._val_input.setString_("")
         self.reload_(None)
@@ -590,8 +817,9 @@ class MainWindow(NSObject):
 
         for ident, title, cls in (
             ("settings", "设置",   _SettingsTab),
+            ("shortcuts", "快捷键", _ShortcutsTab),
             ("history",  "历史",   _HistoryTab),
-            ("memos",    "可复用文本", _MemosTab),
+            ("reusable_text_memory",    "可复用文本", _ReusableTextMemoryTab),
             ("perms",    "权限",   _PermsTab),
         ):
             tab = cls.alloc().initWithApp_(self._app)

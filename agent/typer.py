@@ -4,7 +4,16 @@ import time
 from dataclasses import dataclass
 from pynput.keyboard import Controller, Key, KeyCode
 
+from agent import app_launcher
+from agent import macos_window_actions
 from agent.app_shortcut_presets import MACOS_APP_SHORTCUT_PRESETS
+from agent.local_operation_catalog import (
+    LocalOperationCandidate,
+    ShortcutCatalogEntry,
+    ShortcutPolicyDecision,
+    build_shortcut_catalog,
+    shortcut_policy_for_invocation as _catalog_policy_for_invocation,
+)
 
 _kb = Controller()
 _OS = platform.system()
@@ -12,7 +21,7 @@ _OS = platform.system()
 if _OS == "Darwin":
     import Quartz
     import ApplicationServices
-    from AppKit import NSPasteboard, NSPasteboardTypeString, NSWorkspace
+    from AppKit import NSPasteboard, NSPasteboardTypeString, NSScreen, NSWorkspace
 
 if _OS == "Windows":
     import ctypes
@@ -77,32 +86,8 @@ class ActiveApplication:
         return self.name or self.bundle_id or "未知活动应用"
 
 
-@dataclass(frozen=True)
-class ShortcutCatalogEntry:
-    name: str
-    source: str
-    risk: str = "normal"
-    application: str = ""
-
-
-@dataclass(frozen=True)
-class ShortcutPolicyDecision:
-    name: str
-    found: bool
-    allowed: bool
-    risk: str = "normal"
-    source: str = ""
-    application: str = ""
-    reason: str = ""
-
-    @classmethod
-    def missing(cls, name: str) -> "ShortcutPolicyDecision":
-        return cls(
-            name=name,
-            found=False,
-            allowed=False,
-            reason="not_in_shortcut_catalog",
-        )
+ApplicationLaunchSpec = app_launcher.ApplicationLaunchSpec
+MacWindowRect = macos_window_actions.MacWindowRect
 
 
 def init(cfg: dict) -> None:
@@ -114,8 +99,8 @@ def init(cfg: dict) -> None:
     _load_blocked_shortcuts(cfg)
     _load_custom_shortcuts(cfg.get("shortcuts", {}))
     _APP_SHORTCUTS.clear()
-    app_shortcuts = cfg.get("experimental_app_shortcuts", cfg.get("app_shortcuts", {}))
-    _load_app_shortcuts(app_shortcuts)
+    _load_app_shortcuts(cfg.get("application_shortcuts", {}))
+    app_launcher.load_app_launches(cfg.get("app_launches", {}))
 
 
 def is_erasing() -> bool:
@@ -129,14 +114,16 @@ def is_simulating() -> bool:
 
 # 语音指令 → 快捷键映射
 _SHORTCUTS: dict[str, list] = {
-    "截图":    [Key.cmd, Key.shift, KeyCode.from_char("4")],  # macOS 截图
     "保存":    [Key.cmd, KeyCode.from_char("s")],
     "复制":    [Key.cmd, KeyCode.from_char("c")],
     "粘贴":    [Key.cmd, KeyCode.from_char("v")],
     "撤销":    [Key.cmd, KeyCode.from_char("z")],
+    "重做":    [Key.cmd, Key.shift, KeyCode.from_char("z")],
     "全选":    [Key.cmd, KeyCode.from_char("a")],
-    "新标签":  [Key.cmd, KeyCode.from_char("t")],
-    "关闭标签":[Key.cmd, KeyCode.from_char("w")],
+    "加粗":    [Key.cmd, KeyCode.from_char("b")],
+    "斜体":    [Key.cmd, KeyCode.from_char("i")],
+    "下划线":  [Key.cmd, KeyCode.from_char("u")],
+    "查找":    [Key.cmd, KeyCode.from_char("f")],
     "回车":    [Key.enter],
     "删除":    [Key.backspace],
     "空格":    [Key.space],
@@ -144,7 +131,6 @@ _SHORTCUTS: dict[str, list] = {
 _SYSTEM_ACTIONS = {
     "打开系统设置": "open_system_settings",
     "系统设置": "open_system_settings",
-    "打开设置": "open_system_settings",
 }
 _MACOS_APP_SHORTCUT_PRESETS = MACOS_APP_SHORTCUT_PRESETS
 _APP_SHORTCUTS: dict[str, dict[str, list]] = {}
@@ -161,14 +147,12 @@ if _OS in ("Windows", "Linux"):
     _SHORTCUTS["粘贴"]    = [Key.ctrl, KeyCode.from_char("v")]
     _SHORTCUTS["保存"]    = [Key.ctrl, KeyCode.from_char("s")]
     _SHORTCUTS["撤销"]    = [Key.ctrl, KeyCode.from_char("z")]
+    _SHORTCUTS["重做"]    = [Key.ctrl, Key.shift, KeyCode.from_char("z")]
     _SHORTCUTS["全选"]    = [Key.ctrl, KeyCode.from_char("a")]
-    _SHORTCUTS["新标签"]  = [Key.ctrl, KeyCode.from_char("t")]
-    _SHORTCUTS["关闭标签"]= [Key.ctrl, KeyCode.from_char("w")]
-
-if _OS == "Windows":
-    _SHORTCUTS["截图"] = [Key.cmd, Key.shift, KeyCode.from_char("s")]  # Win+Shift+S
-elif _OS == "Linux":
-    _SHORTCUTS["截图"] = [Key.print_screen]  # 大多数桌面环境
+    _SHORTCUTS["加粗"]    = [Key.ctrl, KeyCode.from_char("b")]
+    _SHORTCUTS["斜体"]    = [Key.ctrl, KeyCode.from_char("i")]
+    _SHORTCUTS["下划线"]  = [Key.ctrl, KeyCode.from_char("u")]
+    _SHORTCUTS["查找"]    = [Key.ctrl, KeyCode.from_char("f")]
 
 
 # ── 打字 ──────────────────────────────────────────────────────────
@@ -635,17 +619,27 @@ def _get_accessibility_selected_range(element):
         )
         if err != 0 or value is None:
             return None
-        cf_range = ApplicationServices.CFRange()
-        ok = ApplicationServices.AXValueGetValue(
-            value,
-            ApplicationServices.kAXValueCFRangeType,
-            cf_range,
-        )
-        if not ok:
+        cf_range = _ax_value_get(value, ApplicationServices.kAXValueCFRangeType)
+        if cf_range is None:
             return None
-        return int(cf_range.location), int(cf_range.length)
+        if hasattr(cf_range, "location") and hasattr(cf_range, "length"):
+            return int(cf_range.location), int(cf_range.length)
+        if isinstance(cf_range, (tuple, list)) and len(cf_range) >= 2:
+            return int(cf_range[0]), int(cf_range[1])
+        return None
     except Exception:
         return None
+
+
+def _ax_value_get(value, value_type):
+    """Read AXValue outputs through PyObjC's out-parameter bridge."""
+    result = ApplicationServices.AXValueGetValue(value, value_type, None)
+    if isinstance(result, tuple):
+        if len(result) < 2:
+            return None
+        ok, out = result[0], result[1]
+        return out if ok else None
+    return None
 
 
 def _set_accessibility_selected_range(element, location: int, length: int = 0) -> bool:
@@ -973,9 +967,12 @@ def send_shortcut(name: str) -> bool:
     if keys:
         _press_keys(keys)
         return True
-    action = _SYSTEM_ACTIONS.get(name)
+    action = _system_actions_for_platform().get(name)
     if action:
         return _run_system_action(action)
+    app_launch = _app_launch(name)
+    if app_launch:
+        return app_launcher.launch_application(app_launch, _OS)
     return False
 
 
@@ -996,7 +993,30 @@ def _run_system_action(action: str) -> bool:
             return True
         subprocess.Popen(["sh", "-lc", "gnome-control-center || systemsettings5 || true"])
         return True
+    if action.startswith("macos_window_"):
+        return _run_macos_window_action(action.removeprefix("macos_window_"))
     return False
+
+
+def _system_actions_for_platform() -> dict[str, str]:
+    actions = dict(_SYSTEM_ACTIONS)
+    if _OS == "Darwin":
+        actions.update({
+            name: f"macos_window_{action}"
+            for name, action in macos_window_actions.WINDOW_ACTIONS.items()
+        })
+    return actions
+
+
+def _run_macos_window_action(action: str) -> bool:
+    if _OS != "Darwin":
+        return False
+    return macos_window_actions.run_window_action(
+        action,
+        current_application(),
+        ApplicationServices,
+        NSScreen,
+    )
 
 
 def register_shortcut(name: str, keys: list) -> None:
@@ -1009,30 +1029,46 @@ def list_shortcuts() -> list[str]:
 
 
 def shortcut_catalog() -> list[ShortcutCatalogEntry]:
-    names: list[str] = []
-    entries: list[ShortcutCatalogEntry] = []
+    return build_shortcut_catalog(
+        _local_operation_candidates(),
+        blocked_names=_BLOCKED_SHORTCUT_NAMES,
+        blocked_key_signatures=_BLOCKED_SHORTCUT_KEY_SEQUENCES,
+        high_risk_names=_HIGH_RISK_SHORTCUT_NAMES,
+    )
 
-    def add(name: str, source: str, application: str = "", keys: list | None = None) -> None:
-        if name in names:
-            return
-        if _shortcut_is_blocked(name, keys):
-            return
-        names.append(name)
-        entries.append(ShortcutCatalogEntry(
-            name=name,
-            source=source,
-            risk=_shortcut_risk(name),
-            application=application,
-        ))
 
+def _local_operation_candidates() -> list[LocalOperationCandidate]:
+    candidates: list[LocalOperationCandidate] = []
     app = current_application()
     for name, keys in _app_shortcuts_for(app).items():
-        add(name, "application", app.label, keys)
+        candidates.append(LocalOperationCandidate(
+            name=name,
+            source="application",
+            kind="shortcut",
+            application=app.label,
+            key_signature=_shortcut_key_signature(keys),
+        ))
     for name, keys in _SHORTCUTS.items():
-        add(name, "global", keys)
-    for name in _SYSTEM_ACTIONS:
-        add(name, "system")
-    return entries
+        candidates.append(LocalOperationCandidate(
+            name=name,
+            source="global",
+            kind="shortcut",
+            key_signature=_shortcut_key_signature(keys),
+        ))
+    for name, action in _system_actions_for_platform().items():
+        kind = "system_window_action" if action.startswith("macos_window_") else "system_action"
+        candidates.append(LocalOperationCandidate(
+            name=name,
+            source="system",
+            kind=kind,
+        ))
+    for name in _app_launches_for_system():
+        candidates.append(LocalOperationCandidate(
+            name=name,
+            source="system",
+            kind="app_launch",
+        ))
+    return candidates
 
 
 def shortcut_policy_for_invocation(
@@ -1040,36 +1076,43 @@ def shortcut_policy_for_invocation(
     *,
     in_atomic_stack: bool = False,
 ) -> ShortcutPolicyDecision:
-    for entry in shortcut_catalog():
-        if entry.name != name:
-            continue
-        if in_atomic_stack and entry.risk == "high":
-            return ShortcutPolicyDecision(
-                name=name,
-                found=True,
-                allowed=False,
-                risk=entry.risk,
-                source=entry.source,
-                application=entry.application,
-                reason="high_risk_requires_confirmation",
-            )
-        return ShortcutPolicyDecision(
-            name=name,
-            found=True,
-            allowed=True,
-            risk=entry.risk,
-            source=entry.source,
-            application=entry.application,
-        )
-    return ShortcutPolicyDecision.missing(name)
-
-
-def _shortcut_risk(name: str) -> str:
-    return "high" if name in _HIGH_RISK_SHORTCUT_NAMES else "normal"
+    return _catalog_policy_for_invocation(
+        shortcut_catalog(),
+        name,
+        in_atomic_stack=in_atomic_stack,
+    )
 
 
 def _shortcut_is_blocked(name: str, keys: list | None = None) -> bool:
     return name in _BLOCKED_SHORTCUT_NAMES or _shortcut_key_signature(keys) in _BLOCKED_SHORTCUT_KEY_SEQUENCES
+
+
+def _app_launch(name: str) -> ApplicationLaunchSpec | None:
+    return app_launcher.app_launch(name, _OS, _BLOCKED_SHORTCUT_NAMES)
+
+
+def _app_launches_for_system() -> dict[str, ApplicationLaunchSpec]:
+    return app_launcher.app_launches_for_system(_OS)
+
+
+def _discover_macos_app_launches() -> dict[str, ApplicationLaunchSpec]:
+    return app_launcher.discover_macos_app_launches()
+
+
+def _macos_target_window_rect(
+    action: str,
+    current: MacWindowRect,
+    screen: MacWindowRect,
+) -> MacWindowRect | None:
+    return macos_window_actions.target_window_rect(action, current, screen)
+
+
+def _macos_window_rect(window) -> MacWindowRect | None:
+    return macos_window_actions.window_rect(window, ApplicationServices)
+
+
+def _set_macos_window_rect(window, rect: MacWindowRect) -> bool:
+    return macos_window_actions.set_window_rect(window, rect, ApplicationServices)
 
 
 def _app_shortcut(app: ActiveApplication, name: str) -> list | None:
@@ -1136,10 +1179,10 @@ def _load_custom_shortcuts(shortcuts) -> None:
             register_shortcut(name.strip(), parsed)
 
 
-def _load_app_shortcuts(app_shortcuts) -> None:
-    if not isinstance(app_shortcuts, dict):
+def _load_app_shortcuts(application_shortcuts) -> None:
+    if not isinstance(application_shortcuts, dict):
         return
-    for app_key, shortcuts in app_shortcuts.items():
+    for app_key, shortcuts in application_shortcuts.items():
         if not isinstance(app_key, str) or not app_key.strip():
             continue
         if not isinstance(shortcuts, dict):
@@ -1161,6 +1204,18 @@ def _load_app_shortcuts(app_shortcuts) -> None:
             _APP_SHORTCUTS[key] = parsed_shortcuts
             _APP_SHORTCUTS[key.lower()] = parsed_shortcuts
             print(f"[typer] 已加载实验性活动应用快捷键: {key}")
+
+
+def _load_app_launches(app_launches) -> None:
+    app_launcher.load_app_launches(app_launches)
+
+
+def _parse_app_launch_spec(spec) -> ApplicationLaunchSpec | None:
+    return app_launcher.parse_app_launch_spec(spec)
+
+
+def _string_config_value(config: dict, *keys: str) -> str:
+    return app_launcher.string_config_value(config, *keys)
 
 
 def _load_blocked_shortcuts(cfg: dict) -> None:

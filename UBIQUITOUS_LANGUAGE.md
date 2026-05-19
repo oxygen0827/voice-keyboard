@@ -14,7 +14,7 @@
 | **Shortcut Catalog** | A local catalog of named user-visible shortcut actions available for the current system or application context. | Provider-generated shortcut list, freeform hotkey map |
 | **Global Shortcut Catalog** | A Shortcut Catalog for common system or broadly reusable shortcut actions. | Default hotkey dump |
 | **Application Shortcut Catalog** | A Shortcut Catalog for named shortcut actions in the current application context. | App macro list, provider shortcut guess |
-| **Reusable Text Operation** | A Voice Text Operation that saves, recalls, deletes, or lists user-provided reusable text snippets. | Memory Operation, memo feature, memory command |
+| **Reusable Text Operation** | A Voice Text Operation that saves, recalls, deletes, or lists user-provided reusable text snippets. | Memory Operation, memory command |
 | **Reusable Text Memory** | A short user-provided text snippet saved for later insertion into the Input Environment. | Knowledge base, long-term memory, user profile |
 | **Input Environment** | The application, field, cursor position, and selected text that will receive engine output. | App, editor, textbox |
 | **Speech Interpretation Provider** | An external capability used to turn speech or text context into text or operation decisions. | STT provider, LLM provider, model, backend |

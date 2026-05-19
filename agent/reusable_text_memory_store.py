@@ -1,9 +1,4 @@
-"""
-Simple JSON store for Reusable Text Memory.
-
-The MemoStore name and ~/.voice-keyboard/memos.json path are compatibility
-surface for existing installs and persisted user data.
-"""
+"""Simple JSON store for Reusable Text Memory."""
 
 import json
 import threading
@@ -11,20 +6,22 @@ from pathlib import Path
 from typing import Optional
 
 
-class MemoStore:
+class ReusableTextMemoryStore:
     def __init__(self, path: Optional[Path] = None):
-        self._path = path or Path.home() / ".voice-keyboard" / "memos.json"
+        self._path = path or Path.home() / ".voice-keyboard" / "reusable_text_memory.json"
         self._lock = threading.Lock()
         self._data: dict[str, str] = {}
         self._load()
 
     def _load(self) -> None:
-        if not self._path.exists():
+        path = self._path
+        if not path.exists():
             return
         try:
-            self._data = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            self._data = raw if isinstance(raw, dict) else {}
         except Exception as e:
-            print(f"[memo] 读取失败 {self._path}: {e}")
+            print(f"[reusable-text-memory] 读取失败 {path}: {e}")
             self._data = {}
 
     def _save(self) -> None:

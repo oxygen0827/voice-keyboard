@@ -1,8 +1,13 @@
 import unittest
+import plistlib
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from pynput.keyboard import Key
 
+from agent import app_launcher
+from agent import macos_window_actions
 from agent import typer
 
 
@@ -22,7 +27,7 @@ class TyperShortcutTests(unittest.TestCase):
     def test_init_loads_app_shortcuts_from_config(self):
         with patch.dict(typer._APP_SHORTCUTS, {}, clear=True):
             typer.init({
-                "experimental_app_shortcuts": {
+                "application_shortcuts": {
                     "com.openai.codex": {
                         "发送": "cmd+enter",
                     },
@@ -33,18 +38,6 @@ class TyperShortcutTests(unittest.TestCase):
                 typer._APP_SHORTCUTS["com.openai.codex"]["发送"],
                 [Key.cmd, Key.enter],
             )
-
-    def test_init_keeps_legacy_app_shortcuts_as_experimental_alias(self):
-        with patch.dict(typer._APP_SHORTCUTS, {}, clear=True):
-            typer.init({
-                "app_shortcuts": {
-                    "com.openai.codex": {
-                        "发送": "cmd+enter",
-                    },
-                },
-            })
-
-            self.assertIn("发送", typer._APP_SHORTCUTS["com.openai.codex"])
 
     def test_send_shortcut_prefers_active_application_shortcut(self):
         app = typer.ActiveApplication("Codex", "com.openai.codex", 42)
@@ -59,7 +52,7 @@ class TyperShortcutTests(unittest.TestCase):
 
         press_keys.assert_called_once_with([Key.cmd, Key.enter])
 
-    def test_send_shortcut_uses_macos_builtin_app_preset(self):
+    def test_send_shortcut_does_not_use_builtin_app_preset(self):
         app = typer.ActiveApplication("Feishu", "com.bytedance.macos.feishu", 42)
         with (
             patch.object(typer, "_OS", "Darwin"),
@@ -67,9 +60,9 @@ class TyperShortcutTests(unittest.TestCase):
             patch.object(typer, "current_application", return_value=app),
             patch.object(typer, "_press_keys") as press_keys,
         ):
-            self.assertTrue(typer.send_shortcut("发送"))
+            self.assertFalse(typer.send_shortcut("发送"))
 
-        press_keys.assert_called_once_with([Key.enter])
+        press_keys.assert_not_called()
 
     def test_custom_app_shortcut_overrides_builtin_preset(self):
         app = typer.ActiveApplication("Feishu", "com.bytedance.macos.feishu", 42)
@@ -107,6 +100,7 @@ class TyperShortcutTests(unittest.TestCase):
 
         save = next(entry for entry in catalog if entry.name == "保存")
         self.assertEqual(save.source, "application")
+        self.assertEqual(save.kind, "shortcut")
         self.assertEqual(save.application, "Codex (com.openai.codex)")
         self.assertEqual(save.risk, "normal")
         self.assertEqual([entry.name for entry in catalog].count("保存"), 1)
@@ -125,8 +119,8 @@ class TyperShortcutTests(unittest.TestCase):
         self.assertEqual(send.source, "application")
         self.assertEqual(send.risk, "high")
 
-    def test_shortcut_catalog_includes_macos_builtin_app_preset_metadata(self):
-        app = typer.ActiveApplication("Chrome", "com.google.Chrome", 42)
+    def test_universal_core_shortcuts_are_global_without_application_presets(self):
+        app = typer.ActiveApplication("Microsoft Word", "com.microsoft.Word", 42)
         with (
             patch.object(typer, "_OS", "Darwin"),
             patch.dict(typer._APP_SHORTCUTS, {}, clear=True),
@@ -134,38 +128,23 @@ class TyperShortcutTests(unittest.TestCase):
         ):
             catalog = typer.shortcut_catalog()
 
-        address_bar = next(entry for entry in catalog if entry.name == "地址栏")
-        self.assertEqual(address_bar.source, "application")
-        self.assertEqual(address_bar.application, "Chrome (com.google.Chrome)")
+        bold = next(entry for entry in catalog if entry.name == "加粗")
+        self.assertEqual(bold.source, "global")
+        self.assertEqual(bold.application, "")
+        self.assertNotIn("插入批注", [entry.name for entry in catalog])
 
-    def test_macos_builtin_app_presets_include_office_wps_and_feishu_targets(self):
+    def test_macos_builtin_presets_are_empty_by_default(self):
         cases = [
-            (
-                typer.ActiveApplication("Microsoft Word", "com.microsoft.Word", 42),
-                {"加粗", "插入批注", "标题 1", "项目符号列表"},
-            ),
-            (
-                typer.ActiveApplication("Microsoft Excel", "com.microsoft.Excel", 42),
-                {"编辑单元格", "自动求和", "筛选", "填充向下"},
-            ),
-            (
-                typer.ActiveApplication(
-                    "Microsoft PowerPoint",
-                    "com.microsoft.Powerpoint",
-                    42,
-                ),
-                {"新建幻灯片", "开始放映", "复制幻灯片", "演讲者视图"},
-            ),
-            (
-                typer.ActiveApplication("WPS Office", "com.kingsoft.wpsoffice.mac", 42),
-                {"加粗", "插入批注", "新建幻灯片", "筛选"},
-            ),
-            (
-                typer.ActiveApplication("飞书", "com.bytedance.macos.feishu", 42),
-                {"发送", "换行", "搜索", "新建文档", "多维表格加粗"},
-            ),
+            typer.ActiveApplication("Chrome", "com.google.Chrome", 42),
+            typer.ActiveApplication("Codex", "com.openai.codex", 42),
+            typer.ActiveApplication("微信", "com.tencent.xinwechat", 42),
+            typer.ActiveApplication("Microsoft Word", "com.microsoft.Word", 42),
+            typer.ActiveApplication("Microsoft Excel", "com.microsoft.Excel", 42),
+            typer.ActiveApplication("Microsoft PowerPoint", "com.microsoft.Powerpoint", 42),
+            typer.ActiveApplication("WPS Office", "com.kingsoft.wpsoffice.mac", 42),
+            typer.ActiveApplication("飞书", "com.bytedance.macos.feishu", 42),
         ]
-        for app, expected_names in cases:
+        for app in cases:
             with self.subTest(app=app.label):
                 with (
                     patch.object(typer, "_OS", "Darwin"),
@@ -174,49 +153,12 @@ class TyperShortcutTests(unittest.TestCase):
                 ):
                     catalog = typer.shortcut_catalog()
 
-                names = {entry.name for entry in catalog if entry.source == "application"}
-                self.assertTrue(
-                    expected_names.issubset(names),
-                    f"{app.label} missing {expected_names - names}",
-                )
+                self.assertFalse([
+                    entry for entry in catalog
+                    if entry.source == "application"
+                ])
 
-    def test_send_shortcut_uses_office_application_preset(self):
-        app = typer.ActiveApplication("Microsoft Word", "com.microsoft.Word", 42)
-        with (
-            patch.object(typer, "_OS", "Darwin"),
-            patch.dict(typer._APP_SHORTCUTS, {}, clear=True),
-            patch.object(typer, "current_application", return_value=app),
-            patch.object(typer, "_press_keys") as press_keys,
-        ):
-            self.assertTrue(typer.send_shortcut("插入批注"))
-
-        press_keys.assert_called_once_with([Key.cmd, Key.alt, typer.KeyCode.from_char("a")])
-
-    def test_macos_feishu_preset_includes_bitable_editing_shortcuts(self):
-        app = typer.ActiveApplication("飞书", "com.bytedance.macos.feishu", 42)
-        expected_names = {
-            "多维表格撤销",
-            "多维表格重做",
-            "多维表格加粗",
-            "多维表格斜体",
-            "多维表格下划线",
-            "多维表格删除线",
-            "多维表格清除格式",
-            "多维表格打开插入菜单",
-            "多维表格打开快捷键帮助",
-        }
-        with (
-            patch.object(typer, "_OS", "Darwin"),
-            patch.dict(typer._APP_SHORTCUTS, {}, clear=True),
-            patch.object(typer, "current_application", return_value=app),
-        ):
-            catalog = typer.shortcut_catalog()
-
-        names = {entry.name for entry in catalog if entry.source == "application"}
-        self.assertTrue(expected_names.issubset(names))
-        self.assertNotIn("多维表格居中", names)
-
-    def test_send_shortcut_uses_feishu_bitable_preset(self):
+    def test_send_shortcut_uses_global_formatting_in_feishu(self):
         app = typer.ActiveApplication("飞书", "com.bytedance.macos.feishu", 42)
         with (
             patch.object(typer, "_OS", "Darwin"),
@@ -224,9 +166,9 @@ class TyperShortcutTests(unittest.TestCase):
             patch.object(typer, "current_application", return_value=app),
             patch.object(typer, "_press_keys") as press_keys,
         ):
-            self.assertTrue(typer.send_shortcut("多维表格清除格式"))
+            self.assertTrue(typer.send_shortcut("加粗"))
 
-        press_keys.assert_called_once_with([Key.cmd, typer.KeyCode.from_char("\\")])
+        press_keys.assert_called_once_with([Key.cmd, typer.KeyCode.from_char("b")])
 
     def test_blocked_shortcut_name_is_removed_from_catalog_and_execution(self):
         app = typer.ActiveApplication("飞书", "com.bytedance.macos.feishu", 42)
@@ -237,9 +179,9 @@ class TyperShortcutTests(unittest.TestCase):
             patch.object(typer, "_BLOCKED_SHORTCUT_KEY_SEQUENCES", set()),
             patch.object(typer, "_press_keys") as press_keys,
         ):
-            typer.init({"blocked_shortcuts": ["多维表格清除格式"]})
-            self.assertNotIn("多维表格清除格式", typer.list_shortcuts())
-            self.assertFalse(typer.send_shortcut("多维表格清除格式"))
+            typer.init({"blocked_shortcuts": ["加粗"]})
+            self.assertNotIn("加粗", typer.list_shortcuts())
+            self.assertFalse(typer.send_shortcut("加粗"))
 
         press_keys.assert_not_called()
 
@@ -253,19 +195,23 @@ class TyperShortcutTests(unittest.TestCase):
             patch.object(typer, "_press_keys") as press_keys,
         ):
             typer.init({"blocked_shortcut_keys": ["cmd+shift+z"]})
-            self.assertNotIn("多维表格重做", typer.list_shortcuts())
-            self.assertFalse(typer.send_shortcut("多维表格重做"))
+            self.assertNotIn("重做", typer.list_shortcuts())
+            self.assertFalse(typer.send_shortcut("重做"))
 
         press_keys.assert_not_called()
 
     def test_macos_builtin_app_preset_is_not_used_on_other_platforms(self):
-        app = typer.ActiveApplication("Chrome", "com.google.Chrome", 42)
+        app = typer.ActiveApplication("Microsoft Word", "com.microsoft.Word", 42)
         with (
             patch.object(typer, "_OS", "Windows"),
             patch.dict(typer._APP_SHORTCUTS, {}, clear=True),
             patch.object(typer, "current_application", return_value=app),
         ):
-            self.assertNotIn("地址栏", typer.list_shortcuts())
+            application_names = {
+                entry.name for entry in typer.shortcut_catalog()
+                if entry.source == "application"
+            }
+            self.assertNotIn("加粗", application_names)
 
     def test_shortcut_policy_blocks_missing_shortcut_before_adapter_execution(self):
         app = typer.ActiveApplication("Codex", "com.openai.codex", 42)
@@ -304,8 +250,405 @@ class TyperShortcutTests(unittest.TestCase):
 
         run.assert_called_once_with("open_system_settings")
 
+    def test_macos_window_actions_are_system_actions_without_key_chords(self):
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+            patch.object(typer, "_run_system_action", return_value=True) as run,
+            patch.object(typer, "_press_keys") as press_keys,
+        ):
+            names = set(typer.list_shortcuts())
+            self.assertIn("窗口左半屏", names)
+            self.assertIn("窗口右半屏", names)
+            self.assertIn("窗口最大化", names)
+            self.assertIn("窗口居中", names)
+            left_half = next(entry for entry in typer.shortcut_catalog() if entry.name == "窗口左半屏")
+            self.assertEqual(left_half.kind, "system_window_action")
+            self.assertTrue(typer.send_shortcut("窗口左半屏"))
+
+        run.assert_called_once_with("macos_window_left_half")
+        press_keys.assert_not_called()
+
+    def test_macos_window_actions_are_not_exposed_on_other_platforms(self):
+        with (
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+        ):
+            self.assertNotIn("窗口左半屏", typer.list_shortcuts())
+
+    def test_macos_window_target_rects_keep_slice_small_and_predictable(self):
+        screen = macos_window_actions.MacWindowRect(0, 24, 1440, 876)
+        current = macos_window_actions.MacWindowRect(200, 120, 800, 600)
+
+        self.assertEqual(
+            macos_window_actions.target_window_rect("left_half", current, screen),
+            macos_window_actions.MacWindowRect(0, 24, 720, 876),
+        )
+        self.assertEqual(
+            macos_window_actions.target_window_rect("right_half", current, screen),
+            macos_window_actions.MacWindowRect(720, 24, 720, 876),
+        )
+        self.assertEqual(
+            macos_window_actions.target_window_rect("maximize", current, screen),
+            macos_window_actions.MacWindowRect(0, 24, 1440, 876),
+        )
+        self.assertEqual(
+            macos_window_actions.target_window_rect("center", current, screen),
+            macos_window_actions.MacWindowRect(320, 162, 800, 600),
+        )
+
+    def test_macos_window_action_sets_accessibility_frame(self):
+        window = object()
+        current = macos_window_actions.MacWindowRect(200, 120, 800, 600)
+        screen = macos_window_actions.MacWindowRect(0, 24, 1440, 876)
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(macos_window_actions, "frontmost_window", return_value=window),
+            patch.object(macos_window_actions, "window_rect", return_value=current),
+            patch.object(macos_window_actions, "screen_for_window", return_value=screen),
+            patch.object(macos_window_actions, "set_window_rect", return_value=True) as set_rect,
+        ):
+            self.assertTrue(typer._run_macos_window_action("right_half"))
+
+        set_rect.assert_called_once_with(
+            window,
+            macos_window_actions.MacWindowRect(720, 24, 720, 876),
+            typer.ApplicationServices,
+        )
+
+    def test_macos_window_action_exits_fullscreen_before_setting_frame(self):
+        window = object()
+        current = macos_window_actions.MacWindowRect(200, 120, 800, 600)
+        screen = macos_window_actions.MacWindowRect(0, 24, 1440, 876)
+        fullscreen_checks = [True, False]
+
+        class AX:
+            @staticmethod
+            def AXUIElementSetAttributeValue(_window, _attr, _value):
+                return 0
+
+        with (
+            patch.object(macos_window_actions, "frontmost_window", return_value=window),
+            patch.object(
+                macos_window_actions,
+                "is_fullscreen_window",
+                side_effect=lambda *_args: fullscreen_checks.pop(0) if fullscreen_checks else False,
+            ),
+            patch.object(macos_window_actions, "window_rect", return_value=current),
+            patch.object(macos_window_actions, "screen_for_window", return_value=screen),
+            patch.object(macos_window_actions, "set_window_rect", return_value=True) as set_rect,
+        ):
+            self.assertTrue(
+                macos_window_actions.run_window_action(
+                    "left_half",
+                    typer.ActiveApplication("Notes", "com.apple.Notes", 42),
+                    AX,
+                    MagicMock(),
+                )
+            )
+
+        set_rect.assert_called_once_with(
+            window,
+            macos_window_actions.MacWindowRect(0, 24, 720, 876),
+            AX,
+        )
+
+    def test_macos_window_action_reacquires_window_after_fullscreen_exit(self):
+        fullscreen_window = object()
+        regular_window = object()
+        current = macos_window_actions.MacWindowRect(200, 120, 800, 600)
+        screen = macos_window_actions.MacWindowRect(0, 24, 1440, 876)
+
+        class AX:
+            @staticmethod
+            def AXUIElementSetAttributeValue(_window, _attr, _value):
+                return 0
+
+        with (
+            patch.object(
+                macos_window_actions,
+                "frontmost_window",
+                side_effect=[fullscreen_window, regular_window],
+            ) as frontmost,
+            patch.object(
+                macos_window_actions,
+                "is_fullscreen_window",
+                side_effect=lambda window, _ax: window is fullscreen_window,
+            ),
+            patch.object(
+                macos_window_actions,
+                "window_rect",
+                return_value=current,
+            ) as window_rect,
+            patch.object(macos_window_actions, "screen_for_window", return_value=screen),
+            patch.object(macos_window_actions, "set_window_rect", return_value=True) as set_rect,
+        ):
+            self.assertTrue(
+                macos_window_actions.run_window_action(
+                    "left_half",
+                    typer.ActiveApplication("Notes", "com.apple.Notes", 42),
+                    AX,
+                    MagicMock(),
+                )
+            )
+
+        self.assertEqual(frontmost.call_count, 2)
+        window_rect.assert_called_once_with(regular_window, AX)
+        set_rect.assert_called_once_with(
+            regular_window,
+            macos_window_actions.MacWindowRect(0, 24, 720, 876),
+            AX,
+        )
+
+    def test_macos_window_action_stops_when_fullscreen_exit_fails(self):
+        window = object()
+
+        class AX:
+            @staticmethod
+            def AXUIElementSetAttributeValue(_window, _attr, _value):
+                return -25200
+
+        with (
+            patch.object(macos_window_actions, "frontmost_window", return_value=window),
+            patch.object(macos_window_actions, "is_fullscreen_window", return_value=True),
+            patch.object(macos_window_actions, "window_rect") as window_rect,
+            patch.object(macos_window_actions, "set_window_rect") as set_rect,
+        ):
+            self.assertFalse(
+                macos_window_actions.run_window_action(
+                    "left_half",
+                    typer.ActiveApplication("Notes", "com.apple.Notes", 42),
+                    AX,
+                    MagicMock(),
+                )
+            )
+
+        window_rect.assert_not_called()
+        set_rect.assert_not_called()
+
+    def test_macos_window_frame_sets_position_before_size(self):
+        window = object()
+        rect = macos_window_actions.MacWindowRect(0, 24, 720, 876)
+        calls = []
+
+        class AX:
+            kAXValueCGSizeType = "size"
+            kAXValueCGPointType = "point"
+
+            @staticmethod
+            def CGSizeMake(width, height):
+                return ("size", width, height)
+
+            @staticmethod
+            def CGPointMake(x, y):
+                return ("point", x, y)
+
+            @staticmethod
+            def AXValueCreate(value_type, value):
+                return (value_type, value)
+
+            @staticmethod
+            def AXUIElementSetAttributeValue(_window, attr, _value):
+                calls.append(attr)
+                return 0
+
+        self.assertTrue(macos_window_actions.set_window_rect(window, rect, AX))
+        self.assertEqual(calls, ["AXPosition", "AXSize"])
+
+    def test_macos_window_frame_falls_back_when_position_then_size_fails(self):
+        window = object()
+        rect = macos_window_actions.MacWindowRect(0, 24, 720, 876)
+        calls = []
+
+        class AX:
+            kAXValueCGSizeType = "size"
+            kAXValueCGPointType = "point"
+
+            @staticmethod
+            def CGSizeMake(width, height):
+                return ("size", width, height)
+
+            @staticmethod
+            def CGPointMake(x, y):
+                return ("point", x, y)
+
+            @staticmethod
+            def AXValueCreate(value_type, value):
+                return (value_type, value)
+
+            @staticmethod
+            def AXUIElementSetAttributeValue(_window, attr, _value):
+                calls.append(attr)
+                if calls == ["AXPosition", "AXSize"]:
+                    return -25200
+                return 0
+
+        self.assertTrue(macos_window_actions.set_window_rect(window, rect, AX))
+        self.assertEqual(calls, ["AXPosition", "AXSize", "AXSize", "AXPosition"])
+
+    def test_macos_window_rect_reads_pyobjc_axvalue_return_tuple(self):
+        position = typer.ApplicationServices.AXValueCreate(
+            typer.ApplicationServices.kAXValueCGPointType,
+            typer.ApplicationServices.CGPointMake(12, 34),
+        )
+        size = typer.ApplicationServices.AXValueCreate(
+            typer.ApplicationServices.kAXValueCGSizeType,
+            typer.ApplicationServices.CGSizeMake(640, 480),
+        )
+
+        def copy_attr(_window, attr, _default):
+            if attr == "AXPosition":
+                return 0, position
+            if attr == "AXSize":
+                return 0, size
+            return 1, None
+
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(
+                typer.ApplicationServices,
+                "AXUIElementCopyAttributeValue",
+                side_effect=copy_attr,
+            ),
+        ):
+            rect = macos_window_actions.window_rect(object(), typer.ApplicationServices)
+
+        self.assertEqual(rect, macos_window_actions.MacWindowRect(12, 34, 640, 480))
+
+    def test_builtin_open_app_actions_cover_current_launch_slice(self):
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+        ):
+            names = set(typer.list_shortcuts())
+
+        self.assertIn("打开飞书", names)
+        self.assertIn("打开Word", names)
+        self.assertIn("打开Excel", names)
+        self.assertIn("打开PowerPoint", names)
+        self.assertIn("打开WPS", names)
+        self.assertIn("打开谷歌浏览器", names)
+        self.assertIn("打开Chrome", names)
+        feishu = next(entry for entry in typer.shortcut_catalog() if entry.name == "打开飞书")
+        self.assertEqual(feishu.kind, "app_launch")
+
+    def test_macos_discovers_installed_app_launch_actions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "Obsidian.app"
+            contents = app / "Contents"
+            contents.mkdir(parents=True)
+            (contents / "Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": "md.obsidian",
+                "CFBundleName": "Obsidian",
+            }))
+
+            with (
+                patch.object(typer, "_OS", "Darwin"),
+                patch.object(app_launcher, "MACOS_APP_SEARCH_DIRS", (tmp,)),
+                patch.object(app_launcher, "DYNAMIC_APP_LAUNCH_CACHE", None),
+                patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+            ):
+                self.assertIn("打开Obsidian", typer.list_shortcuts())
+
+    def test_macos_discovered_app_launches_can_use_common_chinese_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "WeChat.app"
+            contents = app / "Contents"
+            contents.mkdir(parents=True)
+            (contents / "Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": "com.tencent.xinWeChat",
+                "CFBundleName": "WeChat",
+            }))
+
+            with (
+                patch.object(typer, "_OS", "Darwin"),
+                patch.object(app_launcher, "MACOS_APP_SEARCH_DIRS", (tmp,)),
+                patch.object(app_launcher, "DYNAMIC_APP_LAUNCH_CACHE", None),
+                patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+            ):
+                self.assertIn("打开微信", typer.list_shortcuts())
+
+    def test_send_shortcut_opens_builtin_macos_application_by_bundle_id(self):
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+            patch.object(app_launcher.subprocess, "Popen") as popen,
+        ):
+            self.assertTrue(typer.send_shortcut("打开飞书"))
+
+        popen.assert_called_once_with(["open", "-b", "com.bytedance.macos.feishu"])
+
+    def test_send_shortcut_opens_builtin_chrome_application_by_bundle_id(self):
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+            patch.object(app_launcher.subprocess, "Popen") as popen,
+        ):
+            self.assertTrue(typer.send_shortcut("打开谷歌浏览器"))
+
+        popen.assert_called_once_with(["open", "-b", "com.google.Chrome"])
+
+    def test_send_shortcut_opens_discovered_macos_application_by_bundle_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "Obsidian.app"
+            contents = app / "Contents"
+            contents.mkdir(parents=True)
+            (contents / "Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": "md.obsidian",
+                "CFBundleName": "Obsidian",
+            }))
+
+            with (
+                patch.object(typer, "_OS", "Darwin"),
+                patch.object(app_launcher, "MACOS_APP_SEARCH_DIRS", (tmp,)),
+                patch.object(app_launcher, "DYNAMIC_APP_LAUNCH_CACHE", None),
+                patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+                patch.object(app_launcher.subprocess, "Popen") as popen,
+            ):
+                self.assertTrue(typer.send_shortcut("打开Obsidian"))
+
+        popen.assert_called_once_with(["open", "-b", "md.obsidian"])
+
+    def test_init_loads_custom_app_launch_actions_from_config(self):
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.dict(app_launcher.CUSTOM_APP_LAUNCHES, {}, clear=True),
+            patch.object(typer, "current_application", return_value=typer.ActiveApplication()),
+            patch.object(app_launcher.subprocess, "Popen") as popen,
+        ):
+            typer.init({
+                "app_launches": {
+                    "打开Obsidian": {
+                        "macos_bundle_id": "md.obsidian",
+                        "macos_name": "Obsidian",
+                    },
+                },
+            })
+
+            self.assertIn("打开Obsidian", typer.list_shortcuts())
+            self.assertTrue(typer.send_shortcut("打开Obsidian"))
+
+        popen.assert_called_once_with(["open", "-b", "md.obsidian"])
+
     def test_builtin_shortcuts_include_system_actions(self):
         self.assertIn("打开系统设置", typer.list_shortcuts())
+        self.assertNotIn("打开设置", typer.list_shortcuts())
+
+    def test_global_shortcuts_are_limited_to_common_keyboard_actions(self):
+        with patch.object(typer, "current_application", return_value=typer.ActiveApplication()):
+            names = set(typer.list_shortcuts())
+
+        self.assertIn("保存", names)
+        self.assertIn("重做", names)
+        self.assertIn("加粗", names)
+        self.assertIn("斜体", names)
+        self.assertIn("下划线", names)
+        self.assertIn("查找", names)
+        self.assertNotIn("居中", names)
+        self.assertNotIn("替换", names)
+        self.assertNotIn("截图", names)
+        self.assertNotIn("新标签", names)
+        self.assertNotIn("关闭标签", names)
 
     def test_macos_clip_method_types_via_clipboard(self):
         with (
@@ -557,6 +900,22 @@ class TyperShortcutTests(unittest.TestCase):
         self.assertIsNotNone(window)
         self.assertEqual(window.text, text)
         self.assertEqual(window.source, "text_field")
+
+    def test_accessibility_selected_range_reads_pyobjc_return_tuple(self):
+        app_services = typer.ApplicationServices
+        selected_range = app_services.AXValueCreate(
+            app_services.kAXValueCFRangeType,
+            app_services.CFRangeMake(3, 4),
+        )
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "ApplicationServices") as ax,
+        ):
+            ax.AXUIElementCopyAttributeValue.return_value = (0, selected_range)
+            ax.kAXValueCFRangeType = app_services.kAXValueCFRangeType
+            ax.AXValueGetValue = app_services.AXValueGetValue
+
+            self.assertEqual(typer._get_accessibility_selected_range(object()), (3, 4))
 
     def test_accessibility_replacement_uses_value_range(self):
         focused = object()

@@ -15,34 +15,34 @@ class VoiceTextOperationTests(unittest.TestCase):
         self.assertEqual(operation, VoiceTextOperation(kind="chat", reply="稍后再试"))
 
     def test_non_string_payload_fields_become_empty_strings(self):
-        operation = operation_from_intent({"type": "memo_save", "key": 123, "value": None})
+        operation = operation_from_intent({"type": "reusable_text_save", "key": 123, "value": None})
 
-        self.assertEqual(operation, VoiceTextOperation(kind="memo_save"))
+        self.assertEqual(operation, VoiceTextOperation(kind="reusable_text_save"))
 
-    def test_keeps_legacy_memo_operation_kinds_for_compatibility(self):
+    def test_keeps_reusable_text_operation_kinds(self):
         self.assertEqual(
             operation_from_intent({
-                "type": "memo_save",
+                "type": "reusable_text_save",
                 "key": "邮箱",
                 "value": "me@example.com",
             }),
             VoiceTextOperation(
-                kind="memo_save",
+                kind="reusable_text_save",
                 key="邮箱",
                 value="me@example.com",
             ),
         )
         self.assertEqual(
-            operation_from_intent({"type": "memo_recall", "key": "邮箱"}),
-            VoiceTextOperation(kind="memo_recall", key="邮箱"),
+            operation_from_intent({"type": "reusable_text_recall", "key": "邮箱"}),
+            VoiceTextOperation(kind="reusable_text_recall", key="邮箱"),
         )
         self.assertEqual(
-            operation_from_intent({"type": "memo_delete", "key": "邮箱"}),
-            VoiceTextOperation(kind="memo_delete", key="邮箱"),
+            operation_from_intent({"type": "reusable_text_delete", "key": "邮箱"}),
+            VoiceTextOperation(kind="reusable_text_delete", key="邮箱"),
         )
         self.assertEqual(
-            operation_from_intent({"type": "memo_list"}),
-            VoiceTextOperation(kind="memo_list"),
+            operation_from_intent({"type": "reusable_text_list"}),
+            VoiceTextOperation(kind="reusable_text_list"),
         )
 
 

@@ -60,7 +60,8 @@ class RuntimeCompositionTests(unittest.TestCase):
         with (
             patch("agent.runtime_composition.SpeechInterpretationProviderFactory") as factory_cls,
             patch("agent.ai_handler.AIHandler") as handler_cls,
-            patch("agent.memo_store.MemoStore"),
+            patch("agent.reusable_text_memory_store.ReusableTextMemoryStore"),
+            patch("agent.personal_lexicon.PersonalLexicon") as lexicon_cls,
             patch("agent.main.make_utterance_handler", return_value=MagicMock()),
             patch("agent.push_to_talk.PushToTalk") as ptt_cls,
         ):
@@ -71,7 +72,7 @@ class RuntimeCompositionTests(unittest.TestCase):
                 "instruction_mode": {
                     "intent_fallbacks": {
                         "multi_step_guard": False,
-                        "memo_fuzzy_recall": False,
+                        "reusable_text_memory_fuzzy_recall": False,
                     },
                 },
             }, MagicMock())
@@ -81,9 +82,10 @@ class RuntimeCompositionTests(unittest.TestCase):
             IntentFallbackOptions(
                 multi_step_guard=False,
                 selected_edit_override=True,
-                memo_fuzzy_recall=False,
+                reusable_text_memory_fuzzy_recall=False,
             ),
         )
+        self.assertEqual(handler_cls.call_args.kwargs["personal_lexicon"], lexicon_cls.return_value)
         ptt_cls.return_value.start.assert_called_once_with()
 
 

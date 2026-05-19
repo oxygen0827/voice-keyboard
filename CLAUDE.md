@@ -63,7 +63,7 @@ SSL_CERT_FILE=$(.venv/bin/python -c "import certifi; print(certifi.where())") \
 | `agent/text_buffer.py` | Implementation support for Tracked Segment behavior |
 | `agent/keyboard_monitor.py` | Backspace/Delete/Enter monitoring for tracked text sync |
 | `agent/mouse_monitor.py` | Cursor movement detection for tracked text safety |
-| `agent/memo_store.py` | Reusable Text Memory persistence |
+| `agent/reusable_text_memory_store.py` | Reusable Text Memory persistence |
 | `agent/config.py` | `config.yaml` and `.env` loading |
 
 ## Configuration Shape

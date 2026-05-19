@@ -170,7 +170,7 @@ instruction_mode:
     # 即使模型误判成写作/聊天，也按编辑当前选区处理。
     selected_edit_override: true
     # 便利类兜底：仅在“我的 X 是什么 / 插入 X”等查询或插入句式下模糊匹配可复用文本。
-    memo_fuzzy_recall: true
+    reusable_text_memory_fuzzy_recall: true
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 打字与自定义快捷键
@@ -179,6 +179,7 @@ typing:
   method: unicode            # unicode 或 clip
   shortcuts:
     # 全局快捷键：语音说“刷新”时向当前活动应用发送 Cmd+R。
+    # 普通用户优先在菜单栏 Voice Keyboard -> 快捷键... 里修改。
     刷新: cmd+r
 
   # 如果某个应用快捷键被系统或截图工具等全局热键抢占，可以在这里屏蔽。
@@ -188,16 +189,26 @@ typing:
   blocked_shortcut_keys:
     # - cmd+shift+e
 
-  # 实验性：活动应用快捷键。
+  # 活动应用快捷键。
   # Instruction Mode 会识别当前活动应用，并优先使用这里的映射。
-  # macOS 内置了常见浏览器、聊天工具、编辑器的默认动作；这里的配置会覆盖同名内置动作。
-  # 这不是稳定产品承诺；用于验证“在活动应用里调用快捷键”的可行性。
+  # macOS 内置只覆盖当前产品切片：Microsoft Office、WPS Office、飞书/Lark。
+  # 其他应用需要显式写在本机配置里，不进入默认 Shortcut Catalog。
   # key 可以写 bundle id（推荐）或应用名。macOS bundle id 可从日志里的活动应用信息确认。
-  experimental_app_shortcuts:
-    com.openai.codex:
-      发送: cmd+enter
-    com.apple.TextEdit:
-      打开设置: cmd+,
+  application_shortcuts:
+    # com.example.ProductivityApp:
+    #   自定义动作: cmd+enter
+
+  # 应用启动动作：语音说“打开飞书”“打开Word”等时启动本地 app。
+  # macOS 会自动发现 /Applications、~/Applications、/System/Applications 里的 .app。
+  # 这里用于补充别名或覆盖自动发现结果。
+  app_launches:
+    # 打开Obsidian:
+    #   macos_bundle_id: md.obsidian
+    #   macos_name: Obsidian
+
+  # macOS 系统窗口动作是内置系统动作，不占用键盘组合键。
+  # 当前内置动作：窗口左半屏、窗口右半屏、窗口左移、窗口右移、窗口最大化、窗口居中。
+  # 如果某个动作不想让 Instruction Mode 执行，可写入 blocked_shortcuts。
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Claude Code AI 编程模式（可选）

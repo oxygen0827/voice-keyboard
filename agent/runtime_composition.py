@@ -91,31 +91,34 @@ def build_audio_runtime(
     providers = SpeechInterpretationProviderFactory().create_provider_set(cfg)
     if providers is None:
         return None
+    from agent.personal_lexicon import PersonalLexicon
+    personal_lexicon = PersonalLexicon()
 
     ai_handler = None
     if providers.text_operation_editor is not None and providers.instruction_stt is not None:
         try:
             from agent.ai_handler import AIHandler
             from agent.ai_intent import IntentFallbackOptions
-            from agent.memo_store import MemoStore
-            memo_store = MemoStore()
+            from agent.reusable_text_memory_store import ReusableTextMemoryStore
+            reusable_text_memory_store = ReusableTextMemoryStore()
             instruction_cfg = cfg.get("instruction_mode", {})
             ai_handler = AIHandler(
                 providers.instruction_stt,
                 providers.text_operation_editor,
                 buf,
-                memo_store=memo_store,
+                reusable_text_memory_store=reusable_text_memory_store,
                 status_window=status_window,
                 history=history,
                 input_environment=input_environment,
                 intent_fallbacks=IntentFallbackOptions.from_config(
                     instruction_cfg.get("intent_fallbacks", {})
                 ),
+                personal_lexicon=personal_lexicon,
             )
             ai_key_name = audio_cfg.get("ai_key", "cmd_r")
-            existing = memo_store.keys()
+            existing = reusable_text_memory_store.keys()
             if existing:
-                print(f"[memo] 已加载 {len(existing)} 条可复用文本: {'、'.join(existing)}")
+                print(f"[reusable-text-memory] 已加载 {len(existing)} 条可复用文本: {'、'.join(existing)}")
             print(f"[agent] AI 键已启用，热键: {ai_key_name}")
         except Exception as e:
             print(f"[agent] AIHandler 初始化失败: {e}")
@@ -128,6 +131,7 @@ def build_audio_runtime(
         status_window=status_window,
         history=history,
         input_environment=input_environment,
+        personal_lexicon=personal_lexicon,
     )
 
     if mode == "ptt":

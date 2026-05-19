@@ -13,9 +13,11 @@ from AppKit import (
     NSPanel, NSScreen, NSTextField, NSTextAlignmentLeft, NSView,
     NSVisualEffectBlendingModeBehindWindow, NSVisualEffectMaterialHUDWindow,
     NSVisualEffectStateActive, NSVisualEffectView,
+    NSWindowCollectionBehaviorCanJoinAllApplications,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorIgnoresCycle,
+    NSWindowCollectionBehaviorStationary,
     NSWindowCollectionBehaviorTransient,
     NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel,
     NSStatusWindowLevel,
@@ -116,12 +118,7 @@ class _Controller(NSObject):
         panel.setHidesOnDeactivate_(False)
         panel.setIgnoresMouseEvents_(True)
         panel.setMovable_(False)
-        panel.setCollectionBehavior_(
-            NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehaviorTransient
-            | NSWindowCollectionBehaviorFullScreenAuxiliary
-            | NSWindowCollectionBehaviorIgnoresCycle
-        )
+        panel.setCollectionBehavior_(self._collection_behavior())
 
         # 毛玻璃 HUD 背景
         effect = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
@@ -158,6 +155,17 @@ class _Controller(NSObject):
         self._effect = effect
         self._dot = dot
         self._label = label
+
+    @objc.python_method
+    def _collection_behavior(self):
+        return (
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorCanJoinAllApplications
+            | NSWindowCollectionBehaviorStationary
+            | NSWindowCollectionBehaviorTransient
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+            | NSWindowCollectionBehaviorIgnoresCycle
+        )
 
     def startPolling(self):
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -236,6 +244,7 @@ class _Controller(NSObject):
             _PAD_LEFT + _DOT_SIZE + _DOT_GAP, label_y, label_w + 4, text_h,
         ))
 
+        self._panel.setCollectionBehavior_(self._collection_behavior())
         self._panel.orderFrontRegardless()
 
     @objc.python_method
@@ -283,7 +292,7 @@ class StatusWindow:
     def show_typing_message(self, text: str, seconds: float = 6.0, interval: float = 0.006) -> None:
         self._message_token += 1
         token = self._message_token
-        step = max(1, len(text) // 36)
+        step = max(1, len(text) // 48)
 
         def run() -> None:
             for idx in range(step, len(text) + step, step):

@@ -7,7 +7,7 @@ from typing import Callable, ContextManager
 
 from agent.input_environment import ReplacementPlan
 from agent.punctuation import normalize_spoken_punctuation
-from agent.reusable_text_memory import MemoryOperationResult, ReusableTextMemory
+from agent.reusable_text_memory import ReusableTextOperationResult, ReusableTextMemory
 from agent.voice_text_operation import VoiceTextOperation
 
 _WRITE_SYSTEM = """你是一个写作助手。根据用户的要求直接输出所需内容，不要有任何前缀、解释或额外说明。只输出内容本身。不要使用换行，所有内容写成连续的段落。必须使用完整的中文标点符号，常用标点包括逗号、句号、冒号、分号、问号、感叹号、破折号、省略号，不得省略任何必要标点。"""
@@ -31,7 +31,7 @@ class InstructionModeExecutor:
         self,
         llm_editor,
         input_environment,
-        memo_store=None,
+        reusable_text_memory_store=None,
         show: Callable[[str], None] | None = None,
         set_status: Callable[[str], None] | None = None,
         text_io: ContextManager | None = None,
@@ -39,7 +39,7 @@ class InstructionModeExecutor:
     ):
         self._llm = llm_editor
         self._env = input_environment
-        self._memory = ReusableTextMemory(memo_store)
+        self._memory = ReusableTextMemory(reusable_text_memory_store)
         self._show = show or (lambda message: print(message))
         self._set_status = set_status or (lambda state: None)
         self._text_io = text_io
@@ -50,9 +50,11 @@ class InstructionModeExecutor:
             policy = self._env.shortcut_policy_for_invocation(operation.name)
             if not policy.found:
                 self._show(f"没有找到快捷键：{operation.name}")
+                return True
             elif policy.allowed:
                 if not self._env.send_shortcut(operation.name):
                     self._show(f"快捷键执行失败：{operation.name}")
+                    return True
                 elif policy.risk == "high":
                     print(
                         "[ai] 高风险快捷键已执行: "
@@ -61,6 +63,7 @@ class InstructionModeExecutor:
                     )
             else:
                 self._show(f"快捷键需要确认：{operation.name}")
+                return True
         elif operation.kind == "undo":
             self._do_undo()
         elif operation.kind == "delete":
@@ -69,14 +72,14 @@ class InstructionModeExecutor:
             self._do_edit(instruction, selected)
         elif operation.kind == "write":
             return bool(self._do_write(instruction, selected))
-        elif operation.kind == "memo_save":
-            self._do_memo_save(operation.key, operation.value, selected)
-        elif operation.kind == "memo_recall":
-            return bool(self._do_memo_recall(operation.key, selected))
-        elif operation.kind == "memo_delete":
-            self._do_memo_delete(operation.key)
-        elif operation.kind == "memo_list":
-            return bool(self._do_memo_list(selected))
+        elif operation.kind == "reusable_text_save":
+            self._do_reusable_text_save(operation.key, operation.value, selected)
+        elif operation.kind == "reusable_text_recall":
+            return bool(self._do_reusable_text_recall(operation.key, selected))
+        elif operation.kind == "reusable_text_delete":
+            self._do_reusable_text_delete(operation.key)
+        elif operation.kind == "reusable_text_list":
+            return bool(self._do_reusable_text_list(selected))
         else:
             return self._do_chat(instruction, operation)
         return False
@@ -84,7 +87,7 @@ class InstructionModeExecutor:
     def _io(self) -> ContextManager:
         return self._text_io if self._text_io is not None else nullcontext()
 
-    def _handle_memory_result(self, result: MemoryOperationResult, selected: str = "") -> bool:
+    def _handle_memory_result(self, result: ReusableTextOperationResult, selected: str = "") -> bool:
         if result.action == "insert":
             insertion = self._env.insert_generated_text(result.text)
             if insertion.failure == "no_focused_input":
@@ -312,16 +315,16 @@ class InstructionModeExecutor:
             return
         self._show("没有找到快捷键：撤销")
 
-    def _do_memo_save(self, key: str, value: str, selected: str) -> None:
+    def _do_reusable_text_save(self, key: str, value: str, selected: str) -> None:
         self._handle_memory_result(self._memory.save(key, value, selected), selected)
 
-    def _do_memo_recall(self, key: str, selected: str) -> bool:
+    def _do_reusable_text_recall(self, key: str, selected: str) -> bool:
         return self._handle_memory_result(self._memory.recall(key), selected)
 
-    def _do_memo_list(self, selected: str) -> bool:
+    def _do_reusable_text_list(self, selected: str) -> bool:
         return self._handle_memory_result(self._memory.list_all(), selected)
 
-    def _do_memo_delete(self, key: str) -> None:
+    def _do_reusable_text_delete(self, key: str) -> None:
         self._handle_memory_result(self._memory.delete(key))
 
     def _show_copied(self, text: str) -> None:

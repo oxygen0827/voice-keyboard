@@ -100,12 +100,16 @@ class CapturePathTests(unittest.TestCase):
         status = MagicMock()
         ptt = PushToTalk(on_dictation, ptt_key="a", status_window=status)
 
-        with patch("agent.push_to_talk.time.monotonic", side_effect=[10.0, 10.2]):
+        with (
+            patch("agent.push_to_talk.time.monotonic", side_effect=[10.0, 10.2]),
+            patch.object(ptt, "_start_recording"),
+        ):
             ptt._on_press(ptt._ptt_keys[0])
             ptt._on_release(ptt._ptt_keys[0])
             ptt._on_press(ptt._ptt_keys[0])
 
-        status.set_state.assert_called_with("polish_mode")
+        self.assertEqual(status.set_state.call_args_list[-1].args, ("polish_mode",))
+        self.assertNotIn(("recording",), [call.args for call in status.set_state.call_args_list])
 
     def test_push_to_talk_shows_status_when_double_tap_toggles_back_to_dictation_mode(self):
         on_dictation = MagicMock()
@@ -113,12 +117,43 @@ class CapturePathTests(unittest.TestCase):
         ptt = PushToTalk(on_dictation, ptt_key="a", status_window=status)
         ptt._capture_runtime.polish_mode = True
 
-        with patch("agent.push_to_talk.time.monotonic", side_effect=[10.0, 10.2]):
+        with (
+            patch("agent.push_to_talk.time.monotonic", side_effect=[10.0, 10.2]),
+            patch.object(ptt, "_start_recording"),
+        ):
             ptt._on_press(ptt._ptt_keys[0])
             ptt._on_release(ptt._ptt_keys[0])
             ptt._on_press(ptt._ptt_keys[0])
 
-        status.set_state.assert_called_with("dictation_mode")
+        self.assertEqual(status.set_state.call_args_list[-1].args, ("dictation_mode",))
+        self.assertNotIn(("recording",), [call.args for call in status.set_state.call_args_list])
+
+    def test_push_to_talk_delays_dictation_recording_status_for_double_tap_window(self):
+        on_dictation = MagicMock()
+        status = MagicMock()
+        ptt = PushToTalk(on_dictation, ptt_key="a", status_window=status)
+
+        with patch("agent.push_to_talk.threading.Timer") as timer_cls:
+            timer = timer_cls.return_value
+            ptt._capture_runtime.press_dictation(ptt._ptt_keys[0], now=10.0)
+            with patch("agent.push_to_talk.sd.RawInputStream") as stream_cls:
+                stream_cls.return_value.start.return_value = None
+                ptt._start_recording()
+
+        status.set_state.assert_not_called()
+        timer_cls.assert_called_once()
+        timer.start.assert_called_once()
+
+    def test_push_to_talk_cancels_delayed_recording_status_when_stopped(self):
+        on_dictation = MagicMock()
+        ptt = PushToTalk(on_dictation, ptt_key="a")
+        timer = MagicMock()
+        ptt._recording_status_timer = timer
+
+        ptt._stop_recording("dictate")
+
+        timer.cancel.assert_called_once()
+        self.assertIsNone(ptt._recording_status_timer)
 
 
 if __name__ == "__main__":

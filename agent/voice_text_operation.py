@@ -10,10 +10,10 @@ OperationKind = Literal[
     "delete",
     "edit",
     "write",
-    "memo_save",
-    "memo_recall",
-    "memo_delete",
-    "memo_list",
+    "reusable_text_save",
+    "reusable_text_recall",
+    "reusable_text_delete",
+    "reusable_text_list",
     "chat",
 ]
 
@@ -45,10 +45,10 @@ def _normalize_kind(raw: object) -> OperationKind:
         "delete",
         "edit",
         "write",
-        "memo_save",
-        "memo_recall",
-        "memo_delete",
-        "memo_list",
+        "reusable_text_save",
+        "reusable_text_recall",
+        "reusable_text_delete",
+        "reusable_text_list",
         "chat",
     }:
         return raw
