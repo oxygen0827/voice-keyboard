@@ -18,6 +18,44 @@ from agent.local_operation_catalog import (
 
 _kb = Controller()
 _OS = platform.system()
+Quartz = None
+NSPasteboard = None
+NSPasteboardTypeString = None
+NSScreen = None
+NSWorkspace = None
+
+
+class _ApplicationServicesShim:
+    kAXValueCGPointType = "CGPoint"
+    kAXValueCGSizeType = "CGSize"
+    kAXValueCFRangeType = "CFRange"
+
+    @staticmethod
+    def CGPointMake(x, y):
+        return (x, y)
+
+    @staticmethod
+    def CGSizeMake(width, height):
+        return (width, height)
+
+    @staticmethod
+    def CFRangeMake(location, length):
+        return (location, length)
+
+    @staticmethod
+    def AXValueCreate(_value_type, value):
+        return value
+
+    @staticmethod
+    def AXValueGetValue(value, _value_type, _out):
+        return True, value
+
+    @staticmethod
+    def AXUIElementCopyAttributeValue(_element, _attr, _default):
+        return 1, None
+
+
+ApplicationServices = _ApplicationServicesShim
 
 if _OS == "Darwin":
     import Quartz
@@ -32,20 +70,45 @@ if _OS == "Windows":
     _KEYEVENTF_KEYUP   = 0x0002
     _INPUT_KEYBOARD    = 1
 
+    _ULONG_PTR = ctypes.POINTER(ctypes.c_ulong)
+
     class _KEYBDINPUT(ctypes.Structure):
         _fields_ = [
             ("wVk",         ctypes.wintypes.WORD),
             ("wScan",       ctypes.wintypes.WORD),
             ("dwFlags",     ctypes.wintypes.DWORD),
             ("time",        ctypes.wintypes.DWORD),
-            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+            ("dwExtraInfo", _ULONG_PTR),
+        ]
+
+    class _MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx",          ctypes.wintypes.LONG),
+            ("dy",          ctypes.wintypes.LONG),
+            ("mouseData",   ctypes.wintypes.DWORD),
+            ("dwFlags",     ctypes.wintypes.DWORD),
+            ("time",        ctypes.wintypes.DWORD),
+            ("dwExtraInfo", _ULONG_PTR),
+        ]
+
+    class _HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [
+            ("uMsg",    ctypes.wintypes.DWORD),
+            ("wParamL", ctypes.wintypes.WORD),
+            ("wParamH", ctypes.wintypes.WORD),
+        ]
+
+    class _INPUT_UNION(ctypes.Union):
+        _fields_ = [
+            ("mi", _MOUSEINPUT),
+            ("ki", _KEYBDINPUT),
+            ("hi", _HARDWAREINPUT),
         ]
 
     class _INPUT(ctypes.Structure):
         _fields_ = [
-            ("type",    ctypes.wintypes.DWORD),
-            ("ki",      _KEYBDINPUT),
-            ("padding", ctypes.c_ubyte * 8),
+            ("type", ctypes.wintypes.DWORD),
+            ("union", _INPUT_UNION),
         ]
 
     _user32   = ctypes.windll.user32
@@ -128,6 +191,8 @@ _SHORTCUTS: dict[str, list] = {
     "删除":    [Key.backspace],
     "空格":    [Key.space],
 }
+_BASE_SHORTCUTS = dict(_SHORTCUTS)
+
 _SYSTEM_ACTIONS = {
     "打开系统设置": "open_system_settings",
     "系统设置": "open_system_settings",
@@ -154,6 +219,13 @@ if _OS in ("Windows", "Linux"):
     _SHORTCUTS["下划线"]  = [Key.ctrl, KeyCode.from_char("u")]
     _SHORTCUTS["查找"]    = [Key.ctrl, KeyCode.from_char("f")]
 
+
+def _shortcuts_for_platform() -> dict[str, list]:
+    if _OS == "Darwin":
+        shortcuts = dict(_SHORTCUTS)
+        shortcuts.update(_BASE_SHORTCUTS)
+        return shortcuts
+    return dict(_SHORTCUTS)
 
 # ── 打字 ──────────────────────────────────────────────────────────
 
@@ -237,6 +309,20 @@ def _frontmost_app_identity_windows() -> tuple[str, str, int | None]:
     except Exception:
         return "", "", None
 
+
+
+def _foreground_window_is_console() -> bool:
+    if _OS != "Windows":
+        return False
+    try:
+        hwnd = _user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        class_name = ctypes.create_unicode_buffer(256)
+        _user32.GetClassNameW(hwnd, class_name, len(class_name))
+        return class_name.value in {"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"}
+    except Exception:
+        return False
 
 def current_application() -> ActiveApplication:
     name, bundle_id, pid = _frontmost_app_identity()
@@ -398,7 +484,9 @@ def _type_via_sendinput(text: str) -> None:
             for flags in [_KEYEVENTF_UNICODE, _KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP]:
                 inp = _INPUT(
                     type=_INPUT_KEYBOARD,
-                    ki=_KEYBDINPUT(wVk=0, wScan=scan, dwFlags=flags),
+                    union=_INPUT_UNION(
+                        ki=_KEYBDINPUT(wVk=0, wScan=scan, dwFlags=flags),
+                    ),
                 )
                 _user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
         time.sleep(0.012)
@@ -459,7 +547,9 @@ def _erase_via_sendinput(n: int) -> None:
         for flags in [0, _KEYEVENTF_KEYUP]:
             inp = _INPUT(
                 type=_INPUT_KEYBOARD,
-                ki=_KEYBDINPUT(wVk=VK_BACK, wScan=0, dwFlags=flags),
+                union=_INPUT_UNION(
+                    ki=_KEYBDINPUT(wVk=VK_BACK, wScan=0, dwFlags=flags),
+                ),
             )
             _user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
         time.sleep(0.005)
@@ -488,6 +578,9 @@ def get_current_line() -> str | None:
     返回 None 表示获取失败（调用方应回退到 buf.last）。
     """
     try:
+        if _foreground_window_is_console():
+            print("[typer] skip line copy in Windows console")
+            return None
         old_clip = _get_clipboard()
 
         # 1. 跳到行首
@@ -535,6 +628,9 @@ def get_selection() -> str:
         if ax_selected:
             print(f"[typer] AX selection: {ax_selected[:40]!r}")
             return ax_selected
+        if _foreground_window_is_console():
+            print("[typer] skip selection copy in Windows console")
+            return ""
         old_clip = _get_clipboard()
         _set_clipboard(_SENTINEL)
         time.sleep(0.05)
@@ -985,7 +1081,7 @@ def send_shortcut(name: str) -> bool:
         print(f"[typer] experimental app shortcut: {app.label} -> {name}")
         _press_keys(keys)
         return True
-    keys = _SHORTCUTS.get(name)
+    keys = _shortcuts_for_platform().get(name)
     if keys:
         _press_keys(keys)
         return True
@@ -1083,7 +1179,7 @@ def _local_operation_candidates() -> list[LocalOperationCandidate]:
             application=app.label,
             key_signature=_shortcut_key_signature(keys),
         ))
-    for name, keys in _SHORTCUTS.items():
+    for name, keys in _shortcuts_for_platform().items():
         candidates.append(LocalOperationCandidate(
             name=name,
             source="global",
@@ -1274,7 +1370,7 @@ def _load_blocked_shortcuts(cfg: dict) -> None:
             _BLOCKED_SHORTCUT_NAMES.add(name.strip())
     for keys in cfg.get("blocked_shortcut_keys", []) or []:
         try:
-            parsed = _parse_shortcut_keys(keys)
+            parsed = _parse_shortcut_keys(keys, os_name=_OS)
         except ValueError as e:
             print(f"[typer] 忽略保留快捷键 {keys!r}: {e}")
             continue
@@ -1295,7 +1391,7 @@ def _shortcut_key_token(key) -> str:
     return str(key)
 
 
-def _parse_shortcut_keys(keys) -> list:
+def _parse_shortcut_keys(keys, os_name: str | None = None) -> list:
     if isinstance(keys, str):
         separator = "+" if "+" in keys else ","
         parts = [p.strip() for p in keys.split(separator) if p.strip()]
@@ -1305,10 +1401,10 @@ def _parse_shortcut_keys(keys) -> list:
         raise ValueError("keys 必须是字符串或列表")
     if not parts:
         raise ValueError("keys 不能为空")
-    return [_parse_shortcut_key(part) for part in parts]
+    return [_parse_shortcut_key(part, os_name=os_name) for part in parts]
 
 
-def _parse_shortcut_key(part: str):
+def _parse_shortcut_key(part: str, os_name: str | None = None):
     normalized = part.lower().replace("-", "_")
     aliases = {
         "cmd": "cmd",
@@ -1339,6 +1435,8 @@ def _parse_shortcut_key(part: str):
         "print_screen": "print_screen",
     }
     key_name = aliases.get(normalized, normalized)
+    if os_name in ("Windows", "Linux") and key_name == "cmd":
+        key_name = "ctrl"
     if hasattr(Key, key_name):
         return getattr(Key, key_name)
     if len(part) == 1:

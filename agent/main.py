@@ -209,6 +209,7 @@ def main():
     parser.add_argument("--uninstall",    action="store_true", help="移除开机自启动")
     parser.add_argument("--no-ui",        action="store_true", help="不启动菜单栏/主窗口（纯命令行）")
     parser.add_argument("--headless",     action="store_true", help="不启动悬浮状态窗（供桌面端托管）")
+    parser.add_argument("--debug-keys",   action="store_true", help="print pynput key events and exit")
     args = parser.parse_args()
     if getattr(sys, "frozen", False):
         args.no_serial = True
@@ -225,6 +226,21 @@ def main():
 
     if args.list_devices:
         list_devices()
+        return
+    if getattr(args, "debug_keys", False):
+        from pynput import keyboard as _keyboard
+        print("[debug] press keys; Ctrl+C exits")
+        def on_press(key):
+            print(f"[debug] press {key!r}")
+        def on_release(key):
+            print(f"[debug] release {key!r}")
+        listener = _keyboard.Listener(on_press=on_press, on_release=on_release)
+        listener.start()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            listener.stop()
         return
     if args.permissions_json:
         from agent import permissions as _perm
@@ -305,7 +321,7 @@ def main():
 
     # ── UI（菜单栏 + 主窗口）───────────────────────────────────────
     ui_app = None
-    if status_window is not None and not args.no_ui:
+    if sys.platform == "darwin" and status_window is not None and not args.no_ui:
         try:
             from agent.ui.app import UIApp
             from agent.memo_store import MemoStore
@@ -318,12 +334,14 @@ def main():
             status_window.add_main_thread_setup(ui_app.build)
         except Exception as e:
             import traceback
-            print(f"[agent] UI 初始化失败: {e}")
+            print(f"[agent] UI init failed: {e}")
             traceback.print_exc()
             ui_app = None
 
     def shutdown(sig=None, frame=None):
-        print("\n[agent] 退出")
+        signal_name = signal.Signals(sig).name if sig is not None else "manual"
+        print()
+        print(f"[agent] exit requested: {signal_name}")
         with backend_lock:
             backend.stop()
         if status_window:
@@ -331,14 +349,15 @@ def main():
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
+    if sys.platform != "win32":
+        signal.signal(signal.SIGTERM, shutdown)
 
     print("[agent] 运行中，Ctrl+C 退出\n")
     if status_window is not None:
         status_window.run()
-    else:
-        while True:
-            time.sleep(1)
+        print("[agent] status window stopped; keeping backend alive")
+    while True:
+        time.sleep(1)
 
 
 if __name__ == "__main__":

@@ -337,16 +337,36 @@ def _open_app_shortcut_from_text(text: str, shortcuts: tuple[str, ...]) -> str:
 
 
 def _open_app_target(text: str) -> str:
-    compact = _compact_shortcut_text(text).replace("的", "")
-    marker = compact.find("打开")
+    compact = _compact_shortcut_text(text).replace("\u7684", "")
+    markers = (
+        "\u6253\u5f00",
+        "\u6253\u4e2a",
+        "\u5207\u6362\u5230",
+        "\u5207\u5230",
+        "\u5207\u53bb",
+    )
+    marker = -1
+    marker_len = 0
+    for candidate in markers:
+        marker = compact.find(candidate)
+        if marker >= 0:
+            marker_len = len(candidate)
+            break
     if marker < 0:
         return ""
-    target = compact[marker + len("打开"):]
-    for suffix in ("一下", "应用程序", "应用", "软件", "app", "App", "APP"):
+    target = compact[marker + marker_len:]
+    for suffix in (
+        "\u4e00\u4e0b",
+        "\u5e94\u7528\u7a0b\u5e8f",
+        "\u5e94\u7528",
+        "\u8f6f\u4ef6",
+        "app",
+        "App",
+        "APP",
+    ):
         if target.endswith(suffix):
             target = target[:-len(suffix)]
     return target
-
 
 def _compact_shortcut_text(text: str) -> str:
     return "".join(

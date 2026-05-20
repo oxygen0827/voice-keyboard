@@ -1,6 +1,7 @@
 """Runtime composition for the desktop Voice Keyboard Engine."""
 
 from dataclasses import dataclass
+import sys
 
 from agent.config import load as load_config
 from agent.history import History
@@ -78,6 +79,10 @@ def build_runtime_backend(
     return bk
 
 
+
+def default_ai_key() -> str:
+    return "alt_r" if sys.platform == "win32" else "cmd_r"
+
 def build_audio_runtime(
     cfg: dict,
     buf: TextBuffer,
@@ -111,7 +116,7 @@ def build_audio_runtime(
                     instruction_cfg.get("intent_fallbacks", {})
                 ),
             )
-            ai_key_name = audio_cfg.get("ai_key", "cmd_r")
+            ai_key_name = audio_cfg.get("ai_key", default_ai_key())
             existing = memo_store.keys()
             if existing:
                 print(f"[memo] 已加载 {len(existing)} 条备忘: {'、'.join(existing)}")
@@ -142,7 +147,7 @@ def build_audio_runtime(
             on_utterance=on_utterance,
             on_ai_utterance=on_ai,
             ptt_key=audio_cfg.get("ptt_key", "right_alt"),
-            ai_key=audio_cfg.get("ai_key", "cmd_r"),
+            ai_key=audio_cfg.get("ai_key", default_ai_key()),
             toggle_key=audio_cfg.get("toggle_key"),
             device=device,
             status_window=status_window,

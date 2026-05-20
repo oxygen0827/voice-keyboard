@@ -34,6 +34,10 @@ MACOS_APP_LAUNCH_PRESETS: dict[str, dict[str, str]] = {
         "bundle_id": "com.kingsoft.wpsoffice.mac",
         "app_name": "WPS Office",
     },
+    "打开微信": {
+        "bundle_id": "com.tencent.xinWeChat",
+        "app_name": "WeChat",
+    },
     "打开谷歌浏览器": {
         "bundle_id": "com.google.Chrome",
         "app_name": "Google Chrome",
