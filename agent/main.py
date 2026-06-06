@@ -33,6 +33,7 @@ def _configure_ssl_cert_file() -> None:
             resources_dir = exe_dir.parent / "Resources"
             bundled_candidates.extend([
                 resources_dir / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "certifi" / "cacert.pem",
+                resources_dir / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages" / "certifi" / "cacert.pem",
                 resources_dir / "openssl.ca",
             ])
         _ca_path = None

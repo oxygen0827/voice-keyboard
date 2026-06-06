@@ -429,9 +429,10 @@ class _XunfeiSTT:
         self._api_secret = cfg["api_secret"]
         self._language   = cfg.get("language", "zh_cn")
         import os
+        from pathlib import Path
         self._sslopt = {}
         ca_file = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
-        if ca_file:
+        if ca_file and Path(ca_file).exists():
             self._sslopt["ca_certs"] = ca_file
 
     def _build_url(self) -> str:
