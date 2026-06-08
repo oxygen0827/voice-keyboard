@@ -36,7 +36,11 @@ import yaml
 from agent import typer as _typer
 from agent import permissions as _perm
 from agent.history import History
-from agent.intent_diagnostics import load_diagnostics_rows, save_diagnostics_review
+from agent.intent_diagnostics import (
+    load_diagnostics_rows,
+    save_diagnostics_review,
+    summarize_diagnostics,
+)
 from agent.intent_training import _DEFAULT_PATH as _INTENT_SAMPLES_PATH
 
 _USER_DIR = Path.home() / ".voice-keyboard"
@@ -639,9 +643,12 @@ class _IntentDiagnosticsTab(NSObject):
         v.addSubview_(_button("刷新", NSMakeRect(20, 440, 80, 26), self, b"reload:"))
         v.addSubview_(_button("打开样本文件", NSMakeRect(110, 440, 120, 26), self, b"openSamples:"))
         v.addSubview_(_label(str(_INTENT_SAMPLES_PATH), NSMakeRect(240, 444, 340, 20)))
+        summary_label = _label("", NSMakeRect(20, 418, 560, 20))
+        v.addSubview_(summary_label)
+        self._summary_label = summary_label
 
-        v.addSubview_(_label("意图", NSMakeRect(20, 408, 40, 20)))
-        intent_box = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(62, 404, 150, 26))
+        v.addSubview_(_label("意图", NSMakeRect(20, 388, 40, 20)))
+        intent_box = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(62, 384, 150, 26))
         for item in ("全部", "chat", "shortcut", "write", "edit", "delete", "memo", "app_launch", "system_action"):
             intent_box.addItemWithTitle_(item)
         intent_box.setTarget_(self)
@@ -649,8 +656,8 @@ class _IntentDiagnosticsTab(NSObject):
         v.addSubview_(intent_box)
         self._intent_filter = intent_box
 
-        v.addSubview_(_label("标注", NSMakeRect(230, 408, 40, 20)))
-        review_box = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(272, 404, 130, 26))
+        v.addSubview_(_label("标注", NSMakeRect(230, 388, 40, 20)))
+        review_box = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(272, 384, 130, 26))
         for item in ("全部", "未标注", "已标注"):
             review_box.addItemWithTitle_(item)
         review_box.setTarget_(self)
@@ -658,7 +665,7 @@ class _IntentDiagnosticsTab(NSObject):
         v.addSubview_(review_box)
         self._review_filter = review_box
 
-        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 245, 560, 150))
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 245, 560, 130))
         scroll.setHasVerticalScroller_(True)
         scroll.setBorderType_(1)
         table = NSTableView.alloc().initWithFrame_(scroll.bounds())
@@ -757,6 +764,7 @@ class _IntentDiagnosticsTab(NSObject):
 
     def reload_(self, sender):
         try:
+            self._refresh_summary()
             self._rows = load_diagnostics_rows(
                 _INTENT_SAMPLES_PATH,
                 limit=300,
@@ -798,6 +806,7 @@ class _IntentDiagnosticsTab(NSObject):
         idx = self._table.selectedRow()
         if 0 <= idx < len(self._rows):
             self._rows[idx] = updated
+        self._refresh_summary()
         self._table.reloadData()
         self._load_selected()
 
@@ -875,6 +884,23 @@ class _IntentDiagnosticsTab(NSObject):
             self._corrected_type_box.selectItemWithTitle_("")
         value = corrected.get("name") or corrected.get("key") or corrected.get("reply") or ""
         self._corrected_value.setStringValue_(str(value))
+
+    @objc.python_method
+    def _refresh_summary(self):
+        try:
+            summary = summarize_diagnostics(_INTENT_SAMPLES_PATH)
+            wrong_by_intent = summary.get("wrong_by_intent", {}) or {}
+            top_wrong = sorted(wrong_by_intent.items(), key=lambda item: (-item[1], item[0]))[:3]
+            wrong_text = "、".join(f"{name}:{count}" for name, count in top_wrong) or "暂无"
+            text = (
+                f"{summary.get('accuracy_label', '已标注正确率 -')}  "
+                f"样本 {summary.get('total', 0)} / 已标注 {summary.get('reviewed', 0)} / "
+                f"错误 {summary.get('wrong', 0)} / 修正 {summary.get('corrected', 0)} / "
+                f"已覆盖 {summary.get('override_covered', 0)}  错误分布 {wrong_text}"
+            )
+        except Exception as e:
+            text = f"统计失败: {e}"
+        self._summary_label.setStringValue_(text)
 
     @objc.python_method
     def _alert(self, title, msg):

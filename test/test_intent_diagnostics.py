@@ -112,6 +112,39 @@ class IntentDiagnosticsTests(unittest.TestCase):
                 {"type": "shortcut", "name": "查找"},
             )
 
+    def test_summarize_diagnostics_counts_review_quality_and_override_coverage(self):
+        from agent.intent_diagnostics import summarize_diagnostics
+        from agent.intent_overrides import append_override
+
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "samples.jsonl"
+            overrides = Path(td) / "overrides.jsonl"
+            source.write_text(
+                '{"text": "发送", "intent_type": "shortcut", "review_label": "correct"}\n'
+                '{"text": "表格里查一下", "intent_type": "chat", "review_label": "wrong_intent", '
+                '"corrected_intent": {"type": "shortcut", "name": "查找"}}\n'
+                '{"text": "删一下", "intent_type": "delete", "review_label": "wrong_target"}\n'
+                '{"text": "你好", "intent_type": "chat", "review_label": ""}\n',
+                encoding="utf-8",
+            )
+            append_override(
+                "表格里查一下",
+                {"type": "shortcut", "name": "查找"},
+                path=overrides,
+            )
+
+            summary = summarize_diagnostics(source, override_path=overrides)
+
+            self.assertEqual(summary["total"], 4)
+            self.assertEqual(summary["reviewed"], 3)
+            self.assertEqual(summary["unreviewed"], 1)
+            self.assertEqual(summary["correct"], 1)
+            self.assertEqual(summary["wrong"], 2)
+            self.assertEqual(summary["corrected"], 1)
+            self.assertEqual(summary["override_covered"], 1)
+            self.assertEqual(summary["wrong_by_intent"], {"chat": 1, "delete": 1})
+            self.assertEqual(summary["accuracy_label"], "已标注正确率 33.3%")
+
 
 if __name__ == "__main__":
     unittest.main()
