@@ -76,6 +76,26 @@ def _typing_config(cfg: dict) -> dict:
     return typing_cfg
 
 
+def _get_nested_config(cfg: dict, path: str):
+    current = cfg
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(part)
+    return "" if current is None else current
+
+
+def _set_nested_config(cfg: dict, parts: list[str], value) -> None:
+    current = cfg
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[parts[-1]] = value
+
+
 # ── 通用控件辅助 ─────────────────────────────────────────────────
 
 def _label(text: str, frame) -> NSTextField:
@@ -170,6 +190,10 @@ class _SettingsTab(NSObject):
         row("ai_key",  "audio.ai_key",  "cmd,cmd_r", w=200)
         row("toggle_key",  "audio.toggle_key",  "f8", w=200)
 
+        section("【意图训练闭环】")
+        row("server", "instruction_mode.intent_training.server", "http://127.0.0.1:8000")
+        row("token", "instruction_mode.intent_training.token", secure=True)
+
         # 麦克风 popup
         doc.addSubview_(_label("device", NSMakeRect(20, y, 160, 20)))
         pop = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(180, y - 4, 380, 26))
@@ -208,8 +232,7 @@ class _SettingsTab(NSObject):
     def _load(self):
         cfg = _load_user_config()
         for path, ctrl in self._fields.items():
-            head, key = path.split(".", 1)
-            val = (cfg.get(head) or {}).get(key, "")
+            val = _get_nested_config(cfg, path)
             if isinstance(val, list):
                 val = ",".join(str(x) for x in val)
             if isinstance(ctrl, NSPopUpButton):
@@ -228,8 +251,7 @@ class _SettingsTab(NSObject):
     def _gather(self) -> dict:
         cfg: dict = {}
         for path, ctrl in self._fields.items():
-            head, key = path.split(".", 1)
-            cfg.setdefault(head, {})
+            parts = path.split(".")
             if isinstance(ctrl, NSPopUpButton):
                 val = ctrl.titleOfSelectedItem() or ""
                 if path == "audio.device" and val and val != "auto" and ":" in val:
@@ -239,7 +261,7 @@ class _SettingsTab(NSObject):
             # 列表字段
             if path in ("audio.ptt_key", "audio.ai_key", "audio.toggle_key") and "," in val:
                 val = [s.strip() for s in val.split(",") if s.strip()]
-            cfg[head][key] = val
+            _set_nested_config(cfg, parts, val)
         # 清掉空字段，避免覆盖原 yaml 的有效值
         for h in list(cfg.keys()):
             cfg[h] = {k: v for k, v in cfg[h].items() if v not in (None, "", [])}
@@ -791,10 +813,11 @@ class _IntentDiagnosticsTab(NSObject):
             self._alert("样本文件未创建", str(p))
 
     def syncAndEvaluate_(self, sender):
-        server = os.getenv("INTENT_TRAINING_SERVER", "").strip()
-        token = os.getenv("INTENT_TRAINING_UPLOAD_TOKEN", "").strip()
+        training_cfg = ((_load_user_config().get("instruction_mode") or {}).get("intent_training") or {})
+        server = str(training_cfg.get("server") or os.getenv("INTENT_TRAINING_SERVER", "")).strip()
+        token = str(training_cfg.get("token") or os.getenv("INTENT_TRAINING_UPLOAD_TOKEN", "")).strip()
         if not server:
-            self._alert("缺少训练服务地址", "请设置 INTENT_TRAINING_SERVER 后再同步。")
+            self._alert("缺少训练服务地址", "请在设置页填写意图训练 server，或设置 INTENT_TRAINING_SERVER。")
             return
         self._summary_label.setStringValue_("正在同步远端修正并评测...")
 

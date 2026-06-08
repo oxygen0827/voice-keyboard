@@ -182,6 +182,8 @@ instruction_mode:
     path: ~/.voice-keyboard/intent_samples.jsonl
     capture_text: true
     max_text_length: 240
+    server: http://127.0.0.1:8000
+    token: ""
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 打字与自定义快捷键
