@@ -86,6 +86,8 @@
 - 支持按相同文本批量复核和写入 `corrected_intent`。
 - 新增 `tools/upload_intent_samples.py` 上传工具。
 - 新增 `tools/evaluate_intent_samples.py` 离线评测工具。
+- 支持从已纠正样本生成去重固定评测集。
+- 支持输出版本化 JSON 评测报告。
 - 新增 `tools/sync_intent_corrections.py` 纠错同步工具。
 - 新增 `tools/run_intent_training_loop.py` 一键训练闭环工具。
 - 新增 `docs/intent-training-server.md` 服务端使用说明。
@@ -126,6 +128,21 @@ Mac 主窗口设置页支持配置：
 
 ```bash
 .venv/bin/python tools/evaluate_intent_samples.py
+```
+
+生成去重后的固定评测集：
+
+```bash
+.venv/bin/python tools/evaluate_intent_samples.py \
+  --dataset-output tmp/intent-eval-dataset.jsonl
+```
+
+生成版本化评测报告：
+
+```bash
+.venv/bin/python tools/evaluate_intent_samples.py \
+  --report-dir tmp/intent-eval-reports \
+  --version baseline
 ```
 
 只把本地已纠正样本同步成本地覆盖规则：
@@ -209,7 +226,7 @@ http://SERVER:8000/review
 未来模型训练闭环仍然是：
 
 1. 积累足够多真实纠正样本。
-2. 导出训练集和验证集。
+2. 持续维护固定评测集和版本化评测报告。
 3. 训练轻量本地分类器或小模型。
 4. 输出模型版本和评估报告。
 5. 客户端接入模型。
@@ -240,14 +257,11 @@ http://SERVER:8000/review
 
 这个后台会直接决定后续训练数据质量，但在 Mac 本地-only 闭环已经可用之后，它不是阻塞项。
 
-### P2：建立评测数据集和报告
+### P2：增强评测数据集和报告
 
-训练前先把评测基线做扎实：
+当前已经可以从已纠正样本生成去重评测集，并输出版本化 JSON 评测报告。下一步继续增强：
 
-- 固定一批高频真实指令作为验证集。
 - 区分训练样本和评测样本。
-- 每次规则或模型更新后生成命中率报告。
-- 输出错例列表。
 - 记录覆盖规则版本。
 - 记录模型版本。
 - 保留回滚路径。

@@ -133,3 +133,29 @@ The useful labels are:
 - `unclear`
 
 These labels can later drive rule changes or supervised fine-tuning.
+
+## Evaluation Baseline
+
+Before training a local model, keep a fixed evaluation dataset and compare every
+rule/model change against it.
+
+Build a deduplicated evaluation dataset from corrected local samples:
+
+```bash
+.venv/bin/python tools/evaluate_intent_samples.py \
+  --input ~/.voice-keyboard/intent_samples.jsonl \
+  --dataset-output tmp/intent-eval-dataset.jsonl
+```
+
+Write a versioned JSON report:
+
+```bash
+.venv/bin/python tools/evaluate_intent_samples.py \
+  --input tmp/intent-eval-dataset.jsonl \
+  --report-dir tmp/intent-eval-reports \
+  --version baseline
+```
+
+The report contains total/correct/wrong counts, accuracy, and mismatches. Keep
+reports when changing rules, overrides, or future local models so regressions
+are visible instead of guessed.

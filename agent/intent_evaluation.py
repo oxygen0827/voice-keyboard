@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -46,8 +47,65 @@ def evaluate_reviewed_samples(
     }
 
 
+def build_evaluation_dataset(source: Path | str, output: Path | str, *, limit: int | None = None) -> dict:
+    rows = _load_jsonl(Path(source).expanduser())
+    cases = []
+    seen = set()
+    for case in _evaluation_cases(rows):
+        expected = normalize_intent(case["expected"])
+        key = (case["text"], json.dumps(expected, ensure_ascii=False, sort_keys=True))
+        if key in seen:
+            continue
+        seen.add(key)
+        cases.append({
+            "text": case["text"],
+            "expected": expected,
+            "shortcut_names": list(case.get("shortcut_names") or ()),
+        })
+        if limit is not None and len(cases) >= max(0, limit):
+            break
+
+    out_path = Path(output).expanduser()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        "".join(json.dumps(case, ensure_ascii=False, sort_keys=True) + "\n" for case in cases),
+        encoding="utf-8",
+    )
+    return {
+        "source": str(Path(source).expanduser()),
+        "output": str(out_path),
+        "source_total": len(rows),
+        "written": len(cases),
+    }
+
+
+def write_evaluation_report(
+    source: Path | str,
+    report_dir: Path | str,
+    *,
+    override_path: Path | str | None = None,
+    version: str | None = None,
+) -> dict:
+    report = evaluate_reviewed_samples(source, override_path=override_path)
+    report = {
+        **report,
+        "source": str(Path(source).expanduser()),
+        "override_path": str(Path(override_path).expanduser()) if override_path is not None else "",
+        "created_at": time.time(),
+    }
+    clean_version = _safe_version(version or time.strftime("%Y%m%d-%H%M%S"))
+    out_dir = Path(report_dir).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{clean_version}.json"
+    out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "path": str(out_path),
+        "report": report,
+    }
+
+
 def _classify_case(case: dict, *, override_path: Path | str | None) -> dict:
-    expected = normalize_intent(case["expected"])
+    expected = normalize_intent(case.get("expected") or case.get("corrected_intent") or {})
     shortcuts = tuple(case.get("shortcut_names") or ())
     if expected.get("type") == "shortcut" and expected.get("name") and expected["name"] not in shortcuts:
         shortcuts = shortcuts + (expected["name"],)
@@ -66,7 +124,7 @@ def _classify_case(case: dict, *, override_path: Path | str | None) -> dict:
 
 def _evaluation_cases(rows: Iterable[Mapping]) -> Iterable[dict]:
     for row in rows:
-        corrected = row.get("corrected_intent")
+        corrected = row.get("expected") or row.get("corrected_intent")
         if not isinstance(corrected, Mapping) or not corrected.get("type"):
             continue
         text = str(row.get("text") or "")
@@ -112,3 +170,8 @@ def _load_jsonl(path: Path) -> list[dict]:
         if isinstance(row, dict):
             rows.append(row)
     return rows
+
+
+def _safe_version(value: str) -> str:
+    clean = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in str(value))
+    return clean.strip(".-") or "report"

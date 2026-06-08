@@ -11,7 +11,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from agent.intent_evaluation import evaluate_reviewed_samples
+from agent.intent_evaluation import build_evaluation_dataset, evaluate_reviewed_samples, write_evaluation_report
 
 
 def main() -> None:
@@ -28,7 +28,40 @@ def main() -> None:
     )
     parser.add_argument("--json", action="store_true", help="print full JSON report")
     parser.add_argument("--limit-mismatches", type=int, default=20)
+    parser.add_argument("--dataset-output", default="", help="write a deduplicated evaluation dataset JSONL")
+    parser.add_argument("--dataset-limit", type=int, default=0, help="max dataset rows when writing a dataset")
+    parser.add_argument("--report-dir", default="", help="write a versioned JSON evaluation report")
+    parser.add_argument("--version", default="", help="report filename version, defaults to timestamp")
     args = parser.parse_args()
+
+    if args.dataset_output:
+        summary = build_evaluation_dataset(
+            args.input,
+            args.dataset_output,
+            limit=args.dataset_limit or None,
+        )
+        print(json.dumps({"dataset": summary}, ensure_ascii=False, indent=2) if args.json else (
+            f"dataset={summary['output']} written={summary['written']} source_total={summary['source_total']}"
+        ))
+        if not args.report_dir:
+            return
+
+    if args.report_dir:
+        result = write_evaluation_report(
+            args.input,
+            args.report_dir,
+            override_path=args.overrides,
+            version=args.version or None,
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            report = result["report"]
+            print(
+                f"report={result['path']} accuracy={report['accuracy_label']} "
+                f"correct={report['correct']} wrong={report['wrong']} total={report['total']}"
+            )
+        return
 
     report = evaluate_reviewed_samples(args.input, override_path=args.overrides)
     if args.json:
