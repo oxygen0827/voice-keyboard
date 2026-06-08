@@ -80,6 +80,38 @@ class IntentDiagnosticsTests(unittest.TestCase):
             self.assertEqual(rows[1]["review_label"], "wrong_target")
             self.assertEqual(rows[1]["review_note"], "target should be current input")
 
+    def test_save_review_with_corrected_intent_appends_override(self):
+        from agent.intent_diagnostics import load_diagnostics_rows, save_diagnostics_review
+        from agent.intent_overrides import find_override
+        from agent.intent_training import load_samples
+
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "samples.jsonl"
+            overrides = Path(td) / "overrides.jsonl"
+            source.write_text(
+                '{"ts": 100, "text": "one", "intent_type": "chat"}\n'
+                '{"ts": 200, "text": "表格里查一下", "intent_type": "chat"}\n',
+                encoding="utf-8",
+            )
+            newest = load_diagnostics_rows(source, limit=10)[0]
+
+            updated = save_diagnostics_review(
+                source,
+                newest,
+                label="wrong_intent",
+                note="should use local shortcut",
+                corrected_intent={"type": "shortcut", "name": "查找"},
+                override_path=overrides,
+            )
+
+            self.assertEqual(updated["corrected_intent"], {"type": "shortcut", "name": "查找"})
+            rows = load_samples(source, limit=0)
+            self.assertEqual(rows[1]["corrected_intent"], {"type": "shortcut", "name": "查找"})
+            self.assertEqual(
+                find_override("表格里查一下", path=overrides),
+                {"type": "shortcut", "name": "查找"},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

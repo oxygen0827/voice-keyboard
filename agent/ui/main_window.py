@@ -607,6 +607,20 @@ _INTENT_LABEL_OPTIONS = [
     "unclear",
 ]
 
+_CORRECTED_INTENT_OPTIONS = [
+    "",
+    "shortcut",
+    "edit",
+    "write",
+    "delete",
+    "undo",
+    "memo_recall",
+    "memo_save",
+    "memo_delete",
+    "memo_list",
+    "chat",
+]
+
 
 class _IntentDiagnosticsTab(NSObject):
     def initWithApp_(self, app):
@@ -644,7 +658,7 @@ class _IntentDiagnosticsTab(NSObject):
         v.addSubview_(review_box)
         self._review_filter = review_box
 
-        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 220, 560, 175))
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 245, 560, 150))
         scroll.setHasVerticalScroller_(True)
         scroll.setBorderType_(1)
         table = NSTableView.alloc().initWithFrame_(scroll.bounds())
@@ -677,9 +691,20 @@ class _IntentDiagnosticsTab(NSObject):
         v.addSubview_(_button("保存反馈", NSMakeRect(272, 180, 90, 28), self, b"saveReview:"))
         v.addSubview_(_button("复制文本", NSMakeRect(372, 180, 90, 28), self, b"copyText:"))
 
-        v.addSubview_(_label("备注", NSMakeRect(20, 148, 50, 20)))
+        v.addSubview_(_label("修正", NSMakeRect(20, 148, 50, 20)))
+        corrected_box = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(72, 144, 150, 26))
+        for item in _CORRECTED_INTENT_OPTIONS:
+            corrected_box.addItemWithTitle_(item)
+        v.addSubview_(corrected_box)
+        self._corrected_type_box = corrected_box
+        v.addSubview_(_label("名称/Key", NSMakeRect(236, 148, 60, 20)))
+        corrected_value = NSTextField.alloc().initWithFrame_(NSMakeRect(300, 144, 280, 24))
+        v.addSubview_(corrected_value)
+        self._corrected_value = corrected_value
+
         from AppKit import NSTextView
-        note_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(72, 112, 508, 58))
+        v.addSubview_(_label("备注", NSMakeRect(20, 112, 50, 20)))
+        note_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(72, 82, 508, 54))
         note_scroll.setHasVerticalScroller_(True)
         note_scroll.setBorderType_(1)
         note = NSTextView.alloc().initWithFrame_(note_scroll.bounds())
@@ -690,8 +715,8 @@ class _IntentDiagnosticsTab(NSObject):
         v.addSubview_(note_scroll)
         self._note = note
 
-        v.addSubview_(_label("详情", NSMakeRect(20, 82, 50, 20)))
-        detail_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(72, 20, 508, 82))
+        v.addSubview_(_label("详情", NSMakeRect(20, 52, 50, 20)))
+        detail_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(72, 20, 508, 52))
         detail_scroll.setHasVerticalScroller_(True)
         detail_scroll.setBorderType_(1)
         detail = NSTextView.alloc().initWithFrame_(detail_scroll.bounds())
@@ -758,12 +783,14 @@ class _IntentDiagnosticsTab(NSObject):
             return
         label = self._label_box.titleOfSelectedItem() or ""
         note = self._note.string() or ""
+        corrected_intent = self._corrected_intent_from_fields()
         try:
             updated = save_diagnostics_review(
                 _INTENT_SAMPLES_PATH,
                 row,
                 label=label,
                 note=note,
+                corrected_intent=corrected_intent,
             )
         except Exception as e:
             self._alert("保存反馈失败", str(e))
@@ -810,6 +837,8 @@ class _IntentDiagnosticsTab(NSObject):
         if row is None:
             self._label_box.selectItemWithTitle_("")
             self._note.setString_("")
+            self._corrected_type_box.selectItemWithTitle_("")
+            self._corrected_value.setStringValue_("")
             self._detail.setString_("")
             return
         label = row.get("review_label", "") or ""
@@ -818,8 +847,34 @@ class _IntentDiagnosticsTab(NSObject):
         else:
             self._label_box.selectItemWithTitle_("")
         self._note.setString_(row.get("review_note", "") or "")
+        self._load_corrected_intent(row.get("corrected_intent") or {})
         detail = json.dumps(row, ensure_ascii=False, indent=2)
         self._detail.setString_(detail)
+
+    @objc.python_method
+    def _corrected_intent_from_fields(self) -> dict | None:
+        intent_type = self._corrected_type_box.titleOfSelectedItem() or ""
+        if not intent_type:
+            return None
+        value = self._corrected_value.stringValue().strip()
+        out = {"type": intent_type}
+        if intent_type == "shortcut":
+            out["name"] = value
+        elif intent_type in {"memo_recall", "memo_save", "memo_delete"}:
+            out["key"] = value
+        elif intent_type == "chat":
+            out["reply"] = value
+        return out
+
+    @objc.python_method
+    def _load_corrected_intent(self, corrected: dict):
+        intent_type = str(corrected.get("type") or "")
+        if self._corrected_type_box.indexOfItemWithTitle_(intent_type) >= 0:
+            self._corrected_type_box.selectItemWithTitle_(intent_type)
+        else:
+            self._corrected_type_box.selectItemWithTitle_("")
+        value = corrected.get("name") or corrected.get("key") or corrected.get("reply") or ""
+        self._corrected_value.setStringValue_(str(value))
 
     @objc.python_method
     def _alert(self, title, msg):

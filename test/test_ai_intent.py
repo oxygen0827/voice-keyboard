@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from agent.ai_intent import (
@@ -26,6 +28,50 @@ class AIIntentTests(unittest.TestCase):
         ))
 
         self.assertEqual(result, {"type": "edit"})
+
+    def test_corrected_intent_override_classifies_same_text_locally(self):
+        from agent.intent_overrides import append_override
+
+        with tempfile.TemporaryDirectory() as td:
+            override_path = Path(td) / "intent_overrides.jsonl"
+            append_override(
+                "表格里查一下",
+                {"type": "shortcut", "name": "查找"},
+                path=override_path,
+            )
+            llm = MagicMock()
+            llm.chat.return_value = '{"type":"chat","reply":"x"}'
+
+            result = classify_intent(
+                llm,
+                IntentContext(text="表格里查一下", shortcuts=("查找",)),
+                IntentFallbackOptions(intent_overrides_path=str(override_path)),
+            )
+
+            self.assertEqual(result, {"type": "shortcut", "name": "查找"})
+            llm.chat.assert_not_called()
+
+    def test_corrected_shortcut_override_is_ignored_when_shortcut_is_unavailable(self):
+        from agent.intent_overrides import append_override
+
+        with tempfile.TemporaryDirectory() as td:
+            override_path = Path(td) / "intent_overrides.jsonl"
+            append_override(
+                "表格里查一下",
+                {"type": "shortcut", "name": "查找"},
+                path=override_path,
+            )
+            llm = MagicMock()
+            llm.chat.return_value = '{"type":"chat","reply":"没有这个动作"}'
+
+            result = classify_intent(
+                llm,
+                IntentContext(text="表格里查一下", shortcuts=("保存",)),
+                IntentFallbackOptions(intent_overrides_path=str(override_path)),
+            )
+
+            self.assertEqual(result, {"type": "chat", "reply": "没有这个动作"})
+            llm.chat.assert_called_once()
 
     def test_selected_translation_instruction_overrides_write_by_default(self):
         llm = MagicMock()

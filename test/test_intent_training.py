@@ -101,6 +101,22 @@ class IntentTrainingTests(unittest.TestCase):
             rows = load_samples(source, limit=0)
             self.assertEqual(rows[1]["review_label"], "wrong_intent")
 
+    def test_update_sample_review_can_store_corrected_intent(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "samples.jsonl"
+            source.write_text('{"text":"ask","intent_type":"chat"}\n', encoding="utf-8")
+
+            row = update_sample_review(
+                source,
+                0,
+                label="wrong_intent",
+                corrected_intent={"type": "shortcut", "name": "查找"},
+            )
+
+            self.assertEqual(row["corrected_intent"], {"type": "shortcut", "name": "查找"})
+            rows = load_samples(source, limit=0)
+            self.assertEqual(rows[0]["corrected_intent"], {"type": "shortcut", "name": "查找"})
+
     def test_update_sample_review_rejects_unknown_label(self):
         with tempfile.TemporaryDirectory() as td:
             source = Path(td) / "samples.jsonl"

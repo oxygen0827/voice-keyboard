@@ -171,6 +171,9 @@ instruction_mode:
     selected_edit_override: true
     # 便利类兜底：仅在“我的 X 是什么 / 插入 X”等查询或插入句式下模糊匹配备忘。
     memo_fuzzy_recall: true
+    # 本地修正覆盖：意图诊断里保存的“修正”会先于模型生效。
+    intent_overrides: true
+    intent_overrides_path: ~/.voice-keyboard/intent_overrides.jsonl
 
   # Intent training sample collection. Default is off and local-only.
   # It stores sanitized instruction metadata for later rule tuning or model training.

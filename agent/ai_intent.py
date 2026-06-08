@@ -8,6 +8,7 @@ import json
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from agent.intent_overrides import find_override
 from agent.memo import (
     MemoRecord,
     resolve_memo_key,
@@ -77,6 +78,8 @@ class IntentFallbackOptions:
     selected_edit_override: bool = True
     memo_fuzzy_recall: bool = True
     llm_cache: bool = True
+    intent_overrides: bool = True
+    intent_overrides_path: str = ""
     local_confidence_threshold: IntentConfidence = "high"
 
     @classmethod
@@ -92,6 +95,8 @@ class IntentFallbackOptions:
             selected_edit_override=bool(cfg.get("selected_edit_override", True)),
             memo_fuzzy_recall=bool(memo_fuzzy_recall),
             llm_cache=bool(cfg.get("llm_cache", True)),
+            intent_overrides=bool(cfg.get("intent_overrides", True)),
+            intent_overrides_path=str(cfg.get("intent_overrides_path", "")),
             local_confidence_threshold=str(cfg.get("local_confidence_threshold", "high")),
         )
 
@@ -219,6 +224,10 @@ def classify_local_intent_match(
     fallbacks: IntentFallbackOptions | None = None,
 ) -> LocalIntentMatch | None:
     fallbacks = fallbacks or IntentFallbackOptions()
+    override = _corrected_override_from_text(ctx, fallbacks)
+    if override:
+        return LocalIntentMatch(override, "high", "corrected_override")
+
     if fallbacks.multi_step_guard and looks_like_multi_step_instruction(ctx.text):
         return LocalIntentMatch({"type": "chat", "reply": _MULTI_STEP_FEEDBACK}, "high", "multi_step")
 
@@ -266,6 +275,30 @@ def classify_local_intent_match(
         return LocalIntentMatch({"type": "chat", "reply": resolution.feedback()}, "high", "memo_missing")
 
     return None
+
+
+def _corrected_override_from_text(
+    ctx: IntentContext,
+    fallbacks: IntentFallbackOptions,
+) -> dict | None:
+    if not fallbacks.intent_overrides:
+        return None
+    kwargs = {}
+    if fallbacks.intent_overrides_path:
+        kwargs["path"] = fallbacks.intent_overrides_path
+    override = find_override(ctx.text, **kwargs)
+    if not override:
+        return None
+    return override if _override_is_available(override, ctx) else None
+
+
+def _override_is_available(intent: dict, ctx: IntentContext) -> bool:
+    intent_type = str(intent.get("type") or "")
+    if intent_type == "shortcut":
+        return str(intent.get("name") or "") in ctx.shortcuts
+    if intent_type in {"memo_recall", "memo_delete"}:
+        return str(intent.get("key") or "") in ctx.memo_keys
+    return True
 
 
 def apply_intent_fallbacks(

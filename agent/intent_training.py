@@ -159,6 +159,7 @@ def update_sample_review(
     *,
     label: str,
     note: str = "",
+    corrected_intent: dict | None = None,
 ) -> dict:
     path = Path(source).expanduser()
     rows = _load_samples(path)
@@ -169,6 +170,8 @@ def update_sample_review(
         raise ValueError(f"unsupported review label: {normalized_label}")
     rows[index]["review_label"] = normalized_label
     rows[index]["review_note"] = _sanitize_text(note, 240)
+    if corrected_intent is not None:
+        rows[index]["corrected_intent"] = corrected_intent
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for row in rows:
