@@ -144,6 +144,9 @@ class IntentDiagnosticsTests(unittest.TestCase):
             self.assertEqual(summary["override_covered"], 1)
             self.assertEqual(summary["wrong_by_intent"], {"chat": 1, "delete": 1})
             self.assertEqual(summary["accuracy_label"], "已标注正确率 33.3%")
+            self.assertEqual(summary["evaluation"]["total"], 1)
+            self.assertEqual(summary["evaluation"]["correct"], 1)
+            self.assertEqual(summary["evaluation"]["accuracy_label"], "100.0%")
 
 
 if __name__ == "__main__":

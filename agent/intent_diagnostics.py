@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping
 
+from agent.intent_evaluation import evaluate_reviewed_samples
 from agent.intent_overrides import append_override, find_override, normalize_intent
 from agent.intent_training import load_samples, update_sample_review
 
@@ -87,6 +88,14 @@ def summarize_diagnostics(
         "override_covered": 0,
         "wrong_by_intent": {},
         "accuracy_label": "已标注正确率 -",
+        "evaluation": {
+            "total": 0,
+            "correct": 0,
+            "wrong": 0,
+            "accuracy": 0.0,
+            "accuracy_label": "0.0%",
+            "mismatches": [],
+        },
     }
     for row in rows:
         review_label = str(row.get("review_label", "") or "")
@@ -111,4 +120,5 @@ def summarize_diagnostics(
     if summary["reviewed"] > 0:
         accuracy = summary["correct"] / summary["reviewed"] * 100
         summary["accuracy_label"] = f"已标注正确率 {accuracy:.1f}%"
+    summary["evaluation"] = evaluate_reviewed_samples(source, override_path=override_path)
     return summary

@@ -889,11 +889,14 @@ class _IntentDiagnosticsTab(NSObject):
     def _refresh_summary(self):
         try:
             summary = summarize_diagnostics(_INTENT_SAMPLES_PATH)
+            evaluation = summary.get("evaluation", {}) or {}
             wrong_by_intent = summary.get("wrong_by_intent", {}) or {}
             top_wrong = sorted(wrong_by_intent.items(), key=lambda item: (-item[1], item[0]))[:3]
             wrong_text = "、".join(f"{name}:{count}" for name, count in top_wrong) or "暂无"
             text = (
                 f"{summary.get('accuracy_label', '已标注正确率 -')}  "
+                f"回放命中率 {evaluation.get('accuracy_label', '0.0%')} "
+                f"({evaluation.get('correct', 0)}/{evaluation.get('total', 0)})  "
                 f"样本 {summary.get('total', 0)} / 已标注 {summary.get('reviewed', 0)} / "
                 f"错误 {summary.get('wrong', 0)} / 修正 {summary.get('corrected', 0)} / "
                 f"已覆盖 {summary.get('override_covered', 0)}  错误分布 {wrong_text}"
