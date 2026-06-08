@@ -19,6 +19,7 @@ class ShortcutCatalogEntry:
     risk: str = "normal"
     application: str = ""
     kind: str = "shortcut"
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,7 @@ class TyperTextIO:
                 risk=entry.risk,
                 application=entry.application,
                 kind=entry.kind,
+                aliases=tuple(getattr(entry, "aliases", ()) or ()),
             )
             for entry in typer.shortcut_catalog()
         ]

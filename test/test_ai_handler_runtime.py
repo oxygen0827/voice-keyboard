@@ -24,6 +24,9 @@ class FakeEnv:
     def shortcuts(self):
         return ()
 
+    def shortcut_catalog(self):
+        return ()
+
 
 class FakeHistory:
     def __init__(self):
@@ -63,9 +66,31 @@ class AIHandlerRuntimeTests(unittest.TestCase):
 
         handler._run_inner(b"pcm")
 
-        self.assertEqual(history.entries, [
-            ("ai", "save it", "error", "shortcut_missing:missing"),
-        ])
+        self.assertEqual(len(history.entries), 1)
+        self.assertEqual(history.entries[0][:3], ("ai", "save it", "error"))
+        self.assertIn("shortcut_missing:missing", history.entries[0][3])
+        self.assertIn("intent_source=llm", history.entries[0][3])
+
+    def test_records_intent_source_in_history_detail(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"x"}'
+        history = FakeHistory()
+        handler = AIHandler(
+            FakeSTT("question"),
+            llm,
+            MagicMock(),
+            history=history,
+            input_environment=FakeEnv(),
+        )
+        handler._executor = MagicMock()
+        handler._executor.execute.return_value = True
+        handler._executor.last_status = ("ok", "chat")
+
+        handler._run_inner(b"pcm")
+
+        self.assertEqual(len(history.entries), 1)
+        self.assertIn("intent_source=llm", history.entries[0][3])
+        self.assertIn("intent_confidence=high", history.entries[0][3])
 
     def test_intent_timeout_keeps_feedback_visible_and_records_error(self):
         class SlowLLM:

@@ -15,8 +15,9 @@ import threading
 from agent.ai_intent import (
     IntentContext,
     IntentFallbackOptions,
-    classify_intent,
+    classify_intent_details,
     memo_records,
+    shortcut_intent_entries,
 )
 from agent.input_environment import TyperInputEnvironment
 from agent.instruction_executor import InstructionModeExecutor
@@ -113,16 +114,22 @@ class AIHandler:
         # 3. LLM 意图分类
         try:
             self._show_progress("\u6b63\u5728\u7406\u89e3\u6307\u4ee4")
-            result = self._classify_intent_with_timeout(IntentContext(
+            shortcuts = self._env.shortcuts()
+            shortcut_entries = shortcut_intent_entries(
+                self._env.shortcut_catalog() if hasattr(self._env, "shortcut_catalog") else ()
+            )
+            classification = self._classify_intent_with_timeout(IntentContext(
                 text=text,
                 selected=selected,
                 recent_text=context,
                 active_application=self._env.active_application(),
-                shortcuts=self._env.shortcuts(),
+                shortcuts=shortcuts,
+                shortcut_entries=shortcut_entries,
                 memo_records=memo_records(
                     self._memo_store,
                 ),
             ))
+            result = classification.result
         except TimeoutError as e:
             print(f"[ai] 意图分类超时: {e}")
             self._record("ai", text, "error", "intent_timeout")
@@ -138,12 +145,19 @@ class AIHandler:
             result = {"type": "chat", "reply": "没听清楚，请再说一次"}
 
         operation = operation_from_intent(result)
-        print(f"[ai] 意图: {operation.kind}")
+        intent_source = result.get("_intent_source", "unknown")
+        intent_confidence = result.get("_intent_confidence", "")
+        cache_hit = bool(result.get("_intent_cache_hit"))
+        print(
+            f"[ai] intent: {operation.kind} "
+            f"source={intent_source} confidence={intent_confidence} cache={cache_hit}"
+        )
         self._show_progress(_operation_message(operation))
 
         keep_status = self._executor.execute(operation, text, selected, target)
         status, detail = getattr(self._executor, "last_status", ("ok", operation.kind))
-        self._record("ai", text, status, detail)
+        intent_detail = _intent_detail(detail, intent_source, intent_confidence, cache_hit)
+        self._record("ai", text, status, intent_detail)
         return keep_status
 
     def _classify_intent_with_timeout(self, context: IntentContext) -> dict:
@@ -151,7 +165,7 @@ class AIHandler:
 
         def run() -> None:
             try:
-                out.put(("ok", classify_intent(
+                out.put(("ok", classify_intent_details(
                     self._llm,
                     context,
                     self._intent_fallbacks,
@@ -198,6 +212,17 @@ class AIHandler:
         msg = str(error)
         if "敏感" in msg or "不安全" in msg or "unsafe" in msg.lower():
             self._show("识别内容被服务商拦截，请松开热键后重新说。可用启停热键快速恢复。")
+
+
+def _intent_detail(detail: str, source: str, confidence: str, cache_hit: bool) -> str:
+    parts = [detail] if detail else []
+    if source:
+        parts.append(f"intent_source={source}")
+    if confidence:
+        parts.append(f"intent_confidence={confidence}")
+    if cache_hit:
+        parts.append("intent_cache_hit=true")
+    return ";".join(parts)
 
 def _preview(text: str, limit: int = 28) -> str:
     compact = str(text or "").replace("\n", " ").replace("\r", " ").strip()

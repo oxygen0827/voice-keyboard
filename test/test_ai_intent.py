@@ -4,7 +4,9 @@ from unittest.mock import MagicMock
 from agent.ai_intent import (
     IntentContext,
     IntentFallbackOptions,
+    ShortcutIntentEntry,
     classify_intent,
+    classify_intent_details,
     memo_records,
 )
 from agent.memo import MemoRecord
@@ -418,6 +420,52 @@ class AIIntentTests(unittest.TestCase):
 
         self.assertEqual(result, {"type": "shortcut", "name": "\u53d1\u9001"})
         llm.chat.assert_not_called()
+
+    def test_structured_shortcut_alias_is_classified_locally(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"x"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="\u53d1\u4e00\u4e0b",
+            shortcuts=("\u53d1\u9001",),
+            shortcut_entries=(ShortcutIntentEntry(
+                name="\u53d1\u9001",
+                aliases=("\u53d1\u4e00\u4e0b",),
+            ),),
+        ))
+
+        self.assertEqual(result, {"type": "shortcut", "name": "\u53d1\u9001"})
+        llm.chat.assert_not_called()
+
+    def test_intent_details_include_local_source_and_confidence(self):
+        llm = MagicMock()
+
+        details = classify_intent_details(llm, IntentContext(
+            text="\u53d1\u51fa\u53bb",
+            shortcuts=("\u53d1\u9001",),
+        ))
+
+        self.assertEqual(details.source, "local")
+        self.assertEqual(details.confidence, "high")
+        self.assertEqual(details.result["_intent_source"], "local")
+        llm.chat.assert_not_called()
+
+    def test_llm_intent_result_is_cached(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"x"}'
+        ctx = IntentContext(
+            text="\u8fd9\u4e2a\u6309\u94ae\u600e\u4e48\u7528",
+            active_application="Test App",
+            shortcuts=("\u4fdd\u5b58",),
+        )
+
+        first = classify_intent_details(llm, ctx)
+        second = classify_intent_details(llm, ctx)
+
+        self.assertEqual(first.source, "llm")
+        self.assertEqual(second.source, "cache")
+        self.assertTrue(second.cache_hit)
+        self.assertEqual(llm.chat.call_count, 1)
 
     def test_plain_left_side_utterance_matches_window_shortcut_catalog(self):
         llm = MagicMock()

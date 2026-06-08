@@ -6,7 +6,7 @@ of AIHandler so the handler can stay focused on orchestration and side effects.
 
 import json
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from agent.memo import (
     MemoRecord,
@@ -34,6 +34,7 @@ class IntentContext:
     recent_text: str = ""
     active_application: str = ""
     shortcuts: tuple[str, ...] = ()
+    shortcut_entries: tuple["ShortcutIntentEntry", ...] = ()
     memo_records: tuple[MemoRecord, ...] = ()
 
     @property
@@ -42,10 +43,41 @@ class IntentContext:
 
 
 @dataclass(frozen=True)
+class ShortcutIntentEntry:
+    name: str
+    aliases: tuple[str, ...] = ()
+    risk: str = "normal"
+    source: str = ""
+    application: str = ""
+    kind: str = "shortcut"
+
+
+IntentSource = Literal["local", "llm", "cache"]
+IntentConfidence = Literal["high", "medium", "low"]
+
+
+@dataclass(frozen=True)
+class IntentClassification:
+    result: dict
+    source: IntentSource
+    confidence: IntentConfidence = "high"
+    cache_hit: bool = False
+
+
+@dataclass(frozen=True)
+class LocalIntentMatch:
+    result: dict
+    confidence: IntentConfidence = "high"
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class IntentFallbackOptions:
     multi_step_guard: bool = True
     selected_edit_override: bool = True
     memo_fuzzy_recall: bool = True
+    llm_cache: bool = True
+    local_confidence_threshold: IntentConfidence = "high"
 
     @classmethod
     def from_config(cls, cfg: dict | None) -> "IntentFallbackOptions":
@@ -59,6 +91,8 @@ class IntentFallbackOptions:
             multi_step_guard=bool(cfg.get("multi_step_guard", True)),
             selected_edit_override=bool(cfg.get("selected_edit_override", True)),
             memo_fuzzy_recall=bool(memo_fuzzy_recall),
+            llm_cache=bool(cfg.get("llm_cache", True)),
+            local_confidence_threshold=str(cfg.get("local_confidence_threshold", "high")),
         )
 
 
@@ -114,71 +148,122 @@ _MULTI_STEP_MARKERS = (
 
 _MULTI_STEP_FEEDBACK = "这个需要分步执行，请先说第一步"
 
+_COMPACT_CLASSIFY_SYSTEM = """You classify Voice Keyboard instruction intent. Return only one JSON object.
+
+Allowed type values: shortcut, undo, delete, edit, write, memo_save, memo_recall, memo_delete, memo_list, chat.
+Rules:
+1. Execute one primary operation only. For multi-step requests return chat and ask the user to say the first step.
+2. shortcut.name must come from Shortcut Catalog.
+3. Use edit for modifying selected or recently typed text. Use write for generating new content.
+4. Use delete for direct selected-text or whole-content deletion.
+5. Use memo_* for memory save, recall, delete, or list.
+6. Use chat for questions or uncertainty; keep reply under 30 Chinese characters.
+"""
+
+_INTENT_CACHE_MAX = 64
+_INTENT_CACHE: dict[tuple, dict] = {}
+_INTENT_CACHE_ORDER: list[tuple] = []
+
+
 
 def classify_intent(
     llm: ChatLLM,
     ctx: IntentContext,
     fallbacks: IntentFallbackOptions | None = None,
 ) -> dict:
+    return _strip_intent_meta(classify_intent_details(llm, ctx, fallbacks).result)
+
+
+def classify_intent_details(
+    llm: ChatLLM,
+    ctx: IntentContext,
+    fallbacks: IntentFallbackOptions | None = None,
+) -> IntentClassification:
     fallbacks = fallbacks or IntentFallbackOptions()
-    local_result = classify_local_intent(ctx, fallbacks)
-    if local_result is not None:
-        return local_result
-    raw = llm.chat(_CLASSIFY_SYSTEM, _build_user_message(ctx))
-    result = _parse_json_object(raw)
-    return apply_intent_fallbacks(result, ctx, fallbacks)
+    local_match = classify_local_intent_match(ctx, fallbacks)
+    if local_match is not None and _confidence_allows_local(local_match.confidence, fallbacks):
+        return IntentClassification(
+            _with_intent_meta(local_match.result, "local", local_match.confidence),
+            "local",
+            local_match.confidence,
+        )
+
+    cache_key = _intent_cache_key(ctx)
+    if fallbacks.llm_cache:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return IntentClassification(
+                _with_intent_meta(cached, "cache", "high", cache_hit=True),
+                "cache",
+                "high",
+                cache_hit=True,
+            )
+
+    raw = llm.chat(_COMPACT_CLASSIFY_SYSTEM, _build_user_message(ctx))
+    result = apply_intent_fallbacks(_parse_json_object(raw), ctx, fallbacks)
+    if fallbacks.llm_cache:
+        _cache_put(cache_key, result)
+    return IntentClassification(_with_intent_meta(result, "llm", "high"), "llm", "high")
 
 
 def classify_local_intent(
     ctx: IntentContext,
     fallbacks: IntentFallbackOptions | None = None,
 ) -> dict | None:
+    match = classify_local_intent_match(ctx, fallbacks)
+    return None if match is None else match.result
+
+
+def classify_local_intent_match(
+    ctx: IntentContext,
+    fallbacks: IntentFallbackOptions | None = None,
+) -> LocalIntentMatch | None:
     fallbacks = fallbacks or IntentFallbackOptions()
     if fallbacks.multi_step_guard and looks_like_multi_step_instruction(ctx.text):
-        return {"type": "chat", "reply": _MULTI_STEP_FEEDBACK}
+        return LocalIntentMatch({"type": "chat", "reply": _MULTI_STEP_FEEDBACK}, "high", "multi_step")
 
     window_shortcut = _macos_window_shortcut_from_text(ctx.text, ctx.shortcuts)
     if window_shortcut:
-        return {"type": "shortcut", "name": window_shortcut}
+        return LocalIntentMatch({"type": "shortcut", "name": window_shortcut}, "high", "window_shortcut")
 
     if _looks_like_open_app_instruction(ctx.text):
         shortcut_name = _open_app_shortcut_from_text(ctx.text, ctx.shortcuts)
         if shortcut_name:
-            return {"type": "shortcut", "name": shortcut_name}
-        return {"type": "chat", "reply": "没有找到可打开的应用"}
+            return LocalIntentMatch({"type": "shortcut", "name": shortcut_name}, "high", "open_app")
+        return LocalIntentMatch({"type": "chat", "reply": "没有找到可打开的应用"}, "high", "open_app_missing")
 
     if _looks_like_undo_instruction(ctx.text) and "撤销" in ctx.shortcuts:
-        return {"type": "shortcut", "name": "撤销"}
+        return LocalIntentMatch({"type": "shortcut", "name": "撤销"}, "high", "undo")
 
     if looks_like_whole_delete_instruction(ctx.text):
-        return {"type": "delete"}
+        return LocalIntentMatch({"type": "delete"}, "high", "delete")
 
     if ctx.selected and looks_like_selected_delete_instruction(ctx.text):
-        return {"type": "delete"}
+        return LocalIntentMatch({"type": "delete"}, "high", "delete")
 
     if looks_like_write_instruction(ctx.text):
-        return {"type": "write"}
+        return LocalIntentMatch({"type": "write"}, "high", "write")
 
     if (
         fallbacks.selected_edit_override
         and (ctx.selected or ctx.recent_text)
         and looks_like_edit_instruction(ctx.text)
     ):
-        return {"type": "edit"}
+        return LocalIntentMatch({"type": "edit"}, "high", "edit")
 
-    shortcut_alias = _shortcut_alias_from_text(ctx.text, ctx.shortcuts)
+    shortcut_alias = _shortcut_alias_from_text(ctx.text, ctx.shortcuts, ctx.shortcut_entries)
     if shortcut_alias:
-        return {"type": "shortcut", "name": shortcut_alias}
+        return LocalIntentMatch({"type": "shortcut", "name": shortcut_alias}, "high", "shortcut_alias")
 
     exact_shortcut = _exact_shortcut_from_text(ctx.text, ctx.shortcuts)
     if exact_shortcut:
-        return {"type": "shortcut", "name": exact_shortcut}
+        return LocalIntentMatch({"type": "shortcut", "name": exact_shortcut}, "high", "exact_shortcut")
 
     if fallbacks.memo_fuzzy_recall and looks_like_memo_lookup(ctx.text):
         resolution = resolve_memo_key(ctx.text, ctx.memo_records)
         if resolution.can_recall:
-            return {"type": "memo_recall", "key": resolution.key}
-        return {"type": "chat", "reply": resolution.feedback()}
+            return LocalIntentMatch({"type": "memo_recall", "key": resolution.key}, "high", "memo_recall")
+        return LocalIntentMatch({"type": "chat", "reply": resolution.feedback()}, "high", "memo_missing")
 
     return None
 
@@ -200,11 +285,15 @@ def apply_intent_fallbacks(
         if shortcut_name:
             return {"type": "shortcut", "name": shortcut_name}
         if result.get("type") == "shortcut":
-            return {"type": "chat", "reply": "没有找到可打开的应用"}
+            return LocalIntentMatch({"type": "chat", "reply": "没有找到可打开的应用"}, "high", "open_app_missing")
     if intent == "undo" and "撤销" in ctx.shortcuts:
-        return {"type": "shortcut", "name": "撤销"}
+        return LocalIntentMatch({"type": "shortcut", "name": "撤销"}, "high", "undo")
     if looks_like_whole_delete_instruction(ctx.text):
         return {"type": "delete"}
+    if ctx.selected and looks_like_selected_delete_instruction(ctx.text):
+        return {"type": "delete"}
+    if looks_like_write_instruction(ctx.text):
+        return {"type": "write"}
     if (
         fallbacks.selected_edit_override
         and (ctx.selected or ctx.recent_text)
@@ -212,6 +301,9 @@ def apply_intent_fallbacks(
         and looks_like_edit_instruction(ctx.text)
     ):
         return {"type": "edit"}
+    shortcut_alias = _shortcut_alias_from_text(ctx.text, ctx.shortcuts, ctx.shortcut_entries)
+    if shortcut_alias and intent in {"chat", "shortcut"}:
+        return {"type": "shortcut", "name": shortcut_alias}
     if fallbacks.memo_fuzzy_recall and intent == "memo_recall":
         resolution = resolve_memo_key(ctx.text, ctx.memo_records)
         if resolution.can_recall:
@@ -380,7 +472,7 @@ def _exact_shortcut_from_text(text: str, shortcuts: tuple[str, ...]) -> str:
 
 
 
-def _shortcut_alias_from_text(text: str, shortcuts: tuple[str, ...]) -> str:
+def _shortcut_alias_from_text(text: str, shortcuts: tuple[str, ...], shortcut_entries: tuple[ShortcutIntentEntry, ...] = ()) -> str:
     compact = _compact_shortcut_text(text).lower()
     if not compact:
         return ""
@@ -399,6 +491,17 @@ def _shortcut_alias_from_text(text: str, shortcuts: tuple[str, ...]) -> str:
         _compact_shortcut_text(shortcut).lower(): shortcut for shortcut in shortcuts
     }
     command_prefixes = ("\u5e2e\u6211", "\u8bf7", "\u9ebb\u70e6", "\u7ed9\u6211")
+    for entry in shortcut_entries:
+        entry_name = getattr(entry, "name", "")
+        if entry_name not in shortcuts:
+            continue
+        aliases = tuple(getattr(entry, "aliases", ()) or ())
+        normalized_aliases = tuple(_compact_shortcut_text(alias).lower() for alias in aliases if alias)
+        if compact in normalized_aliases or (
+            compact.startswith(command_prefixes)
+            and any(alias in compact for alias in normalized_aliases)
+        ):
+            return entry_name
     for canonical, aliases in alias_groups:
         normalized_aliases = tuple(alias.lower() for alias in aliases)
         if compact not in normalized_aliases and not (
@@ -507,6 +610,83 @@ def _mentions_multiple_explicit_operations(text: str) -> bool:
             return True
     return False
 
+
+
+def _confidence_allows_local(
+    confidence: IntentConfidence,
+    fallbacks: IntentFallbackOptions,
+) -> bool:
+    order = {"low": 0, "medium": 1, "high": 2}
+    threshold = str(fallbacks.local_confidence_threshold or "high")
+    return order.get(confidence, 0) >= order.get(threshold, 2)
+
+
+def _strip_intent_meta(result: dict) -> dict:
+    return {k: v for k, v in result.items() if not str(k).startswith("_intent_")}
+
+
+def _with_intent_meta(
+    result: dict,
+    source: IntentSource,
+    confidence: IntentConfidence,
+    *,
+    cache_hit: bool = False,
+) -> dict:
+    out = dict(result)
+    out["_intent_source"] = source
+    out["_intent_confidence"] = confidence
+    if cache_hit:
+        out["_intent_cache_hit"] = True
+    return out
+
+
+def _intent_cache_key(ctx: IntentContext) -> tuple:
+    return (
+        _compact_shortcut_text(ctx.text).lower(),
+        bool(ctx.selected),
+        bool(ctx.recent_text),
+        ctx.active_application,
+        tuple(ctx.shortcuts),
+        tuple(ctx.memo_keys),
+    )
+
+
+def _cache_get(key: tuple) -> dict | None:
+    cached = _INTENT_CACHE.get(key)
+    return None if cached is None else dict(cached)
+
+
+def _cache_put(key: tuple, result: dict) -> None:
+    clean = {k: v for k, v in result.items() if not str(k).startswith("_intent_")}
+    if key not in _INTENT_CACHE:
+        _INTENT_CACHE_ORDER.append(key)
+    _INTENT_CACHE[key] = dict(clean)
+    while len(_INTENT_CACHE_ORDER) > _INTENT_CACHE_MAX:
+        oldest = _INTENT_CACHE_ORDER.pop(0)
+        _INTENT_CACHE.pop(oldest, None)
+
+
+def _shortcut_alias_summary(entries: tuple[ShortcutIntentEntry, ...]) -> str:
+    parts = []
+    for entry in entries:
+        aliases = tuple(getattr(entry, "aliases", ()) or ())
+        if aliases:
+            parts.append(f"{entry.name}={'/'.join(aliases[:5])}")
+    return "?".join(parts[:20])
+
+
+def shortcut_intent_entries(catalog_entries) -> tuple[ShortcutIntentEntry, ...]:
+    entries = []
+    for entry in catalog_entries or ():
+        entries.append(ShortcutIntentEntry(
+            name=getattr(entry, "name", ""),
+            aliases=tuple(getattr(entry, "aliases", ()) or ()),
+            risk=getattr(entry, "risk", "normal"),
+            source=getattr(entry, "source", ""),
+            application=getattr(entry, "application", ""),
+            kind=getattr(entry, "kind", "shortcut"),
+        ))
+    return tuple(entry for entry in entries if entry.name)
 
 def memo_records(
     entries: MemoEntries | None,
