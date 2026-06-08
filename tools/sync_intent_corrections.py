@@ -13,11 +13,16 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from agent.intent_sync import sync_corrected_intents
+from agent.intent_sync import sync_corrected_intents, sync_local_corrected_intents
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync Voice Keyboard intent corrections")
+    parser.add_argument(
+        "--input",
+        default=str(Path.home() / ".voice-keyboard" / "intent_samples.jsonl"),
+        help="local intent samples JSONL file",
+    )
     parser.add_argument(
         "--server",
         default=os.getenv("INTENT_TRAINING_SERVER", "http://127.0.0.1:8000"),
@@ -34,7 +39,13 @@ def main() -> None:
         help="local override JSONL file",
     )
     parser.add_argument("--limit", type=int, default=1000)
+    parser.add_argument("--local-only", action="store_true", help="sync local corrected samples without server")
     args = parser.parse_args()
+
+    if args.local_only:
+        result = sync_local_corrected_intents(args.input, override_path=args.overrides)
+        print(f"synced={result['synced']} skipped={result['skipped']}")
+        return
 
     headers = {}
     if args.token:
