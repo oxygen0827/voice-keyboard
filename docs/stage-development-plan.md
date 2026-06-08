@@ -1,14 +1,19 @@
 # Voice Keyboard 阶段性开发文档
 
-更新时间：2026-06-08
+更新时间：2026-06-09
 
-本文档用于记录 Voice Keyboard 当前阶段已经完成的工作、现在的使用方式、训练闭环的状态，以及后续继续开发的路线。
+本文档用于记录 Voice Keyboard 当前阶段已经完成的工作、现在的使用方式、AI 意图训练闭环的状态，以及后续继续开发的路线。
 
 ## 当前阶段结论
 
-当前版本已经完成了 Windows 客户端核心体验、托盘配置入口、主窗口配置入口、AI 意图诊断反馈，以及意图训练服务的基础框架。
+当前开发方向已经从先做 Windows 转为 Mac 优先。Windows 端之前已经完成了客户端核心体验、托盘和主窗口配置入口、AI 意图诊断反馈、训练服务基础框架；本阶段新增重点是 Mac 本地可用的 AI 意图纠错闭环。
 
-需要明确的是：现在已经搭好了“数据采集 -> 上传 -> 标注 -> 后续训练”的闭环基础设施，但还没有训练出新的专用模型。后续真正提升 AI 意图识别速度和准确性的关键，是持续采集真实使用样本，并对样本做人工标注。
+现在已经完成的是“真实使用样本 -> 本地诊断 -> 人工纠错 -> 本地覆盖规则 -> 离线回放评测 -> 本地/远端同步 -> 覆盖规则压缩”的闭环。这个闭环能立刻提升常见错误指令的正确率，因为用户纠正过的同一句或同类文本会优先走本地覆盖规则。
+
+需要明确的是：目前还没有训练出新的专用模型。现阶段提升正确率靠两类机制：
+
+- 本地硬规则和意图覆盖规则，直接减少明显错判。
+- 收集带 `corrected_intent` 的真实样本，为后续训练本地分类器或小模型准备数据。
 
 ## 已完成的主要能力
 
@@ -26,6 +31,14 @@
 - 支持托盘提示框反馈操作结果。
 - 支持语音转文字热键和 AI 功能热键配置。
 
+### Mac 本地运行基础
+
+- 修复了源码方式运行时的权限检查稳定性。
+- 麦克风权限请求改为更稳的 `sd.RawInputStream(... dtype="int16")`。
+- Input Monitoring 权限请求后会重新检查状态。
+- 源码运行时避免不必要的 AppKit 激活，减少权限提示异常。
+- `scripts/run-local.sh` 改为更适合本地调试的非缓冲日志和进程匹配方式。
+
 ### AI 意图识别和反馈
 
 - AI 指令会先经过本地快速判断。
@@ -35,6 +48,26 @@
 - 已加入意图诊断信息，便于后续分析判断是否正确。
 - 已加入本地意图样本收集，为后续训练做准备。
 
+### Mac AI 意图诊断闭环
+
+- Mac 主窗口新增“意图诊断”入口。
+- 支持按意图类型筛选样本。
+- 支持按是否已复核筛选样本。
+- 支持保存样本复核结果。
+- 支持给错误样本填写 `corrected_intent`。
+- 支持纠正为快捷键、删除、记忆库保存、记忆库读取、聊天等意图。
+- 保存纠正后会写入本地覆盖规则。
+- 本地覆盖规则默认保存到 `~/.voice-keyboard/intent_overrides.jsonl`。
+- 本地意图判断会优先读取覆盖规则。
+- 覆盖规则会校验快捷键、记忆库等能力是否存在，避免写入明显无效的修正。
+- 诊断页显示总样本数、已复核数、正确数、错误数、已纠正数、覆盖命中数。
+- 诊断页显示错误意图分布。
+- 诊断页显示离线回放命中率。
+- 诊断页支持查看错例详情。
+- 诊断页支持一键同步和评测。
+- 未配置训练服务器时，也支持本地-only 同步：直接把本地 `corrected_intent` 样本转成本地覆盖规则。
+- 同步时会压缩覆盖规则，同一条文本只保留最新修正，避免覆盖文件无限重复增长。
+
 ### 训练闭环基础设施
 
 - 新增 `training_server/` 服务端模块。
@@ -43,77 +76,147 @@
 - 支持 JSONL 样本批量上传。
 - 支持样本列表查询。
 - 支持样本人工标注。
-- 支持基础统计。
+- 支持保存 `corrected_intent`。
+- 服务端 SQLite 支持 `corrected_intent_json` 自动迁移。
+- 支持 `/v1/intent-samples/corrections` 拉取已纠正样本。
+- 统计接口支持 `corrected_total` 和 `by_corrected_type`。
 - 支持 token 鉴权。
 - 新增 `tools/upload_intent_samples.py` 上传工具。
+- 新增 `tools/evaluate_intent_samples.py` 离线评测工具。
+- 新增 `tools/sync_intent_corrections.py` 纠错同步工具。
+- 新增 `tools/run_intent_training_loop.py` 一键训练闭环工具。
 - 新增 `docs/intent-training-server.md` 服务端使用说明。
 - 新增相关单元测试。
 
 ## 当前如何使用
 
-### 本地客户端
+### Mac 本地闭环
 
-在企业电脑上，不建议直接运行未授信的 EXE。当前更合适的方式是继续使用源码方式启动。
+当前 Mac 开发阶段优先使用源码方式运行。
 
-后续如果要在企业电脑稳定使用，需要考虑：
+常用流程：
 
-- 让 IT 对构建产物做授信。
-- 或者继续使用源码启动方式。
-- 或者在可信环境构建，再走企业软件发布流程。
+1. 正常使用语音输入和 AI 指令。
+2. 打开主窗口的“意图诊断”。
+3. 过滤最近样本，找到判断错误的指令。
+4. 填写复核结果和正确意图。
+5. 保存反馈。
+6. 点击“同步评测”。
+7. 查看回放命中率和错例。
+
+如果没有配置训练服务器，“同步评测”会走本地-only 模式：把本地样本里的 `corrected_intent` 同步成本地覆盖规则，然后立即做离线评测。
+
+如果配置了训练服务器，“同步评测”会走远端闭环：上传本地样本，拉取远端已纠正样本，写入本地覆盖规则，然后离线评测。
+
+### Mac 训练服务器配置
+
+Mac 主窗口设置页支持配置：
+
+- `instruction_mode.intent_training.server`
+- `instruction_mode.intent_training.token`
+
+未配置时，会回退读取环境变量。
+
+### CLI 工具
+
+离线评测本地样本：
+
+```bash
+.venv/bin/python tools/evaluate_intent_samples.py
+```
+
+只把本地已纠正样本同步成本地覆盖规则：
+
+```bash
+.venv/bin/python tools/sync_intent_corrections.py --local-only
+```
+
+从训练服务器拉取已纠正样本并同步成本地覆盖规则：
+
+```bash
+.venv/bin/python tools/sync_intent_corrections.py --server http://SERVER:8000 --token change-me
+```
+
+执行完整闭环：
+
+```bash
+.venv/bin/python tools/run_intent_training_loop.py --server http://SERVER:8000 --token change-me
+```
 
 ### 训练服务
 
 安装服务端依赖：
 
-```powershell
+```bash
 pip install -r requirements-server.txt
 ```
 
 启动服务：
 
-```powershell
-$env:INTENT_TRAINING_DATABASE_URL = "sqlite:///./intent_training.db"
-$env:INTENT_TRAINING_UPLOAD_TOKEN = "change-me"
+```bash
+export INTENT_TRAINING_DATABASE_URL="sqlite:///./intent_training.db"
+export INTENT_TRAINING_UPLOAD_TOKEN="change-me"
 uvicorn training_server.api:app --host 0.0.0.0 --port 8000
 ```
 
 上传本地样本：
 
-```powershell
-python tools/upload_intent_samples.py --server http://SERVER:8000 --token change-me
+```bash
+.venv/bin/python tools/upload_intent_samples.py --server http://SERVER:8000 --token change-me
 ```
 
 只检查本地样本数量，不上传：
 
-```powershell
-python tools/upload_intent_samples.py --dry-run
+```bash
+.venv/bin/python tools/upload_intent_samples.py --dry-run
 ```
 
 ## 数据训练闭环
 
-当前设计的训练闭环是：
+当前已经完成的即时闭环是：
 
 1. 用户正常使用客户端。
 2. 客户端记录意图判断样本。
-3. 上传工具把样本上传到训练服务器。
-4. 训练服务器保存样本。
-5. 用户或开发者对样本做人工标注。
-6. 使用已标注样本训练本地分类器或小模型。
-7. 将训练结果接回客户端。
-8. 客户端优先使用更快的本地模型判断意图。
-9. 低置信度或复杂任务再交给 LLM。
+3. 用户在 Mac 意图诊断页复核样本。
+4. 用户给错误样本填写正确意图。
+5. 本地写入 `corrected_intent`。
+6. 同步工具把已纠正样本写入本地覆盖规则。
+7. 客户端下次判断时优先使用本地覆盖规则。
+8. 离线评测工具回放已纠正样本。
+9. 诊断页展示命中率和错例。
+10. 同步时压缩覆盖规则，只保留每条文本最新修正。
+
+远端服务闭环是：
+
+1. 客户端或工具上传样本。
+2. 训练服务器保存样本。
+3. 用户或开发者标注样本并填写 `corrected_intent`。
+4. 客户端或工具拉取已纠正样本。
+5. 本地同步成覆盖规则。
+6. 本地离线回放评测。
+
+未来模型训练闭环仍然是：
+
+1. 积累足够多真实纠正样本。
+2. 导出训练集和验证集。
+3. 训练轻量本地分类器或小模型。
+4. 输出模型版本和评估报告。
+5. 客户端接入模型。
+6. 高置信度本地执行，低置信度交给 LLM。
+7. 用户继续纠错，样本继续回流。
 
 ## 后续优先级
 
-### P0：稳定当前客户端
+### P0：Mac 闭环真实使用和稳定性
 
-- 持续验证语音转文字热键和 AI 热键不会串功能。
-- 持续验证托盘菜单所有入口都能真实生效。
-- 持续验证中文/英文切换在主窗口和托盘里一致。
-- 持续验证开机自启动在不同 Windows 权限环境下可用。
-- 避免在企业电脑上直接运行未授信 EXE。
+- 用真实日常指令持续采集样本。
+- 继续补充高频误判的 `corrected_intent`。
+- 观察覆盖规则是否真的减少重复错判。
+- 验证“同步评测”和“查看错例”在无服务器、有服务器两种场景都可用。
+- 验证 Mac 权限、热键、HUD、AI 指令执行在长时间使用下稳定。
+- 控制覆盖规则规模，必要时增加按时间、按命中次数的清理策略。
 
-### P1：补齐样本标注后台
+### P1：补齐网页标注后台
 
 当前服务端已有 API，但还没有专门的网页标注后台。下一步建议做一个简单页面：
 
@@ -125,26 +228,24 @@ python tools/upload_intent_samples.py --dry-run
 - 标注“目标错误”。
 - 标注“应该二次确认”。
 - 标注“缺少快捷键”。
+- 填写正确意图。
 - 填写备注。
 - 查看统计数据。
+- 查看纠正样本同步状态。
 
-这个后台会直接决定后续训练数据质量，是下一阶段最重要的工作。
+这个后台会直接决定后续训练数据质量，但在 Mac 本地-only 闭环已经可用之后，它不是阻塞项。
 
-### P2：建立训练环境
+### P2：建立评测数据集和报告
 
-训练环境建议先独立于客户端部署，可以放在服务器上。
+训练前先把评测基线做扎实：
 
-推荐准备：
-
-- Python 运行环境。
-- 可长期保存数据的数据库。
-- 样本导出脚本。
-- 训练脚本。
-- 评估脚本。
-- 模型版本目录。
-- 每次训练的评估报告。
-
-当前代码内置 SQLite，适合开发阶段。数据量变大后，可以迁移到 PostgreSQL，但客户端上传 API 不需要变。
+- 固定一批高频真实指令作为验证集。
+- 区分训练样本和评测样本。
+- 每次规则或模型更新后生成命中率报告。
+- 输出错例列表。
+- 记录覆盖规则版本。
+- 记录模型版本。
+- 保留回滚路径。
 
 ### P3：训练本地意图模型
 
@@ -152,7 +253,7 @@ python tools/upload_intent_samples.py --dry-run
 
 - 输入：用户语音识别后的文本、当前应用、是否有选中文本、历史上下文摘要。
 - 输出：意图类型、目标对象、动作参数、置信度。
-- 目标：减少 LLM 调用次数，提高常见指令的响应速度。
+- 目标：减少 LLM 调用次数，提高常见指令的响应速度和正确率。
 
 第一版可以优先覆盖：
 
@@ -171,22 +272,39 @@ python tools/upload_intent_samples.py --dry-run
 客户端接入方式建议是分层判断：
 
 1. 本地硬规则命中，直接执行。
-2. 本地训练模型高置信度命中，直接执行或低风险执行。
-3. 本地训练模型低置信度，进入 LLM。
-4. 高风险操作需要确认。
-5. 失败或用户纠正时继续记录样本。
+2. 本地覆盖规则命中，直接执行或按风险策略确认。
+3. 本地训练模型高置信度命中，直接执行或低风险执行。
+4. 本地训练模型低置信度，进入 LLM。
+5. 高风险操作需要确认。
+6. 失败或用户纠正时继续记录样本。
 
-这样可以同时兼顾速度、准确性和安全性。
+### P5：Windows 同步实现 Mac 新能力
+
+明天回到 Windows 时，建议把 Mac 已完成的闭环能力同步过去：
+
+- 意图诊断 UI。
+- 筛选和复核。
+- `corrected_intent` 编辑。
+- 本地覆盖规则。
+- 同步评测。
+- 查看错例。
+- 训练服务器配置入口。
+- 本地-only 同步。
+- 覆盖规则压缩。
 
 ## 关键风险
 
 ### 样本质量
 
-如果没有人工标注，只靠自动采集，很难训练出可靠模型。后续必须有标注流程。
+如果没有人工标注，只靠自动采集，很难训练出可靠模型。后续必须持续做标注和纠错。
+
+### 过拟合到单句覆盖
+
+当前覆盖规则能快速修正重复错判，但它更接近“纠错记忆”，不是泛化模型。后续要靠训练集和评测集解决泛化问题。
 
 ### 企业电脑限制
 
-当前电脑无法运行未授信 EXE，因此后续测试和发布要区分：
+当前电脑无法运行未授信 EXE，因此后续 Windows 测试和发布要区分：
 
 - 源码启动。
 - 本地开发构建。
@@ -205,13 +323,15 @@ python tools/upload_intent_samples.py --dry-run
 
 建议下一阶段按这个顺序做：
 
-1. 完成网页标注后台。
-2. 增加样本导出和训练数据集生成。
-3. 增加训练脚本和离线评估脚本。
-4. 使用真实样本训练第一版本地意图模型。
-5. 客户端接入本地模型。
-6. 建立模型版本和回滚机制。
-7. 再优化托盘和主窗口中的高级配置。
+1. 在 Mac 上继续真实使用，积累高频错误样本。
+2. 用意图诊断页把错误样本补上 `corrected_intent`。
+3. 持续用“同步评测”观察本地覆盖规则是否提升命中率。
+4. 补网页标注后台，提升多人或远端标注效率。
+5. 建立固定评测集和版本化评测报告。
+6. 使用真实样本训练第一版本地意图模型。
+7. 客户端接入本地模型。
+8. 建立模型版本和回滚机制。
+9. 把 Mac 闭环能力同步到 Windows。
 
 ## 当前仓库状态
 
@@ -219,6 +339,22 @@ python tools/upload_intent_samples.py --dry-run
 
 最近关键提交：
 
-- `183f398 Add intent training server`
+- `e3122fc Compact intent overrides during sync`
+- `246bf79 Allow local-only Mac intent sync`
+- `d1dccab Sync local corrected intents`
+- `b9956e1 Add corrected intent stats`
+- `7efeb5c Configure intent training server in Mac UI`
+- `08ac6af Add Mac intent sync actions`
+- `cf43494 Add intent training loop runner`
+- `970a7b4 Expose corrected intent samples API`
+- `e13be5a Add intent correction sync tool`
+- `0b876ce Persist corrected intents on training server`
+- `3facf7e Surface intent evaluation in diagnostics`
+- `16fe09a Add offline intent evaluation tool`
+- `145e868 Show intent diagnostics accuracy summary`
+- `ff2bcc8 Add local corrected intent overrides`
+- `611f760 Filter macOS intent diagnostics samples`
+- `d8a3713 Add macOS intent diagnostics tab`
+- `19a3563 Stabilize macOS local runtime checks`
 
-这个提交完成了训练服务基础框架，为后续“采集真实数据、人工标注、训练模型、接回客户端”打基础。
+这些提交把 AI 意图训练从“只有采集和上传”推进到“Mac 本地可以纠错、同步、评测并立即影响下一次判断”。下一步重点不是再加概念，而是用真实样本把正确率打上去。
