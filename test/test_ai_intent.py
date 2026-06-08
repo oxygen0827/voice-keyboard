@@ -289,6 +289,30 @@ class AIIntentTests(unittest.TestCase):
 
         self.assertEqual(result, {"type": "shortcut", "name": "打开谷歌浏览器"})
 
+    def test_open_app_utterance_tolerates_stt_open_homophone(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"x"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="\u6253\u4e2a\u5fae\u4fe1",
+            shortcuts=("\u6253\u5f00\u5fae\u4fe1",),
+        ))
+
+        self.assertEqual(result, {"type": "shortcut", "name": "\u6253\u5f00\u5fae\u4fe1"})
+        llm.chat.assert_not_called()
+
+    def test_switch_to_app_utterance_matches_catalog(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"chat","reply":"x"}'
+
+        result = classify_intent(llm, IntentContext(
+            text="\u5207\u6362\u5230\u5fae\u4fe1",
+            shortcuts=("\u5207\u6362\u5230\u5fae\u4fe1", "\u6253\u5f00\u5fae\u4fe1"),
+        ))
+
+        self.assertEqual(result, {"type": "shortcut", "name": "\u5207\u6362\u5230\u5fae\u4fe1"})
+        llm.chat.assert_not_called()
+
     def test_open_app_utterance_matches_catalog_case_insensitively(self):
         llm = MagicMock()
         llm.chat.return_value = '{"type":"chat","reply":"x"}'
