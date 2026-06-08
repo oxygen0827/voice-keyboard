@@ -53,6 +53,37 @@ class TrainingServerStoreTests(unittest.TestCase):
             self.assertEqual(corrections[0]["text"], "save")
             self.assertEqual(corrections[0]["corrected_intent"], {"type": "chat", "reply": "我先不执行"})
 
+    def test_store_lists_phrase_groups_and_reviews_matching_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = IntentTrainingStore(Path(td) / "training.db")
+            batch_id = store.create_batch(source="unit-test")
+            store.insert_samples(batch_id, [
+                {"text": "save", "intent_type": "chat", "intent_source": "llm", "status": "ok"},
+                {"text": "save", "intent_type": "shortcut", "intent_source": "local", "status": "ok"},
+                {"text": "delete it", "intent_type": "delete", "intent_source": "local", "status": "ok"},
+                {"text": "", "intent_type": "chat", "intent_source": "llm", "status": "ok"},
+            ])
+
+            phrases = store.list_phrase_groups(limit=10)
+
+            self.assertEqual(phrases[0]["text"], "save")
+            self.assertEqual(phrases[0]["count"], 2)
+            self.assertEqual(phrases[0]["reviewed_count"], 0)
+            self.assertEqual(phrases[0]["corrected_count"], 0)
+            self.assertEqual(phrases[0]["by_intent"], {"chat": 1, "shortcut": 1})
+
+            result = store.review_matching_text(
+                "save",
+                label="wrong_intent",
+                note="same phrase",
+                corrected_intent={"type": "shortcut", "name": "保存"},
+            )
+
+            self.assertEqual(result["updated"], 2)
+            rows = store.list_samples(SampleQuery(review_label="wrong_intent"))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["corrected_intent"], {"type": "shortcut", "name": "保存"})
+
     def test_parse_jsonl_rejects_non_object_rows(self):
         with self.assertRaises(ValueError):
             parse_jsonl('["bad"]\n')

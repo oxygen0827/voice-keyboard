@@ -157,12 +157,40 @@ _REVIEW_PAGE_HTML = """<!doctype html>
     }
     .status.error { color: var(--danger); }
     .status.ok { color: var(--ok); }
+    .phraseFilter {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      background: #ecfdf5;
+      border: 1px solid #99f6e4;
+      border-radius: 8px;
+      color: #134e4a;
+    }
     .tableWrap {
       overflow-x: auto;
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
+    }
+    .phraseWrap {
+      margin-bottom: 12px;
+    }
+    .sectionTitle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 8px;
+    }
+    .sectionTitle h2 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0;
     }
     table {
       width: 100%;
@@ -201,6 +229,13 @@ _REVIEW_PAGE_HTML = """<!doctype html>
       gap: 8px;
       align-items: start;
       min-width: 820px;
+    }
+    .phraseGrid {
+      display: grid;
+      grid-template-columns: 125px 150px 160px 1fr auto auto;
+      gap: 8px;
+      align-items: start;
+      min-width: 780px;
     }
     .noteField { min-width: 180px; }
     .empty {
@@ -277,6 +312,32 @@ _REVIEW_PAGE_HTML = """<!doctype html>
     </section>
 
     <div id="statusMessage" class="status" role="status"></div>
+    <div id="phraseFilterBar" class="phraseFilter">
+      <span id="phraseFilterText"></span>
+      <button id="clearPhraseFilterButton" type="button">清除短语筛选</button>
+    </div>
+
+    <section class="phraseWrap" aria-label="高频短语">
+      <div class="sectionTitle">
+        <h2>高频短语</h2>
+        <button id="reloadPhrasesButton" type="button">刷新短语</button>
+      </div>
+      <div class="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th>文本</th>
+              <th>次数</th>
+              <th>意图分布</th>
+              <th>批量复核</th>
+            </tr>
+          </thead>
+          <tbody id="phraseRows">
+            <tr><td class="empty" colspan="4">等待加载短语</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
 
     <section class="tableWrap" aria-label="样本列表">
       <table>
@@ -300,6 +361,7 @@ _REVIEW_PAGE_HTML = """<!doctype html>
     const tokenInput = document.getElementById('tokenInput');
     const statusMessage = document.getElementById('statusMessage');
     const sampleRows = document.getElementById('sampleRows');
+    const phraseRows = document.getElementById('phraseRows');
 
     tokenInput.value = localStorage.getItem('intentReviewToken') || '';
 
@@ -309,6 +371,8 @@ _REVIEW_PAGE_HTML = """<!doctype html>
     });
     document.getElementById('reloadButton').addEventListener('click', loadAll);
     document.getElementById('applyFiltersButton').addEventListener('click', loadAll);
+    document.getElementById('reloadPhrasesButton').addEventListener('click', loadPhrasesAndRender);
+    document.getElementById('clearPhraseFilterButton').addEventListener('click', clearPhraseFilter);
 
     function authHeaders(extra = {}) {
       const token = tokenInput.value.trim();
@@ -341,8 +405,9 @@ _REVIEW_PAGE_HTML = """<!doctype html>
     async function loadAll() {
       setStatus('加载中...');
       try {
-        const [stats, samples] = await Promise.all([loadStats(), loadSamples()]);
+        const [stats, phrases, samples] = await Promise.all([loadStats(), loadPhrases(), loadSamples()]);
         renderStats(stats);
+        renderPhrases(phrases.items || []);
         renderSamples(samples.items || []);
         setStatus(`已加载 ${(samples.items || []).length} 条样本`, 'ok');
       } catch (error) {
@@ -360,6 +425,8 @@ _REVIEW_PAGE_HTML = """<!doctype html>
       if (intentType) params.set('intent_type', intentType);
       const status = value('statusFilter');
       if (status) params.set('status', status);
+      const phraseText = document.getElementById('phraseTextFilter')?.value || '';
+      if (phraseText) params.set('text', phraseText);
       return params.toString();
     }
 
@@ -369,6 +436,20 @@ _REVIEW_PAGE_HTML = """<!doctype html>
 
     function loadSamples() {
       return requestJson(`/v1/intent-samples?${sampleQuery()}`);
+    }
+
+    function loadPhrases() {
+      return requestJson('/v1/intent-phrases?limit=30');
+    }
+
+    async function loadPhrasesAndRender() {
+      try {
+        const phrases = await loadPhrases();
+        renderPhrases(phrases.items || []);
+        setStatus(`已加载 ${(phrases.items || []).length} 个短语`, 'ok');
+      } catch (error) {
+        setStatus(error.message || String(error), 'error');
+      }
     }
 
     function renderStats(stats) {
@@ -389,6 +470,81 @@ _REVIEW_PAGE_HTML = """<!doctype html>
       for (const sample of items) {
         sampleRows.appendChild(renderSampleRow(sample));
       }
+    }
+
+    function renderPhrases(items) {
+      if (!document.getElementById('phraseTextFilter')) {
+        const hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.id = 'phraseTextFilter';
+        document.body.appendChild(hidden);
+      }
+      if (!items.length) {
+        phraseRows.innerHTML = '<tr><td class="empty" colspan="4">没有重复短语</td></tr>';
+        return;
+      }
+      phraseRows.innerHTML = '';
+      for (const phrase of items) {
+        phraseRows.appendChild(renderPhraseRow(phrase));
+      }
+    }
+
+    function renderPhraseRow(phrase) {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td class="textCell">${escapeHtml(phrase.text || '')}</td>
+        <td>
+          <strong>${escapeHtml(phrase.count || 0)}</strong>
+          <div class="meta">reviewed ${escapeHtml(phrase.reviewed_count || 0)} / corrected ${escapeHtml(phrase.corrected_count || 0)}</div>
+        </td>
+        <td>${escapeHtml(formatCounts(phrase.by_intent || {}))}</td>
+        <td>
+          <div class="phraseGrid">
+            <label>review_label
+              <select data-field="label">
+                ${reviewOptions('wrong_intent')}
+              </select>
+            </label>
+            <label>corrected_intent
+              <select data-field="correctedType">
+                ${intentOptions('shortcut')}
+              </select>
+            </label>
+            <label>name/key
+              <input data-field="correctedName" placeholder="保存 / cmd+s">
+            </label>
+            <label class="noteField">note
+              <textarea data-field="note" placeholder="批量复核备注"></textarea>
+            </label>
+            <button type="button" data-action="viewPhrase">查看样本</button>
+            <button class="primary" type="button" data-action="bulkReviewPhrase">批量保存</button>
+          </div>
+        </td>
+      `;
+      row.querySelector('[data-action="viewPhrase"]').addEventListener('click', () => filterByPhrase(phrase.text || ''));
+      row.querySelector('[data-action="bulkReviewPhrase"]').addEventListener('click', () => bulkReviewPhrase(phrase.text || '', row));
+      return row;
+    }
+
+    function filterByPhrase(text) {
+      document.getElementById('phraseTextFilter').value = text;
+      document.getElementById('reviewFilter').value = '__all__';
+      document.getElementById('offsetFilter').value = '0';
+      renderPhraseFilterState();
+      loadAll();
+    }
+
+    function clearPhraseFilter() {
+      document.getElementById('phraseTextFilter').value = '';
+      renderPhraseFilterState();
+      loadAll();
+    }
+
+    function renderPhraseFilterState() {
+      const text = document.getElementById('phraseTextFilter')?.value || '';
+      const bar = document.getElementById('phraseFilterBar');
+      document.getElementById('phraseFilterText').textContent = text ? `当前只看短语：${text}` : '';
+      bar.style.display = text ? 'flex' : 'none';
     }
 
     function renderSampleRow(sample) {
@@ -473,6 +629,32 @@ _REVIEW_PAGE_HTML = """<!doctype html>
       }
     }
 
+    async function bulkReviewPhrase(text, row) {
+      if (!text) return;
+      const button = row.querySelector('[data-action="bulkReviewPhrase"]');
+      button.disabled = true;
+      try {
+        const payload = {
+          text,
+          label: row.querySelector('[data-field="label"]').value,
+          note: row.querySelector('[data-field="note"]').value,
+        };
+        const corrected = correctedIntentFromRow(row);
+        if (corrected) payload.corrected_intent = corrected;
+        const result = await requestJson('/v1/intent-phrases/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setStatus(`短语已批量保存：${result.updated || 0} 条`, 'ok');
+        await loadAll();
+      } catch (error) {
+        setStatus(error.message || String(error), 'error');
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     function correctedIntentFromRow(row) {
       const type = row.querySelector('[data-field="correctedType"]').value;
       if (!type) return null;
@@ -505,6 +687,12 @@ _REVIEW_PAGE_HTML = """<!doctype html>
 
     function escapeAttr(value) {
       return escapeHtml(value).replaceAll('`', '&#96;');
+    }
+
+    function formatCounts(counts) {
+      return Object.entries(counts)
+        .map(([key, count]) => `${key || 'empty'} ${count}`)
+        .join(' / ');
     }
 
     loadAll();

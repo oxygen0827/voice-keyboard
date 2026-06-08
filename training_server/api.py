@@ -22,6 +22,10 @@ class ReviewRequest(BaseModel):
     corrected_intent: dict | None = Field(default=None)
 
 
+class PhraseReviewRequest(ReviewRequest):
+    text: str
+
+
 def create_app(config: ServerConfig | None = None) -> FastAPI:
     cfg = config or ServerConfig.from_env()
     store = IntentTrainingStore(sqlite_path_from_url(cfg.database_url))
@@ -64,6 +68,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         review_label: str | None = None,
         intent_type: str | None = None,
         status: str | None = None,
+        text: str | None = None,
         _auth: None = Depends(require_token),
     ) -> dict:
         rows = store.list_samples(SampleQuery(
@@ -72,6 +77,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             review_label=review_label,
             intent_type=intent_type,
             status=status,
+            text=text,
         ))
         return {"items": rows}
 
@@ -82,6 +88,14 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         _auth: None = Depends(require_token),
     ) -> dict:
         return {"items": store.list_corrected_samples(limit=limit, offset=offset)}
+
+    @app.get("/v1/intent-phrases")
+    def list_phrases(
+        limit: int = Query(default=30, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _auth: None = Depends(require_token),
+    ) -> dict:
+        return {"items": store.list_phrase_groups(limit=limit, offset=offset)}
 
     @app.post("/v1/intent-samples/{sample_id}/review")
     def review_sample(
@@ -98,6 +112,21 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             )
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/v1/intent-phrases/review")
+    def review_phrase(
+        payload: PhraseReviewRequest,
+        _auth: None = Depends(require_token),
+    ) -> dict:
+        try:
+            return store.review_matching_text(
+                payload.text,
+                label=payload.label,
+                note=payload.note,
+                corrected_intent=payload.corrected_intent,
+            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 

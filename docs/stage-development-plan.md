@@ -82,6 +82,8 @@
 - 统计接口支持 `corrected_total` 和 `by_corrected_type`。
 - 支持 token 鉴权。
 - 支持内置 `/review` 网页标注后台。
+- 支持高频短语聚合。
+- 支持按相同文本批量复核和写入 `corrected_intent`。
 - 新增 `tools/upload_intent_samples.py` 上传工具。
 - 新增 `tools/evaluate_intent_samples.py` 离线评测工具。
 - 新增 `tools/sync_intent_corrections.py` 纠错同步工具。
@@ -178,7 +180,7 @@ uvicorn training_server.api:app --host 0.0.0.0 --port 8000
 http://SERVER:8000/review
 ```
 
-使用 `INTENT_TRAINING_UPLOAD_TOKEN` 作为页面 Token。后台支持查看统计、筛选样本、保存复核标签、备注和 `corrected_intent`。
+使用 `INTENT_TRAINING_UPLOAD_TOKEN` 作为页面 Token。后台支持查看统计、筛选样本、高频短语聚合、按相同文本批量复核、保存复核标签、备注和 `corrected_intent`。
 
 ## 数据训练闭环
 
@@ -230,8 +232,7 @@ http://SERVER:8000/review
 当前已经有内置 `/review` 基础网页标注后台。下一步建议继续增强：
 
 - 更适合批量操作的键盘快捷键。
-- 批量标注同类重复样本。
-- 按高频短语聚合标注。
+- 按语义相似度聚合同类表达，而不仅是相同文本。
 - 展示最近一次同步状态。
 - 展示纠正样本是否已被本地覆盖规则吸收。
 - 增加导出评测集入口。

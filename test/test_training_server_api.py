@@ -72,6 +72,57 @@ class TrainingServerApiTests(unittest.TestCase):
             self.assertEqual(stats.status_code, 200)
             self.assertEqual(stats.json()["total"], 1)
 
+    def test_phrase_group_and_bulk_review_api(self):
+        from training_server.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            app = create_app(ServerConfig(
+                database_url=f"sqlite:///{td}/training.db",
+                upload_token="secret",
+            ))
+            client = TestClient(app)
+            headers = {"Authorization": "Bearer secret", "Content-Type": "application/jsonl"}
+
+            response = client.post(
+                "/v1/intent-samples/batches",
+                params={"source": "unit"},
+                headers=headers,
+                content=(
+                    '{"text":"save","intent_type":"chat","status":"ok"}\n'
+                    '{"text":"save","intent_type":"shortcut","status":"ok"}\n'
+                ),
+            )
+            self.assertEqual(response.status_code, 200)
+
+            groups = client.get(
+                "/v1/intent-phrases",
+                headers={"Authorization": "Bearer secret"},
+            )
+            self.assertEqual(groups.status_code, 200)
+            self.assertEqual(groups.json()["items"][0]["text"], "save")
+            self.assertEqual(groups.json()["items"][0]["count"], 2)
+
+            review = client.post(
+                "/v1/intent-phrases/review",
+                headers={"Authorization": "Bearer secret"},
+                json={
+                    "text": "save",
+                    "label": "wrong_intent",
+                    "note": "same phrase",
+                    "corrected_intent": {"type": "shortcut", "name": "保存"},
+                },
+            )
+            self.assertEqual(review.status_code, 200)
+            self.assertEqual(review.json()["updated"], 2)
+
+            rows = client.get(
+                "/v1/intent-samples",
+                params={"review_label": "wrong_intent", "text": "save"},
+                headers={"Authorization": "Bearer secret"},
+            ).json()["items"]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["corrected_intent"], {"type": "shortcut", "name": "保存"})
+
     def test_upload_requires_token_when_configured(self):
         from training_server.api import create_app
 

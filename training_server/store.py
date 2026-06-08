@@ -33,6 +33,7 @@ class SampleQuery:
     review_label: str | None = None
     intent_type: str | None = None
     status: str | None = None
+    text: str | None = None
 
 
 class IntentTrainingStore:
@@ -106,6 +107,9 @@ class IntentTrainingStore:
         if query.status:
             clauses.append("status = ?")
             params.append(query.status)
+        if query.text:
+            clauses.append("text = ?")
+            params.append(query.text)
         where = " where " + " and ".join(clauses) if clauses else ""
         params.extend([max(1, min(query.limit, 1000)), max(0, query.offset)])
         sql = f"select * from samples{where} order by id desc limit ? offset ?"
@@ -126,6 +130,45 @@ class IntentTrainingStore:
                 (max(1, min(limit, 1000)), max(0, offset)),
             ).fetchall()
             return [_row_to_dict(row) for row in rows]
+
+    def list_phrase_groups(self, *, limit: int = 30, offset: int = 0) -> list[dict]:
+        with self._managed_connection() as conn:
+            rows = conn.execute(
+                """
+                select
+                    text,
+                    count(*) as sample_count,
+                    sum(case when review_label != '' then 1 else 0 end) as reviewed_count,
+                    sum(
+                        case
+                            when corrected_intent_json != '{}'
+                             and corrected_intent_json != ''
+                            then 1
+                            else 0
+                        end
+                    ) as corrected_count,
+                    max(created_at) as last_seen_at
+                from samples
+                where text != ''
+                group by text
+                order by sample_count desc, last_seen_at desc, text asc
+                limit ? offset ?
+                """,
+                (max(1, min(limit, 1000)), max(0, offset)),
+            ).fetchall()
+            groups = []
+            for row in rows:
+                text = str(row["text"])
+                groups.append({
+                    "text": text,
+                    "count": int(row["sample_count"] or 0),
+                    "reviewed_count": int(row["reviewed_count"] or 0),
+                    "corrected_count": int(row["corrected_count"] or 0),
+                    "last_seen_at": float(row["last_seen_at"] or 0),
+                    "by_intent": _count_rows_for_text(conn, "intent_type", text),
+                    "by_review": _count_rows_for_text(conn, "review_label", text),
+                })
+            return groups
 
     def review_sample(
         self,
@@ -156,6 +199,36 @@ class IntentTrainingStore:
                 raise KeyError(f"sample not found: {sample_id}")
             row = conn.execute("select * from samples where id = ?", (sample_id,)).fetchone()
             return _row_to_dict(row)
+
+    def review_matching_text(
+        self,
+        text: str,
+        *,
+        label: str,
+        note: str = "",
+        corrected_intent: dict | None = None,
+    ) -> dict:
+        if label not in REVIEW_LABELS:
+            raise ValueError(f"unsupported review label: {label}")
+        clean_text = str(text or "")
+        if not clean_text:
+            raise ValueError("text is required")
+        with self._managed_connection() as conn:
+            if corrected_intent is None:
+                cursor = conn.execute(
+                    "update samples set review_label = ?, review_note = ? where text = ?",
+                    (label, note, clean_text),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    update samples
+                    set review_label = ?, review_note = ?, corrected_intent_json = ?
+                    where text = ?
+                    """,
+                    (label, note, json.dumps(corrected_intent, ensure_ascii=False), clean_text),
+                )
+            return {"text": clean_text, "updated": int(cursor.rowcount)}
 
     def stats(self) -> dict:
         with self._managed_connection() as conn:
@@ -321,6 +394,19 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 def _count_rows(conn: sqlite3.Connection, column: str) -> dict:
     rows = conn.execute(
         f"select {column}, count(*) from samples group by {column} order by count(*) desc"
+    ).fetchall()
+    return {str(row[0]): int(row[1]) for row in rows}
+
+
+def _count_rows_for_text(conn: sqlite3.Connection, column: str, text: str) -> dict:
+    rows = conn.execute(
+        f"""
+        select {column}, count(*) from samples
+        where text = ?
+        group by {column}
+        order by count(*) desc, {column} asc
+        """,
+        (text,),
     ).fetchall()
     return {str(row[0]): int(row[1]) for row in rows}
 

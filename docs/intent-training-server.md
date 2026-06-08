@@ -14,6 +14,8 @@ batches, stores samples, supports review labels, and exposes statistics.
 - Review label update
 - Built-in `/review` web review console
 - Corrected intent review payloads
+- Frequent phrase grouping
+- Bulk review by exact sample text
 - Basic stats
 - Client upload CLI
 
@@ -87,6 +89,8 @@ The review console supports:
 
 - Viewing total and corrected sample counts.
 - Filtering samples by `review_label`, `intent_type`, and `status`.
+- Finding repeated phrases and drilling into matching samples.
+- Bulk-reviewing all samples with the same exact text.
 - Reviewing recent samples without leaving the page.
 - Saving review labels and notes.
 - Filling `corrected_intent` for shortcut, delete, memory, chat, rewrite, replace, and continue intents.
@@ -110,7 +114,14 @@ Content-Type: application/jsonl
 List samples:
 
 ```text
-GET /v1/intent-samples?limit=100&review_label=&intent_type=shortcut&status=ok
+GET /v1/intent-samples?limit=100&review_label=&intent_type=shortcut&status=ok&text=save
+Authorization: Bearer <token>
+```
+
+List frequent phrases:
+
+```text
+GET /v1/intent-phrases?limit=30
 Authorization: Bearer <token>
 ```
 
@@ -124,6 +135,21 @@ Content-Type: application/json
 {
   "label": "wrong_intent",
   "note": "Should be shortcut 保存",
+  "corrected_intent": {"type": "shortcut", "name": "保存"}
+}
+```
+
+Bulk review all samples with the same exact text:
+
+```text
+POST /v1/intent-phrases/review
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "text": "save",
+  "label": "wrong_intent",
+  "note": "Same phrase should be shortcut 保存",
   "corrected_intent": {"type": "shortcut", "name": "保存"}
 }
 ```

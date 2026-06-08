@@ -10,6 +10,7 @@ class TrainingServerReviewPageTests(unittest.TestCase):
         self.assertIn("<!doctype html>", html.lower())
         self.assertIn("Voice Keyboard Intent Review", html)
         self.assertIn("/v1/intent-samples", html)
+        self.assertIn("/v1/intent-phrases", html)
         self.assertIn("/v1/stats", html)
         self.assertIn("Authorization", html)
         self.assertIn("review_label", html)
@@ -19,6 +20,9 @@ class TrainingServerReviewPageTests(unittest.TestCase):
         self.assertIn("intent_type", html)
         self.assertIn("tokenInput", html)
         self.assertIn("sampleRows", html)
+        self.assertIn("phraseRows", html)
+        self.assertIn("bulkReviewPhrase", html)
+        self.assertIn("clearPhraseFilterButton", html)
 
 
 if __name__ == "__main__":
