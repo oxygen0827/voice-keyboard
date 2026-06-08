@@ -19,6 +19,7 @@ class TrainingServerStoreTests(unittest.TestCase):
                     "intent_source": "local",
                     "intent_confidence": "high",
                     "status": "ok",
+                    "corrected_intent": {"type": "shortcut", "name": "保存"},
                 },
                 {
                     "text": "what is this",
@@ -32,8 +33,15 @@ class TrainingServerStoreTests(unittest.TestCase):
             self.assertEqual(inserted, 2)
             shortcuts = store.list_samples(SampleQuery(intent_type="shortcut"))
             self.assertEqual(len(shortcuts), 1)
-            reviewed = store.review_sample(shortcuts[0]["id"], label="correct", note="ok")
-            self.assertEqual(reviewed["review_label"], "correct")
+            self.assertEqual(shortcuts[0]["corrected_intent"], {"type": "shortcut", "name": "保存"})
+            reviewed = store.review_sample(
+                shortcuts[0]["id"],
+                label="wrong_intent",
+                note="ok",
+                corrected_intent={"type": "chat", "reply": "我先不执行"},
+            )
+            self.assertEqual(reviewed["review_label"], "wrong_intent")
+            self.assertEqual(reviewed["corrected_intent"], {"type": "chat", "reply": "我先不执行"})
             stats = store.stats()
             self.assertEqual(stats["total"], 2)
             self.assertEqual(stats["by_intent"]["shortcut"], 1)

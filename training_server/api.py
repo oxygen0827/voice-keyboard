@@ -17,6 +17,7 @@ class UploadResponse(BaseModel):
 class ReviewRequest(BaseModel):
     label: str = Field(default="")
     note: str = Field(default="")
+    corrected_intent: dict | None = Field(default=None)
 
 
 def create_app(config: ServerConfig | None = None) -> FastAPI:
@@ -75,7 +76,12 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         _auth: None = Depends(require_token),
     ) -> dict:
         try:
-            return store.review_sample(sample_id, label=payload.label, note=payload.note)
+            return store.review_sample(
+                sample_id,
+                label=payload.label,
+                note=payload.note,
+                corrected_intent=payload.corrected_intent,
+            )
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except ValueError as e:

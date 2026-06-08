@@ -26,21 +26,30 @@ class TrainingServerApiTests(unittest.TestCase):
                 "/v1/intent-samples/batches",
                 params={"source": "unit"},
                 headers=headers,
-                content='{"text":"save","intent_type":"shortcut","status":"ok"}\n',
+                content=(
+                    '{"text":"save","intent_type":"shortcut","status":"ok",'
+                    '"corrected_intent":{"type":"shortcut","name":"保存"}}\n'
+                ),
             )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["inserted"], 1)
 
             rows = client.get("/v1/intent-samples", headers={"Authorization": "Bearer secret"}).json()["items"]
             self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["corrected_intent"], {"type": "shortcut", "name": "保存"})
 
             review = client.post(
                 f"/v1/intent-samples/{rows[0]['id']}/review",
                 headers={"Authorization": "Bearer secret"},
-                json={"label": "correct", "note": "ok"},
+                json={
+                    "label": "wrong_intent",
+                    "note": "ok",
+                    "corrected_intent": {"type": "chat", "reply": "我先不执行"},
+                },
             )
             self.assertEqual(review.status_code, 200)
-            self.assertEqual(review.json()["review_label"], "correct")
+            self.assertEqual(review.json()["review_label"], "wrong_intent")
+            self.assertEqual(review.json()["corrected_intent"], {"type": "chat", "reply": "我先不执行"})
 
             stats = client.get("/v1/stats", headers={"Authorization": "Bearer secret"})
             self.assertEqual(stats.status_code, 200)

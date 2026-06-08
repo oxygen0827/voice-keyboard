@@ -61,8 +61,8 @@ class IntentTrainingStore:
                         has_selection, selected_length, has_recent_text, recent_text_length,
                         shortcut_count, intent_type, intent_name, intent_key,
                         intent_source, intent_confidence, intent_cache_hit,
-                        status, detail, review_label, review_note, raw_json
-                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        status, detail, review_label, review_note, corrected_intent_json, raw_json
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch_id,
@@ -86,6 +86,7 @@ class IntentTrainingStore:
                         normalized["detail"],
                         normalized["review_label"],
                         normalized["review_note"],
+                        json.dumps(normalized["corrected_intent"], ensure_ascii=False),
                         json.dumps(sample, ensure_ascii=False),
                     ),
                 )
@@ -111,14 +112,31 @@ class IntentTrainingStore:
         with self._managed_connection() as conn:
             return [_row_to_dict(row) for row in conn.execute(sql, params).fetchall()]
 
-    def review_sample(self, sample_id: int, *, label: str, note: str = "") -> dict:
+    def review_sample(
+        self,
+        sample_id: int,
+        *,
+        label: str,
+        note: str = "",
+        corrected_intent: dict | None = None,
+    ) -> dict:
         if label not in REVIEW_LABELS:
             raise ValueError(f"unsupported review label: {label}")
         with self._managed_connection() as conn:
-            cursor = conn.execute(
-                "update samples set review_label = ?, review_note = ? where id = ?",
-                (label, note, sample_id),
-            )
+            if corrected_intent is None:
+                cursor = conn.execute(
+                    "update samples set review_label = ?, review_note = ? where id = ?",
+                    (label, note, sample_id),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    update samples
+                    set review_label = ?, review_note = ?, corrected_intent_json = ?
+                    where id = ?
+                    """,
+                    (label, note, json.dumps(corrected_intent, ensure_ascii=False), sample_id),
+                )
             if cursor.rowcount == 0:
                 raise KeyError(f"sample not found: {sample_id}")
             row = conn.execute("select * from samples where id = ?", (sample_id,)).fetchone()
@@ -203,11 +221,13 @@ class IntentTrainingStore:
                     detail text not null default '',
                     review_label text not null default '',
                     review_note text not null default '',
+                    corrected_intent_json text not null default '{}',
                     raw_json text not null default '{}',
                     foreign key(batch_id) references batches(id)
                 )
                 """
             )
+            _ensure_column(conn, "samples", "corrected_intent_json", "text not null default '{}'")
             conn.execute("create index if not exists idx_samples_intent on samples(intent_type)")
             conn.execute("create index if not exists idx_samples_review on samples(review_label)")
             conn.execute("create index if not exists idx_samples_hash on samples(text_hash)")
@@ -251,14 +271,18 @@ def _normalize_sample(sample: dict) -> dict:
         "detail": str(sample.get("detail") or ""),
         "review_label": str(sample.get("review_label") or ""),
         "review_note": str(sample.get("review_note") or ""),
+        "corrected_intent": _normalize_corrected_intent(sample.get("corrected_intent")),
     }
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
-    return {
+    out = {
         key: bool(row[key]) if key in {"has_selection", "has_recent_text", "intent_cache_hit"} else row[key]
         for key in row.keys()
+        if key != "corrected_intent_json"
     }
+    out["corrected_intent"] = _parse_json_object(row["corrected_intent_json"])
+    return out
 
 
 def _count_rows(conn: sqlite3.Connection, column: str) -> dict:
@@ -266,3 +290,23 @@ def _count_rows(conn: sqlite3.Connection, column: str) -> dict:
         f"select {column}, count(*) from samples group by {column} order by count(*) desc"
     ).fetchall()
     return {str(row[0]): int(row[1]) for row in rows}
+
+
+def _normalize_corrected_intent(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _parse_json_object(text: str) -> dict:
+    try:
+        parsed = json.loads(text or "{}")
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row[1] for row in conn.execute(f"pragma table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"alter table {table} add column {column} {definition}")
