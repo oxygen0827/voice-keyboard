@@ -189,13 +189,31 @@ Train it from corrected samples:
   --version baseline
 ```
 
+Or train into a versioned registry and activate that version as `current.json`:
+
+```bash
+.venv/bin/python tools/train_intent_model.py \
+  --input ~/.voice-keyboard/intent_samples.jsonl \
+  --output ~/.voice-keyboard/intent_models/current.json \
+  --registry-dir ~/.voice-keyboard/intent_models \
+  --version baseline
+```
+
+List, switch, or roll back model versions:
+
+```bash
+.venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models list
+.venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models activate baseline
+.venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models rollback
+```
+
 Enable it in `config.yaml`:
 
 ```yaml
 instruction_mode:
   intent_fallbacks:
     intent_model: true
-    intent_model_path: ~/.voice-keyboard/intent_model.json
+    intent_model_path: ~/.voice-keyboard/intent_models/current.json
     intent_model_min_similarity: 1.0
 ```
 

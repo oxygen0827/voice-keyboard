@@ -92,6 +92,7 @@
 - 支持客户端在 LLM 之前使用本地意图模型精确命中。
 - 支持可配置的高阈值相似表达命中，默认仍为精确命中。
 - 支持离线评测报告接入本地意图模型和相似阈值，便于比较 `baseline` 与模型版本。
+- 支持本地意图模型版本 registry、版本列表、激活指定版本和回滚上一版本。
 - 新增 `tools/sync_intent_corrections.py` 纠错同步工具。
 - 新增 `tools/run_intent_training_loop.py` 一键训练闭环工具。
 - 新增 `docs/intent-training-server.md` 服务端使用说明。
@@ -154,8 +155,16 @@ Mac 主窗口设置页支持配置：
 ```bash
 .venv/bin/python tools/train_intent_model.py \
   --input ~/.voice-keyboard/intent_samples.jsonl \
-  --output ~/.voice-keyboard/intent_model.json \
+  --output ~/.voice-keyboard/intent_models/current.json \
+  --registry-dir ~/.voice-keyboard/intent_models \
   --version baseline
+```
+
+管理本地模型版本：
+
+```bash
+.venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models list
+.venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models rollback
 ```
 
 只把本地已纠正样本同步成本地覆盖规则：
@@ -281,7 +290,7 @@ http://SERVER:8000/review
 
 ### P3：增强本地意图模型
 
-当前第一版本地意图模型已经可以从 `corrected_intent` 样本生成 JSON 模型，并在 LLM 之前做精确文本命中；也支持通过 `intent_model_min_similarity` 打开保守的高阈值相似表达命中。默认仍是精确命中，避免未评测时误触发。下一步目标是从字符相似增强到真正可评测、可回滚的可控泛化：
+当前第一版本地意图模型已经可以从 `corrected_intent` 样本生成 JSON 模型，并在 LLM 之前做精确文本命中；也支持通过 `intent_model_min_similarity` 打开保守的高阈值相似表达命中。模型可以注册成多个本地版本，并通过 `current.json` 激活或回滚。下一步目标是从字符相似增强到真正可评测、可回滚的可控泛化：
 
 - 输入：用户语音识别后的文本、当前应用、是否有选中文本、历史上下文摘要。
 - 输出：意图类型、目标对象、动作参数、置信度。

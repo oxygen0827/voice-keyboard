@@ -27,10 +27,20 @@ def main() -> None:
         help="output model JSON file",
     )
     parser.add_argument("--version", default="", help="model version label")
+    parser.add_argument(
+        "--registry-dir",
+        default="",
+        help="optional model registry dir; saves versions/<version>.json and activates current.json",
+    )
     parser.add_argument("--json", action="store_true", help="print JSON summary")
     args = parser.parse_args()
 
-    summary = train_intent_model(args.input, args.output, version=args.version)
+    summary = train_intent_model(
+        args.input,
+        args.output,
+        version=args.version,
+        registry_dir=args.registry_dir or None,
+    )
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
     else:

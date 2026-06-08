@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +36,13 @@ class IntentModel:
         return dict(best_intent) if best_intent and best_score >= min_similarity else None
 
 
-def train_intent_model(source: Path | str, output: Path | str, *, version: str = "") -> dict:
+def train_intent_model(
+    source: Path | str,
+    output: Path | str,
+    *,
+    version: str = "",
+    registry_dir: Path | str | None = None,
+) -> dict:
     rows = _load_jsonl(Path(source).expanduser())
     examples: dict[str, dict] = {}
     source_total = 0
@@ -53,22 +60,35 @@ def train_intent_model(source: Path | str, output: Path | str, *, version: str =
         except Exception:
             skipped += 1
 
+    model_version = _safe_model_version(version or time.strftime("%Y%m%d-%H%M%S"))
     payload = {
-        "version": version or time.strftime("%Y%m%d-%H%M%S"),
+        "version": model_version,
         "created_at": time.time(),
         "examples": examples,
     }
     out_path = Path(output).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return {
+    summary = {
         "source": str(Path(source).expanduser()),
         "output": str(out_path),
         "source_total": source_total,
         "examples": len(examples),
         "skipped": skipped,
         "version": payload["version"],
+        "registered": False,
+        "current": "",
     }
+    if registry_dir is not None:
+        registry = Path(registry_dir).expanduser()
+        version_path = _model_version_path(registry, model_version)
+        version_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(out_path, version_path)
+        activate_summary = activate_intent_model_version(registry, model_version)
+        summary["registered"] = True
+        summary["current"] = activate_summary["current"]
+        summary["version_path"] = str(version_path)
+    return summary
 
 
 def load_intent_model(path: Path | str) -> IntentModel | None:
@@ -93,6 +113,51 @@ def load_intent_model(path: Path | str) -> IntentModel | None:
     return IntentModel(examples=examples, version=str(payload.get("version") or ""))
 
 
+def list_intent_model_versions(registry_dir: Path | str) -> list[dict]:
+    registry = Path(registry_dir).expanduser()
+    current_version = _current_model_version(registry)
+    versions = []
+    for path in sorted((registry / "versions").glob("*.json")):
+        model = load_intent_model(path)
+        if model is None:
+            continue
+        versions.append({
+            "version": model.version or path.stem,
+            "path": str(path),
+            "current": (model.version or path.stem) == current_version,
+            "examples": len(model.examples),
+        })
+    return versions
+
+
+def activate_intent_model_version(registry_dir: Path | str, version: str) -> dict:
+    registry = Path(registry_dir).expanduser()
+    model_version = _safe_model_version(version)
+    version_path = _model_version_path(registry, model_version)
+    if not version_path.exists():
+        raise FileNotFoundError(str(version_path))
+    current_path = registry / "current.json"
+    previous = _current_model_version(registry)
+    current_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(version_path, current_path)
+    _append_model_history(registry, previous=previous, version=model_version)
+    return {
+        "version": model_version,
+        "previous_version": previous,
+        "current": str(current_path),
+        "path": str(version_path),
+    }
+
+
+def rollback_intent_model(registry_dir: Path | str) -> dict:
+    registry = Path(registry_dir).expanduser()
+    current = _current_model_version(registry)
+    for version in reversed(_model_history_versions(registry)):
+        if version and version != current and _model_version_path(registry, version).exists():
+            return activate_intent_model_version(registry, version)
+    raise ValueError("no previous intent model version")
+
+
 def _load_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -107,6 +172,37 @@ def _load_jsonl(path: Path) -> list[dict]:
         if isinstance(row, dict):
             rows.append(row)
     return rows
+
+
+def _current_model_version(registry: Path) -> str:
+    model = load_intent_model(registry / "current.json")
+    return model.version if model is not None else ""
+
+
+def _append_model_history(registry: Path, *, previous: str, version: str) -> None:
+    history = registry / "history.jsonl"
+    history.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "ts": time.time(),
+        "previous_version": previous,
+        "version": version,
+    }
+    with history.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _model_history_versions(registry: Path) -> list[str]:
+    rows = _load_jsonl(registry / "history.jsonl")
+    return [str(row.get("version") or "") for row in rows]
+
+
+def _model_version_path(registry: Path, version: str) -> Path:
+    return registry / "versions" / f"{_safe_model_version(version)}.json"
+
+
+def _safe_model_version(value: str) -> str:
+    clean = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in str(value))
+    return clean.strip(".-") or time.strftime("%Y%m%d-%H%M%S")
 
 
 def _text_similarity(left: str, right: str) -> float:
