@@ -147,6 +147,18 @@ class SpeechInterpretationProviderFactoryTests(unittest.TestCase):
         self.assertIsInstance(providers.text_operation_editor, FakeLLM)
         self.assertIsNot(providers.utterance_stt, providers.dictation_stt)
 
+    def test_provider_set_enables_direct_zhipuai_instruction_mode(self):
+        providers = self.factory.create_provider_set({
+            "stt": {"provider": "xunfei", "api_key": "sk-dictation"},
+            "llm": {"provider": "zhipuai", "api_key": "sk-llm"},
+            "ai_stt": {"provider": "glm_asr_2512", "api_key": "sk-ai"},
+        })
+
+        self.assertIsNotNone(providers)
+        self.assertIsInstance(providers.instruction_stt, FakeSTT)
+        self.assertIsInstance(providers.text_operation_editor, FakeLLM)
+        self.assertEqual(providers.text_operation_editor.cfg["provider"], "zhipuai")
+
 
 if __name__ == "__main__":
     unittest.main()
