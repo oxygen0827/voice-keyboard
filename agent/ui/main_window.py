@@ -5,6 +5,7 @@ Voice Keyboard 主窗口：单 NSWindow + NSTabView：
 """
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -37,10 +38,12 @@ from agent import typer as _typer
 from agent import permissions as _perm
 from agent.history import History
 from agent.intent_diagnostics import (
+    format_evaluation_mismatches,
     load_diagnostics_rows,
     save_diagnostics_review,
     summarize_diagnostics,
 )
+from agent.intent_loop import run_training_loop
 from agent.intent_training import _DEFAULT_PATH as _INTENT_SAMPLES_PATH
 
 _USER_DIR = Path.home() / ".voice-keyboard"
@@ -642,7 +645,9 @@ class _IntentDiagnosticsTab(NSObject):
         v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 600, 480))
         v.addSubview_(_button("刷新", NSMakeRect(20, 440, 80, 26), self, b"reload:"))
         v.addSubview_(_button("打开样本文件", NSMakeRect(110, 440, 120, 26), self, b"openSamples:"))
-        v.addSubview_(_label(str(_INTENT_SAMPLES_PATH), NSMakeRect(240, 444, 340, 20)))
+        v.addSubview_(_button("同步评测", NSMakeRect(240, 440, 90, 26), self, b"syncAndEvaluate:"))
+        v.addSubview_(_button("查看错例", NSMakeRect(340, 440, 90, 26), self, b"showMismatches:"))
+        v.addSubview_(_label(str(_INTENT_SAMPLES_PATH), NSMakeRect(440, 444, 140, 20)))
         summary_label = _label("", NSMakeRect(20, 418, 560, 20))
         v.addSubview_(summary_label)
         self._summary_label = summary_label
@@ -785,6 +790,43 @@ class _IntentDiagnosticsTab(NSObject):
         else:
             self._alert("样本文件未创建", str(p))
 
+    def syncAndEvaluate_(self, sender):
+        server = os.getenv("INTENT_TRAINING_SERVER", "").strip()
+        token = os.getenv("INTENT_TRAINING_UPLOAD_TOKEN", "").strip()
+        if not server:
+            self._alert("缺少训练服务地址", "请设置 INTENT_TRAINING_SERVER 后再同步。")
+            return
+        self._summary_label.setStringValue_("正在同步远端修正并评测...")
+
+        def worker():
+            try:
+                import requests
+                report = run_training_loop(
+                    sample_path=_INTENT_SAMPLES_PATH,
+                    server=server,
+                    token=token,
+                    override_path=Path.home() / ".voice-keyboard" / "intent_overrides.jsonl",
+                    source="mac-ui",
+                    http=requests,
+                )
+                msg = (
+                    f"同步完成 inserted={report['upload'].get('inserted', 0)} "
+                    f"synced={report['sync']['synced']} "
+                    f"accuracy={report['evaluation']['accuracy_label']}"
+                )
+                AppHelper.callAfter(self._sync_finished, msg)
+            except Exception as e:
+                AppHelper.callAfter(self._alert, "同步评测失败", str(e))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def showMismatches_(self, sender):
+        try:
+            summary = summarize_diagnostics(_INTENT_SAMPLES_PATH)
+            self._detail.setString_(format_evaluation_mismatches(summary.get("evaluation", {})))
+        except Exception as e:
+            self._alert("读取错例失败", str(e))
+
     def saveReview_(self, sender):
         row = self._selected_row()
         if row is None:
@@ -818,6 +860,11 @@ class _IntentDiagnosticsTab(NSObject):
         pb = NSPasteboard.generalPasteboard()
         pb.clearContents()
         pb.setString_forType_(str(row.get("text", "")), NSPasteboardTypeString)
+
+    @objc.python_method
+    def _sync_finished(self, msg: str):
+        self.reload_(None)
+        self._alert("同步评测完成", msg)
 
     @objc.python_method
     def _selected_row(self):

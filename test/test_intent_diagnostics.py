@@ -148,6 +148,25 @@ class IntentDiagnosticsTests(unittest.TestCase):
             self.assertEqual(summary["evaluation"]["correct"], 1)
             self.assertEqual(summary["evaluation"]["accuracy_label"], "100.0%")
 
+    def test_format_evaluation_mismatches_shows_expected_and_actual(self):
+        from agent.intent_diagnostics import format_evaluation_mismatches
+
+        text = format_evaluation_mismatches(
+            {
+                "mismatches": [
+                    {
+                        "text": "删一下",
+                        "expected": {"type": "delete"},
+                        "actual": {"type": "chat", "reply": "未命中本地规则"},
+                    }
+                ]
+            }
+        )
+
+        self.assertIn("删一下", text)
+        self.assertIn('"type": "delete"', text)
+        self.assertIn('"type": "chat"', text)
+
 
 if __name__ == "__main__":
     unittest.main()

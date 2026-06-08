@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Mapping
 
@@ -122,3 +123,16 @@ def summarize_diagnostics(
         summary["accuracy_label"] = f"已标注正确率 {accuracy:.1f}%"
     summary["evaluation"] = evaluate_reviewed_samples(source, override_path=override_path)
     return summary
+
+
+def format_evaluation_mismatches(report: Mapping, *, limit: int = 20) -> str:
+    mismatches = list(report.get("mismatches") or [])
+    if not mismatches:
+        return "暂无回放错例"
+    lines = []
+    for index, item in enumerate(mismatches[:limit], start=1):
+        lines.append(f"{index}. {item.get('text', '')}")
+        lines.append("expected: " + json.dumps(item.get("expected") or {}, ensure_ascii=False))
+        lines.append("actual: " + json.dumps(item.get("actual") or {}, ensure_ascii=False))
+        lines.append("")
+    return "\n".join(lines).strip()
