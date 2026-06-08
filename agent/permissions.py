@@ -14,6 +14,8 @@ def activate_app_for_permission_prompt() -> None:
     """让 macOS 以应用身份处理后续 TCC 弹窗。"""
     if not _DARWIN:
         return
+    if not getattr(sys, "frozen", False):
+        return
     try:
         from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
         app = NSApplication.sharedApplication()
@@ -127,8 +129,8 @@ def request_input_monitoring() -> str:
     if fn is None:
         return input_monitoring()
     try:
-        access = fn(1)  # kIOHIDRequestTypeListenEvent
-        return {0: "granted", 1: "denied", 2: "not_determined"}.get(access, input_monitoring())
+        fn(1)  # kIOHIDRequestTypeListenEvent
+        return input_monitoring()
     except Exception:
         return input_monitoring()
 
@@ -169,7 +171,7 @@ def request_microphone_by_capture() -> None:
         return
     try:
         import sounddevice as sd
-        with sd.InputStream(channels=1, samplerate=16000, blocksize=1024):
+        with sd.RawInputStream(channels=1, samplerate=16000, dtype="int16", blocksize=1024):
             sd.sleep(250)
     except Exception as e:
         print(f"[perm] 触发麦克风输入失败: {e}")

@@ -84,7 +84,7 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 
 find_engine_pids() {
-  pgrep -f 'python.*(-m[[:space:]]+agent\.main|agent/main\.py)' 2>/dev/null || true
+  pgrep -f '[Pp]ython.*(-m[[:space:]]+agent\.main|agent/main\.py)' 2>/dev/null || true
 }
 
 kill_existing() {
@@ -122,7 +122,7 @@ if [[ "$LIST_DEVICES" == "1" ]]; then
   exec "$PYTHON_BIN" -m agent.main --list-devices
 fi
 
-CMD=("$PYTHON_BIN" -m agent.main --no-serial)
+CMD=("$PYTHON_BIN" -u -m agent.main --no-serial)
 if [[ "$HEADLESS" == "1" ]]; then
   CMD+=(--headless)
 else
