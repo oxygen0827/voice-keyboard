@@ -172,6 +172,14 @@ instruction_mode:
     # 便利类兜底：仅在“我的 X 是什么 / 插入 X”等查询或插入句式下模糊匹配备忘。
     memo_fuzzy_recall: true
 
+  # Intent training sample collection. Default is off and local-only.
+  # It stores sanitized instruction metadata for later rule tuning or model training.
+  intent_training:
+    enabled: false
+    path: ~/.voice-keyboard/intent_samples.jsonl
+    capture_text: true
+    max_text_length: 240
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 打字与自定义快捷键
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

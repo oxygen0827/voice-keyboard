@@ -1,0 +1,135 @@
+# Intent Training Data Loop
+
+This project does not train a model on the desktop client. The client only
+collects local, sanitized intent samples so later rule tuning or model training
+can happen on a separate server.
+
+## Data Flow
+
+1. User speaks an AI instruction.
+2. The client records sanitized metadata after execution.
+3. Samples are stored locally in JSONL.
+4. The user exports JSONL or CSV manually.
+5. A server can ingest the exported file for analysis, rule mining, or training.
+
+No audio is recorded. Selected text and recent text contents are not stored;
+only booleans and lengths are stored.
+
+## Enable Collection
+
+Add this to `~/.voice-keyboard/config.yaml`:
+
+```yaml
+instruction_mode:
+  intent_training:
+    enabled: true
+    path: ~/.voice-keyboard/intent_samples.jsonl
+    capture_text: true
+    max_text_length: 240
+```
+
+`capture_text: true` stores the recognized instruction text after basic
+redaction. Set it to `false` if you only want hashed text and metadata.
+
+## Sample Schema
+
+Each line is one JSON object:
+
+```json
+{
+  "ts": 1760000000.0,
+  "text": "帮我保存一下",
+  "text_hash": "b6a9...",
+  "active_application": "Codex (com.openai.codex)",
+  "has_selection": false,
+  "selected_length": 0,
+  "has_recent_text": true,
+  "recent_text_length": 18,
+  "shortcut_count": 6,
+  "intent_type": "shortcut",
+  "intent_name": "保存",
+  "intent_key": "",
+  "intent_source": "local",
+  "intent_confidence": "high",
+  "intent_cache_hit": false,
+  "status": "ok",
+  "detail": "shortcut:保存;intent_source=local;intent_confidence=high"
+}
+```
+
+Redaction replaces emails, phone-like numbers, URLs, obvious secrets, and long
+hex strings with placeholders.
+
+## Export
+
+```powershell
+python tools/export_intent_samples.py --format jsonl
+python tools/export_intent_samples.py --format csv --output intent_samples.csv
+```
+
+## Server Environment
+
+A simple first server can be:
+
+- Python 3.11+
+- FastAPI or Flask for upload APIs
+- PostgreSQL for samples
+- Object storage for raw exported batches
+- A private network or VPN endpoint
+- No public anonymous upload
+
+Suggested ingestion API:
+
+```text
+POST /v1/intent-samples/batches
+Content-Type: application/jsonl
+Authorization: Bearer <upload-token>
+```
+
+Minimum database fields:
+
+- `id`
+- `created_at`
+- `source_machine_hash`
+- `text_hash`
+- `text`
+- `active_application`
+- `intent_type`
+- `intent_name`
+- `intent_source`
+- `intent_confidence`
+- `status`
+- `detail`
+- `review_label`
+- `review_note`
+
+## Training Strategy
+
+Start without model training:
+
+1. Aggregate frequent phrases by `intent_type`, `intent_name`, and `status`.
+2. Find high-frequency LLM-only phrases and add local aliases.
+3. Find shortcut failures and missing catalog names.
+4. Find low-confidence or conflicting patterns for confirmation flows.
+
+Only after several hundred reviewed samples should we consider model training.
+The first training target should be a lightweight intent classifier, not a full
+assistant:
+
+- Input: sanitized instruction text, active app, shortcut names, selection flags.
+- Output: intent type, optional shortcut/memo target, confidence.
+- Baseline: local rules plus LLM labels.
+- Better labels: manually reviewed corrections.
+
+## Review Loop
+
+The useful labels are:
+
+- `correct`
+- `wrong_intent`
+- `wrong_target`
+- `unsafe_should_confirm`
+- `missing_shortcut`
+- `unclear`
+
+These labels can later drive rule changes or supervised fine-tuning.

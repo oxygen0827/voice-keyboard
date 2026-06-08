@@ -21,6 +21,7 @@ from agent.ai_intent import (
 )
 from agent.input_environment import TyperInputEnvironment
 from agent.instruction_executor import InstructionModeExecutor
+from agent.intent_training import IntentTrainingRecorder
 from agent.memo import Memo, parse_memo_edit_command
 from agent.voice_text_operation import operation_from_intent
 
@@ -31,7 +32,8 @@ _PROGRESS_SECONDS = 2.2
 
 class AIHandler:
     def __init__(self, stt_client, llm_editor, buf, memo_store=None,
-                 status_window=None, history=None, input_environment=None, intent_fallbacks=None):
+                 status_window=None, history=None, input_environment=None,
+                 intent_fallbacks=None, intent_training=None):
         self._stt             = stt_client
         self._llm             = llm_editor
         self._env             = input_environment or TyperInputEnvironment(buf)
@@ -39,6 +41,7 @@ class AIHandler:
         self._status          = status_window
         self._history         = history
         self._intent_fallbacks = intent_fallbacks or IntentFallbackOptions()
+        self._intent_training = intent_training or IntentTrainingRecorder()
         self._io_lock         = threading.Lock()   # 串行化所有输入框 IO（删+打）
         self._executor = InstructionModeExecutor(
             self._llm,
@@ -118,7 +121,7 @@ class AIHandler:
             shortcut_entries = shortcut_intent_entries(
                 self._env.shortcut_catalog() if hasattr(self._env, "shortcut_catalog") else ()
             )
-            classification = self._classify_intent_with_timeout(IntentContext(
+            classification_context = IntentContext(
                 text=text,
                 selected=selected,
                 recent_text=context,
@@ -128,7 +131,8 @@ class AIHandler:
                 memo_records=memo_records(
                     self._memo_store,
                 ),
-            ))
+            )
+            classification = self._classify_intent_with_timeout(classification_context)
             result = classification.result
         except TimeoutError as e:
             print(f"[ai] 意图分类超时: {e}")
@@ -157,6 +161,16 @@ class AIHandler:
         keep_status = self._executor.execute(operation, text, selected, target)
         status, detail = getattr(self._executor, "last_status", ("ok", operation.kind))
         intent_detail = _intent_detail(detail, intent_source, intent_confidence, cache_hit)
+        self._intent_training.record(
+            text=text,
+            active_application=classification_context.active_application,
+            selected=selected,
+            recent_text=context,
+            shortcuts=classification_context.shortcuts,
+            intent_result=result,
+            status=status,
+            detail=intent_detail,
+        )
         self._record("ai", text, status, intent_detail)
         return keep_status
 

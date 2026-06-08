@@ -101,6 +101,7 @@ def build_audio_runtime(
         try:
             from agent.ai_handler import AIHandler
             from agent.ai_intent import IntentFallbackOptions
+            from agent.intent_training import IntentTrainingConfig, IntentTrainingRecorder
             from agent.memo_store import MemoStore
             memo_store = MemoStore()
             instruction_cfg = cfg.get("instruction_mode", {})
@@ -114,6 +115,9 @@ def build_audio_runtime(
                 input_environment=input_environment,
                 intent_fallbacks=IntentFallbackOptions.from_config(
                     instruction_cfg.get("intent_fallbacks", {})
+                ),
+                intent_training=IntentTrainingRecorder(
+                    IntentTrainingConfig.from_config(instruction_cfg)
                 ),
             )
             ai_key_name = audio_cfg.get("ai_key", default_ai_key())
