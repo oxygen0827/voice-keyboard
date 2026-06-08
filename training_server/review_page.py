@@ -373,6 +373,7 @@ _REVIEW_PAGE_HTML = """<!doctype html>
     document.getElementById('applyFiltersButton').addEventListener('click', loadAll);
     document.getElementById('reloadPhrasesButton').addEventListener('click', loadPhrasesAndRender);
     document.getElementById('clearPhraseFilterButton').addEventListener('click', clearPhraseFilter);
+    document.addEventListener('keydown', handleKeyboardShortcuts);
 
     function authHeaders(extra = {}) {
       const token = tokenInput.value.trim();
@@ -384,6 +385,29 @@ _REVIEW_PAGE_HTML = """<!doctype html>
     function setStatus(message, kind = '') {
       statusMessage.textContent = message;
       statusMessage.className = `status ${kind}`;
+    }
+
+    function handleKeyboardShortcuts(event) {
+      if (isTypingTarget(event.target)) return;
+      if (event.key === 'r' || event.key === 'R') {
+        event.preventDefault();
+        loadAll();
+        return;
+      }
+      if (event.key === '/') {
+        event.preventDefault();
+        document.getElementById('intentTypeFilter').focus();
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        clearPhraseFilter();
+      }
+    }
+
+    function isTypingTarget(target) {
+      const tag = String(target?.tagName || '').toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || Boolean(target?.isContentEditable);
     }
 
     function value(id) {

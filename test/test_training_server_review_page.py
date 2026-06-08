@@ -23,6 +23,8 @@ class TrainingServerReviewPageTests(unittest.TestCase):
         self.assertIn("phraseRows", html)
         self.assertIn("bulkReviewPhrase", html)
         self.assertIn("clearPhraseFilterButton", html)
+        self.assertIn("handleKeyboardShortcuts", html)
+        self.assertIn("isTypingTarget", html)
 
 
 if __name__ == "__main__":
