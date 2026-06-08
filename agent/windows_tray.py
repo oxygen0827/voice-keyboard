@@ -20,6 +20,7 @@ from agent.autostart import uninstall as uninstall_autostart
 from agent.config import ensure_user_config
 from agent.history import History
 from agent.main import list_devices
+from agent.memo_store import MemoStore
 from agent.runtime_composition import RuntimeOptions, build_runtime_backend
 from agent.status_window_win import StatusWindow
 from agent.text_buffer import TextBuffer
@@ -81,6 +82,8 @@ class WindowsTrayApp:
                 pystray.MenuItem(labels["dictation_hotkey"], self._hotkey_menu("ptt_key")),
                 pystray.MenuItem(labels["ai_hotkey"], self._hotkey_menu("ai_key")),
             )),
+            pystray.MenuItem(labels["history"], pystray.Menu(lambda: self._history_menu_items())),
+            pystray.MenuItem(labels["memo"], pystray.Menu(lambda: self._memo_menu_items())),
             pystray.MenuItem(labels["reload"], self._reload_backend),
             pystray.MenuItem(labels["install_autostart"], self._install_autostart),
             pystray.MenuItem(labels["uninstall_autostart"], self._uninstall_autostart),
@@ -102,6 +105,14 @@ class WindowsTrayApp:
                 "hotkeys": "Hotkeys",
                 "dictation_hotkey": "Dictation Hotkey",
                 "ai_hotkey": "AI Hotkey",
+                "history": "History",
+                "memo": "Memo Library",
+                "empty_history": "No history yet",
+                "empty_memo": "No memos yet",
+                "open_history_file": "Open History File",
+                "open_memo_file": "Open Memo File",
+                "type_history": "History inserted",
+                "type_memo": "Memo inserted",
                 "reload": "Reload Config",
                 "install_autostart": "Enable Start on Login",
                 "uninstall_autostart": "Disable Start on Login",
@@ -119,6 +130,14 @@ class WindowsTrayApp:
             "hotkeys": "\u5feb\u6377\u952e",
             "dictation_hotkey": "\u8bed\u97f3\u8f6c\u6587\u5b57\u5feb\u6377\u952e",
             "ai_hotkey": "AI \u529f\u80fd\u5feb\u6377\u952e",
+            "history": "\u5386\u53f2\u8bb0\u5f55",
+            "memo": "\u8bb0\u5fc6\u5e93",
+            "empty_history": "\u6682\u65e0\u5386\u53f2\u8bb0\u5f55",
+            "empty_memo": "\u6682\u65e0\u8bb0\u5fc6",
+            "open_history_file": "\u6253\u5f00\u5386\u53f2\u6587\u4ef6",
+            "open_memo_file": "\u6253\u5f00\u8bb0\u5fc6\u5e93\u6587\u4ef6",
+            "type_history": "\u5df2\u63d2\u5165\u5386\u53f2\u8bb0\u5f55",
+            "type_memo": "\u5df2\u63d2\u5165\u8bb0\u5fc6",
             "reload": "\u91cd\u8f7d\u914d\u7f6e",
             "install_autostart": "\u6ce8\u518c\u5f00\u673a\u81ea\u542f",
             "uninstall_autostart": "\u53d6\u6d88\u5f00\u673a\u81ea\u542f",
@@ -136,6 +155,8 @@ class WindowsTrayApp:
             "config_reloaded": ("Config reloaded", "\u914d\u7f6e\u5df2\u91cd\u8f7d"),
             "autostart_enabled": ("Start on login enabled", "\u5df2\u5f00\u542f\u5f00\u673a\u81ea\u542f"),
             "autostart_disabled": ("Start on login disabled", "\u5df2\u53d6\u6d88\u5f00\u673a\u81ea\u542f"),
+            "inserted": ("{kind}: {preview}", "{kind}\uff1a{preview}"),
+            "insert_failed": ("Insert failed: {reason}", "\u63d2\u5165\u5931\u8d25\uff1a{reason}"),
         }
         template = messages[key][0 if en else 1]
         return template.format(**values)
@@ -176,6 +197,83 @@ class WindowsTrayApp:
         def action(_icon=None, _item=None):
             self._set_hotkey(key_name, value)
         return action
+
+    def _history_menu_items(self):
+        labels = self._labels()
+        rows = [
+            row for row in reversed(self._history.load(limit=30))
+            if str(row.get("text") or "").strip()
+        ][:8]
+        items = []
+        if rows:
+            for row in rows:
+                text = str(row.get("text") or "")
+                mode = str(row.get("mode") or "")
+                items.append(pystray.MenuItem(
+                    self._menu_preview(text, prefix=mode),
+                    self._insert_text_action(text, labels["type_history"]),
+                ))
+        else:
+            items.append(pystray.MenuItem(labels["empty_history"], lambda: None, enabled=False))
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem(labels["open_history_file"], self._open_history_file))
+        return tuple(items)
+
+    def _memo_menu_items(self):
+        labels = self._labels()
+        store = MemoStore()
+        keys = sorted(k for k in store.keys() if str(k).strip())[:12]
+        items = []
+        if keys:
+            for key in keys:
+                value = store.get(key) or ""
+                items.append(pystray.MenuItem(
+                    self._menu_preview(key),
+                    self._insert_text_action(value, labels["type_memo"]),
+                    enabled=bool(value),
+                ))
+        else:
+            items.append(pystray.MenuItem(labels["empty_memo"], lambda: None, enabled=False))
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem(labels["open_memo_file"], self._open_memo_file))
+        return tuple(items)
+
+    def _insert_text_action(self, text: str, kind: str):
+        def action(_icon=None, _item=None):
+            self._insert_text_after_menu_closes(text, kind)
+        return action
+
+    def _insert_text_after_menu_closes(self, text: str, kind: str) -> None:
+        def _run():
+            time.sleep(0.35)
+            try:
+                with self._lock:
+                    env = self._backend.input_environment if self._backend is not None else None
+                if env is not None:
+                    result = env.insert_output_text(text)
+                    if not result.ok:
+                        raise RuntimeError(result.failure or "insert_failed")
+                else:
+                    from agent import typer
+                    typer.type_text(text)
+                    self._buf.add(text)
+                self._notify("inserted", kind=kind, preview=self._message_preview(text))
+            except Exception as e:
+                print(f"[tray] insert failed: {e}")
+                self._notify("insert_failed", reason=str(e))
+        threading.Thread(target=_run, daemon=True, name="TrayInsertText").start()
+
+    @staticmethod
+    def _menu_preview(text: str, prefix: str = "") -> str:
+        clean = " ".join(str(text or "").split())
+        if len(clean) > 36:
+            clean = clean[:36] + "..."
+        return f"{prefix}: {clean}" if prefix else clean
+
+    @staticmethod
+    def _message_preview(text: str) -> str:
+        clean = " ".join(str(text or "").split())
+        return clean[:28] + ("..." if len(clean) > 28 else "")
 
     def _hotkey_value(self, key_name: str) -> str:
         cfg = self._read_config()
@@ -274,6 +372,18 @@ class WindowsTrayApp:
         _USER_DIR.mkdir(parents=True, exist_ok=True)
         os.startfile(str(_USER_DIR))
         self._notify("config_dir_opened")
+
+    def _open_history_file(self, _icon=None, _item=None):
+        self._history.path.parent.mkdir(parents=True, exist_ok=True)
+        self._history.path.touch(exist_ok=True)
+        os.startfile(str(self._history.path))
+
+    def _open_memo_file(self, _icon=None, _item=None):
+        path = _USER_DIR / "memo.json"
+        _USER_DIR.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("{}", encoding="utf-8")
+        os.startfile(str(path))
 
     def _show_devices(self, _icon=None, _item=None):
         subprocess.Popen(
