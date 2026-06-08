@@ -190,7 +190,7 @@ class WindowsTrayApp:
         audio = cfg.setdefault("audio", {})
         audio[key_name] = value
         self._write_config(cfg)
-        self._reload_backend(notify=False)
+        self._reload_backend_now(notify=False)
         self._notify("hotkey_set", name=self._hotkey_display_name(key_name), value=self._hotkey_display_value(value))
         if self._icon is not None:
             self._icon.menu = self._menu()
@@ -205,7 +205,10 @@ class WindowsTrayApp:
                 self._history,
             )
 
-    def _reload_backend(self, _icon=None, _item=None, notify: bool = True):
+    def _reload_backend(self, _icon=None, _item=None):
+        self._reload_backend_now(notify=True)
+
+    def _reload_backend_now(self, notify: bool = True):
         with self._lock:
             if self._backend is not None:
                 self._backend.stop()
