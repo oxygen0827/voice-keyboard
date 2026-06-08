@@ -46,6 +46,8 @@ class TrainingServerStoreTests(unittest.TestCase):
             self.assertEqual(stats["total"], 2)
             self.assertEqual(stats["by_intent"]["shortcut"], 1)
             self.assertEqual(stats["by_source"]["llm"], 1)
+            self.assertEqual(stats["corrected_total"], 1)
+            self.assertEqual(stats["by_corrected_type"], {"chat": 1})
             corrections = store.list_corrected_samples()
             self.assertEqual(len(corrections), 1)
             self.assertEqual(corrections[0]["text"], "save")

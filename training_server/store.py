@@ -164,6 +164,22 @@ class IntentTrainingStore:
             by_source = _count_rows(conn, "intent_source")
             by_status = _count_rows(conn, "status")
             by_review = _count_rows(conn, "review_label")
+            corrected_rows = conn.execute(
+                """
+                select corrected_intent_json from samples
+                where corrected_intent_json != '{}'
+                  and corrected_intent_json != ''
+                """
+            ).fetchall()
+            by_corrected_type: dict[str, int] = {}
+            corrected_total = 0
+            for row in corrected_rows:
+                corrected = _parse_json_object(row[0])
+                corrected_type = str(corrected.get("type") or "")
+                if not corrected_type:
+                    continue
+                corrected_total += 1
+                by_corrected_type[corrected_type] = by_corrected_type.get(corrected_type, 0) + 1
             top_phrases = [
                 {"text": row[0], "count": row[1]}
                 for row in conn.execute(
@@ -182,6 +198,8 @@ class IntentTrainingStore:
             "by_source": by_source,
             "by_status": by_status,
             "by_review": by_review,
+            "corrected_total": corrected_total,
+            "by_corrected_type": by_corrected_type,
             "top_phrases": top_phrases,
         }
 
