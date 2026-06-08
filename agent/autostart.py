@@ -13,6 +13,7 @@ from pathlib import Path
 _OS = platform.system()
 _APP_NAME = "VoiceKeyboard"
 _PLIST_LABEL = "com.voicekeyboard.agent"
+_WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 def _launch_command() -> list[str]:
@@ -24,6 +25,23 @@ def _launch_command() -> list[str]:
     if _OS == "Windows":
         return [sys.executable, "-m", "agent.windows_tray"]
     return [sys.executable, "-m", "agent.main"]
+
+def _quote_arg(value: str) -> str:
+    return '"' + str(value).replace('"', r'\"') + '"'
+
+
+def _windows_launch_command() -> str:
+    if getattr(sys, "frozen", False):
+        return _quote_arg(sys.executable)
+    root = Path(__file__).resolve().parent.parent
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    exe = pythonw if pythonw.exists() else Path(sys.executable)
+    return (
+        'cmd.exe /c start "" /min '
+        f'/d {_quote_arg(str(root))} {_quote_arg(str(exe))} '
+        "-m agent.windows_tray"
+    )
+
 
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
@@ -63,25 +81,27 @@ def _uninstall_macos():
 
 def _install_windows():
     import winreg
-    cmd = " ".join(f'"{c}"' if " " in c else c for c in _launch_command())
-    key = r"Software\Microsoft\Windows\CurrentVersion\Run"
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_SET_VALUE) as k:
+    cmd = _windows_launch_command()
+    with winreg.OpenKey(
+        winreg.HKEY_CURRENT_USER,
+        _WINDOWS_RUN_KEY,
+        0,
+        winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE,
+    ) as k:
         winreg.SetValueEx(k, _APP_NAME, 0, winreg.REG_SZ, cmd)
-    print(f"[autostart] 已注册 Windows 注册表: {key}\\{_APP_NAME}")
-
+        saved, _typ = winreg.QueryValueEx(k, _APP_NAME)
+    if saved != cmd:
+        raise RuntimeError("Windows autostart registry verification failed")
+    print(f"[autostart] registered Windows Run entry: {_WINDOWS_RUN_KEY}\\{_APP_NAME}")
 
 def _uninstall_windows():
     import winreg
-    key = r"Software\Microsoft\Windows\CurrentVersion\Run"
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_SET_VALUE) as k:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _WINDOWS_RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
             winreg.DeleteValue(k, _APP_NAME)
-        print("[autostart] 已移除 Windows 注册表项")
+        print("[autostart] removed Windows Run entry")
     except FileNotFoundError:
-        print("[autostart] 注册表项不存在，无需移除")
-
-
-# ── Linux ─────────────────────────────────────────────────────────────────────
+        print("[autostart] Windows Run entry not found")
 
 def _install_linux():
     cmd = " ".join(_launch_command())
@@ -116,3 +136,15 @@ def install():
 
 def uninstall():
     {"Darwin": _uninstall_macos, "Windows": _uninstall_windows}.get(_OS, _uninstall_linux)()
+
+
+def is_installed() -> bool:
+    if _OS != "Windows":
+        return False
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _WINDOWS_RUN_KEY, 0, winreg.KEY_QUERY_VALUE) as k:
+            value, _typ = winreg.QueryValueEx(k, _APP_NAME)
+        return bool(value)
+    except FileNotFoundError:
+        return False

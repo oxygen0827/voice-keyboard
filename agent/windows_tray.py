@@ -13,6 +13,7 @@ import pystray
 from PIL import Image, ImageDraw
 
 from agent.autostart import install as install_autostart
+from agent.autostart import is_installed as autostart_is_installed
 from agent.autostart import uninstall as uninstall_autostart
 from agent.config import ensure_user_config
 from agent.history import History
@@ -85,7 +86,7 @@ class WindowsTrayApp:
             pystray.MenuItem(labels["history"], pystray.Menu(lambda: self._history_menu_items())),
             pystray.MenuItem(labels["memo"], pystray.Menu(lambda: self._memo_menu_items())),
             pystray.MenuItem(labels["reload"], self._reload_backend),
-            pystray.MenuItem(labels["install_autostart"], self._install_autostart),
+            pystray.MenuItem(labels["install_autostart"], self._install_autostart, checked=lambda item: autostart_is_installed()),
             pystray.MenuItem(labels["uninstall_autostart"], self._uninstall_autostart),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(labels["quit"], self._quit),
@@ -142,6 +143,7 @@ class WindowsTrayApp:
             "config_reloaded": ("Config reloaded", "\u914d\u7f6e\u5df2\u91cd\u8f7d"),
             "autostart_enabled": ("Start on login enabled", "\u5df2\u5f00\u542f\u5f00\u673a\u81ea\u542f"),
             "autostart_disabled": ("Start on login disabled", "\u5df2\u53d6\u6d88\u5f00\u673a\u81ea\u542f"),
+            "autostart_failed": ("Start on login failed: {reason}", "\u5f00\u673a\u81ea\u542f\u5931\u8d25\uff1a{reason}"),
             "inserted": ("{kind}: {preview}", "{kind}\uff1a{preview}"),
             "insert_failed": ("Insert failed: {reason}", "\u63d2\u5165\u5931\u8d25\uff1a{reason}"),
         }
@@ -351,12 +353,26 @@ class WindowsTrayApp:
         self._main_window.show()
 
     def _install_autostart(self, _icon=None, _item=None):
-        install_autostart()
-        self._notify("autostart_enabled")
+        try:
+            install_autostart()
+            if not autostart_is_installed():
+                raise RuntimeError("registry entry was not created")
+            self._notify("autostart_enabled")
+            if self._icon is not None:
+                self._icon.update_menu()
+        except Exception as e:
+            print(f"[tray] autostart install failed: {e}")
+            self._notify("autostart_failed", reason=str(e))
 
     def _uninstall_autostart(self, _icon=None, _item=None):
-        uninstall_autostart()
-        self._notify("autostart_disabled")
+        try:
+            uninstall_autostart()
+            self._notify("autostart_disabled")
+            if self._icon is not None:
+                self._icon.update_menu()
+        except Exception as e:
+            print(f"[tray] autostart uninstall failed: {e}")
+            self._notify("autostart_failed", reason=str(e))
 
     @staticmethod
     def _make_icon() -> Image.Image:
