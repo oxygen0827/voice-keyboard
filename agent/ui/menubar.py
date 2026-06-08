@@ -57,6 +57,7 @@ class MenuBar(NSObject):
             ("打开设置…", b"openSettings:"),
             ("快捷键…", b"openShortcuts:"),
             ("转写历史…", b"openHistory:"),
+            ("意图诊断…", b"openIntent:"),
             ("备忘…", b"openMemo:"),
             ("权限自检…", b"openPerms:"),
         ):
@@ -92,6 +93,9 @@ class MenuBar(NSObject):
 
     def openHistory_(self, sender):
         self._app.main_window.show_tab("history")
+
+    def openIntent_(self, sender):
+        self._app.main_window.show_tab("intent")
 
     def openMemo_(self, sender):
         self._app.main_window.show_tab("memo")

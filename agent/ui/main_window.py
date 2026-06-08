@@ -36,6 +36,8 @@ import yaml
 from agent import typer as _typer
 from agent import permissions as _perm
 from agent.history import History
+from agent.intent_diagnostics import load_diagnostics_rows, save_diagnostics_review
+from agent.intent_training import _DEFAULT_PATH as _INTENT_SAMPLES_PATH
 
 _USER_DIR = Path.home() / ".voice-keyboard"
 _USER_CONFIG = _USER_DIR / "config.yaml"
@@ -593,6 +595,201 @@ class _HistoryTab(NSObject):
         a.setMessageText_(title); a.setInformativeText_(msg); a.runModal()
 
 
+# ── 意图诊断 tab ─────────────────────────────────────────────────
+
+_INTENT_LABEL_OPTIONS = [
+    "",
+    "correct",
+    "wrong_intent",
+    "wrong_target",
+    "unsafe_should_confirm",
+    "missing_shortcut",
+    "unclear",
+]
+
+
+class _IntentDiagnosticsTab(NSObject):
+    def initWithApp_(self, app):
+        self = objc.super(_IntentDiagnosticsTab, self).init()
+        if self is None:
+            return None
+        self._app = app
+        self._rows: list[dict] = []
+        self.view = self._build()
+        self.reload_(None)
+        return self
+
+    @objc.python_method
+    def _build(self) -> NSView:
+        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 600, 480))
+        v.addSubview_(_button("刷新", NSMakeRect(20, 440, 80, 26), self, b"reload:"))
+        v.addSubview_(_button("打开样本文件", NSMakeRect(110, 440, 120, 26), self, b"openSamples:"))
+        v.addSubview_(_label(str(_INTENT_SAMPLES_PATH), NSMakeRect(240, 444, 340, 20)))
+
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 220, 560, 210))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(1)
+        table = NSTableView.alloc().initWithFrame_(scroll.bounds())
+        table.setUsesAlternatingRowBackgroundColors_(True)
+        for ident, title, w in (
+            ("ts", "时间", 105),
+            ("intent", "意图", 82),
+            ("source", "来源", 58),
+            ("confidence", "置信", 58),
+            ("status", "状态", 52),
+            ("review", "标注", 95),
+            ("text", "文本", 110),
+        ):
+            col = NSTableColumn.alloc().initWithIdentifier_(ident)
+            col.headerCell().setStringValue_(title)
+            col.setWidth_(w)
+            table.addTableColumn_(col)
+        table.setDelegate_(self)
+        table.setDataSource_(self)
+        scroll.setDocumentView_(table)
+        v.addSubview_(scroll)
+        self._table = table
+
+        v.addSubview_(_label("标注", NSMakeRect(20, 184, 50, 20)))
+        label_box = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(72, 180, 190, 26))
+        for item in _INTENT_LABEL_OPTIONS:
+            label_box.addItemWithTitle_(item)
+        v.addSubview_(label_box)
+        self._label_box = label_box
+        v.addSubview_(_button("保存反馈", NSMakeRect(272, 180, 90, 28), self, b"saveReview:"))
+        v.addSubview_(_button("复制文本", NSMakeRect(372, 180, 90, 28), self, b"copyText:"))
+
+        v.addSubview_(_label("备注", NSMakeRect(20, 148, 50, 20)))
+        from AppKit import NSTextView
+        note_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(72, 112, 508, 58))
+        note_scroll.setHasVerticalScroller_(True)
+        note_scroll.setBorderType_(1)
+        note = NSTextView.alloc().initWithFrame_(note_scroll.bounds())
+        note.setEditable_(True)
+        note.setRichText_(False)
+        note.setFont_(NSFont.systemFontOfSize_(12))
+        note_scroll.setDocumentView_(note)
+        v.addSubview_(note_scroll)
+        self._note = note
+
+        v.addSubview_(_label("详情", NSMakeRect(20, 82, 50, 20)))
+        detail_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(72, 20, 508, 82))
+        detail_scroll.setHasVerticalScroller_(True)
+        detail_scroll.setBorderType_(1)
+        detail = NSTextView.alloc().initWithFrame_(detail_scroll.bounds())
+        detail.setEditable_(False)
+        detail.setRichText_(False)
+        detail.setFont_(NSFont.userFixedPitchFontOfSize_(11))
+        detail_scroll.setDocumentView_(detail)
+        v.addSubview_(detail_scroll)
+        self._detail = detail
+        return v
+
+    def numberOfRowsInTableView_(self, t):
+        return len(self._rows)
+
+    def tableView_objectValueForTableColumn_row_(self, t, col, row):
+        if row < 0 or row >= len(self._rows):
+            return ""
+        e = self._rows[row]
+        ident = col.identifier()
+        if ident == "ts":
+            return time.strftime("%m-%d %H:%M", time.localtime(e.get("ts", 0)))
+        if ident == "intent":
+            return e.get("intent_type", "")
+        if ident == "source":
+            return e.get("intent_source", "")
+        if ident == "confidence":
+            return e.get("intent_confidence", "")
+        if ident == "status":
+            return e.get("status", "")
+        if ident == "review":
+            return e.get("review_label", "")
+        if ident == "text":
+            return str(e.get("text", "")).replace("\n", " ⏎ ")
+        return ""
+
+    def tableViewSelectionDidChange_(self, note):
+        self._load_selected()
+
+    def reload_(self, sender):
+        try:
+            self._rows = load_diagnostics_rows(_INTENT_SAMPLES_PATH, limit=300)
+        except Exception as e:
+            print(f"[ui] intent diagnostics load 失败: {e}")
+            self._rows = []
+        self._table.reloadData()
+        self._load_selected()
+
+    def openSamples_(self, sender):
+        from AppKit import NSWorkspace
+        p = Path(_INTENT_SAMPLES_PATH)
+        if p.exists():
+            NSWorkspace.sharedWorkspace().openFile_(str(p))
+        else:
+            self._alert("样本文件未创建", str(p))
+
+    def saveReview_(self, sender):
+        row = self._selected_row()
+        if row is None:
+            return
+        label = self._label_box.titleOfSelectedItem() or ""
+        note = self._note.string() or ""
+        try:
+            updated = save_diagnostics_review(
+                _INTENT_SAMPLES_PATH,
+                row,
+                label=label,
+                note=note,
+            )
+        except Exception as e:
+            self._alert("保存反馈失败", str(e))
+            return
+        idx = self._table.selectedRow()
+        if 0 <= idx < len(self._rows):
+            self._rows[idx] = updated
+        self._table.reloadData()
+        self._load_selected()
+
+    def copyText_(self, sender):
+        row = self._selected_row()
+        if row is None:
+            return
+        from AppKit import NSPasteboard, NSPasteboardTypeString
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(str(row.get("text", "")), NSPasteboardTypeString)
+
+    @objc.python_method
+    def _selected_row(self):
+        idx = self._table.selectedRow()
+        if idx < 0 or idx >= len(self._rows):
+            return None
+        return self._rows[idx]
+
+    @objc.python_method
+    def _load_selected(self):
+        row = self._selected_row()
+        if row is None:
+            self._label_box.selectItemWithTitle_("")
+            self._note.setString_("")
+            self._detail.setString_("")
+            return
+        label = row.get("review_label", "") or ""
+        if self._label_box.indexOfItemWithTitle_(label) >= 0:
+            self._label_box.selectItemWithTitle_(label)
+        else:
+            self._label_box.selectItemWithTitle_("")
+        self._note.setString_(row.get("review_note", "") or "")
+        detail = json.dumps(row, ensure_ascii=False, indent=2)
+        self._detail.setString_(detail)
+
+    @objc.python_method
+    def _alert(self, title, msg):
+        a = NSAlert.alloc().init()
+        a.setMessageText_(title); a.setInformativeText_(msg); a.runModal()
+
+
 # ── 备忘 tab ───────────────────────────────────────────────
 
 class _MemoTab(NSObject):
@@ -823,6 +1020,7 @@ class MainWindow(NSObject):
             ("settings", "设置",   _SettingsTab),
             ("shortcuts", "快捷键", _ShortcutsTab),
             ("history",  "历史",   _HistoryTab),
+            ("intent", "意图诊断", _IntentDiagnosticsTab),
             ("memo",    "备忘", _MemoTab),
             ("perms",    "权限",   _PermsTab),
         ):
