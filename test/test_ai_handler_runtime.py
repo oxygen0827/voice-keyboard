@@ -33,6 +33,18 @@ class FakeHistory:
         self.entries.append((mode, text, status, detail))
 
 
+class FakeStatus:
+    def __init__(self):
+        self.messages = []
+        self.states = []
+
+    def show_message(self, text: str, seconds: float = 6.0):
+        self.messages.append((text, seconds))
+
+    def set_state(self, state: str):
+        self.states.append(state)
+
+
 class AIHandlerRuntimeTests(unittest.TestCase):
     def test_records_executor_failure_status_after_execution(self):
         llm = MagicMock()
@@ -80,6 +92,30 @@ class AIHandlerRuntimeTests(unittest.TestCase):
         self.assertTrue(keep_status)
         self.assertEqual(history.entries, [
             ("ai", "question", "error", "intent_timeout"),
+        ])
+
+    def test_shows_ai_progress_stages(self):
+        llm = MagicMock()
+        llm.chat.return_value = '{"type":"write"}'
+        status = FakeStatus()
+        handler = AIHandler(
+            FakeSTT("write a note"),
+            llm,
+            MagicMock(),
+            status_window=status,
+            input_environment=FakeEnv(),
+        )
+        handler._executor = MagicMock()
+        handler._executor.execute.return_value = False
+        handler._executor.last_status = ("ok", "write")
+
+        handler._run_inner(b"pcm")
+
+        messages = [text for text, _seconds in status.messages]
+        self.assertEqual(messages, [
+            "[AI]: 已识别：write a note",
+            "[AI]: 正在理解指令",
+            "[AI]: 准备生成文字",
         ])
 
 

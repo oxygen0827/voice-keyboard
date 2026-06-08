@@ -25,6 +25,7 @@ from agent.voice_text_operation import operation_from_intent
 
 _AI_PREFIX = " [AI]: "
 _INTENT_TIMEOUT_SECONDS = 12.0
+_PROGRESS_SECONDS = 2.2
 
 
 class AIHandler:
@@ -86,6 +87,7 @@ class AIHandler:
                 self._status.set_state("empty_stt")
             return True
         print(f"[ai] 识别: {text!r}")
+        self._show_progress(f"\u5df2\u8bc6\u522b\uff1a{_preview(text)}")
         memo_edit = parse_memo_edit_command(text)
         if memo_edit is not None:
             result = Memo(self._memo_store).edit_text(
@@ -110,6 +112,7 @@ class AIHandler:
 
         # 3. LLM 意图分类
         try:
+            self._show_progress("\u6b63\u5728\u7406\u89e3\u6307\u4ee4")
             result = self._classify_intent_with_timeout(IntentContext(
                 text=text,
                 selected=selected,
@@ -136,6 +139,7 @@ class AIHandler:
 
         operation = operation_from_intent(result)
         print(f"[ai] 意图: {operation.kind}")
+        self._show_progress(_operation_message(operation))
 
         keep_status = self._executor.execute(operation, text, selected, target)
         status, detail = getattr(self._executor, "last_status", ("ok", operation.kind))
@@ -170,6 +174,14 @@ class AIHandler:
         if self._status is not None:
             self._status.set_state(state)
 
+    def _show_progress(self, message: str) -> None:
+        """Show short non-typing progress feedback while an AI command runs."""
+        full = _AI_PREFIX.strip() + " " + message
+        if self._status is not None and hasattr(self._status, "show_message"):
+            self._status.show_message(full, _PROGRESS_SECONDS)
+        else:
+            print(f"{_AI_PREFIX}{message}")
+
     def _show(self, message: str) -> None:
         """Show AI/chat feedback in the floating status HUD."""
         message = message.replace("\n", " ").replace("\r", "")
@@ -186,3 +198,26 @@ class AIHandler:
         msg = str(error)
         if "敏感" in msg or "不安全" in msg or "unsafe" in msg.lower():
             self._show("识别内容被服务商拦截，请松开热键后重新说。可用启停热键快速恢复。")
+
+def _preview(text: str, limit: int = 28) -> str:
+    compact = str(text or "").replace("\n", " ").replace("\r", " ").strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit] + "..."
+
+
+def _operation_message(operation) -> str:
+    if operation.kind == "shortcut":
+        return f"\u51c6\u5907\u6267\u884c\u5feb\u6377\u952e\uff1a{operation.name or '\u672a\u547d\u540d'}"
+    labels = {
+        "undo": "\u51c6\u5907\u64a4\u9500",
+        "delete": "\u51c6\u5907\u5220\u9664\u5185\u5bb9",
+        "edit": "\u51c6\u5907\u7f16\u8f91\u5185\u5bb9",
+        "write": "\u51c6\u5907\u751f\u6210\u6587\u5b57",
+        "memo_save": "\u51c6\u5907\u4fdd\u5b58\u8bb0\u5fc6",
+        "memo_recall": "\u51c6\u5907\u8bfb\u53d6\u8bb0\u5fc6",
+        "memo_delete": "\u51c6\u5907\u5220\u9664\u8bb0\u5fc6",
+        "memo_list": "\u51c6\u5907\u5217\u51fa\u8bb0\u5fc6",
+        "chat": "\u51c6\u5907\u663e\u793a\u56de\u7b54",
+    }
+    return labels.get(operation.kind, "\u51c6\u5907\u6267\u884c\u6307\u4ee4")
