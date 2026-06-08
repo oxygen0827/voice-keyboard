@@ -125,6 +125,36 @@ class WindowsTrayApp:
             "quit": "\u9000\u51fa",
         }
 
+    def _message(self, key: str, **values) -> str:
+        en = self._language() == "en"
+        messages = {
+            "config_opened": ("Config opened", "\u914d\u7f6e\u5df2\u6253\u5f00"),
+            "config_dir_opened": ("Config folder opened", "\u914d\u7f6e\u76ee\u5f55\u5df2\u6253\u5f00"),
+            "devices_opened": ("Microphone list opened", "\u9ea6\u514b\u98ce\u5217\u8868\u5df2\u6253\u5f00"),
+            "language_set": ("Language: {language}", "\u8bed\u8a00\uff1a{language}"),
+            "hotkey_set": ("{name}: {value}", "{name}\uff1a{value}"),
+            "config_reloaded": ("Config reloaded", "\u914d\u7f6e\u5df2\u91cd\u8f7d"),
+            "autostart_enabled": ("Start on login enabled", "\u5df2\u5f00\u542f\u5f00\u673a\u81ea\u542f"),
+            "autostart_disabled": ("Start on login disabled", "\u5df2\u53d6\u6d88\u5f00\u673a\u81ea\u542f"),
+        }
+        template = messages[key][0 if en else 1]
+        return template.format(**values)
+
+    def _notify(self, key: str, **values) -> None:
+        if hasattr(self._status, "show_message"):
+            self._status.show_message(self._message(key, **values), 2.5)
+
+    def _hotkey_display_name(self, key_name: str) -> str:
+        labels = self._labels()
+        return labels["dictation_hotkey"] if key_name == "ptt_key" else labels["ai_hotkey"]
+
+    def _hotkey_display_value(self, value: str) -> str:
+        language = self._language()
+        for key, en_label, zh_label in _HOTKEY_OPTIONS:
+            if key == value:
+                return en_label if language == "en" else zh_label
+        return value
+
     def _hotkey_menu(self, key_name: str):
         labels = self._labels()
         language = self._language()
@@ -160,7 +190,8 @@ class WindowsTrayApp:
         audio = cfg.setdefault("audio", {})
         audio[key_name] = value
         self._write_config(cfg)
-        self._reload_backend()
+        self._reload_backend(notify=False)
+        self._notify("hotkey_set", name=self._hotkey_display_name(key_name), value=self._hotkey_display_value(value))
         if self._icon is not None:
             self._icon.menu = self._menu()
             self._icon.update_menu()
@@ -174,7 +205,7 @@ class WindowsTrayApp:
                 self._history,
             )
 
-    def _reload_backend(self, _icon=None, _item=None):
+    def _reload_backend(self, _icon=None, _item=None, notify: bool = True):
         with self._lock:
             if self._backend is not None:
                 self._backend.stop()
@@ -182,6 +213,8 @@ class WindowsTrayApp:
         self._status.set_state("recognizing")
         self._start_backend()
         self._status.set_state("idle")
+        if notify:
+            self._notify("config_reloaded")
 
     def _language(self) -> str:
         cfg = self._read_config()
@@ -194,7 +227,7 @@ class WindowsTrayApp:
         ui = cfg.setdefault("ui", {})
         ui["language"] = "en" if language == "en" else "zh"
         self._write_config(cfg)
-        self._status.set_state("dictation_enabled")
+        self._notify("language_set", language="English" if language == "en" else "\u4e2d\u6587")
         if self._icon is not None:
             self._icon.menu = self._menu()
             self._icon.update_menu()
@@ -232,10 +265,12 @@ class WindowsTrayApp:
         if not _CONFIG.exists():
             ensure_user_config()
         os.startfile(str(_CONFIG))
+        self._notify("config_opened")
 
     def _open_config_dir(self, _icon=None, _item=None):
         _USER_DIR.mkdir(parents=True, exist_ok=True)
         os.startfile(str(_USER_DIR))
+        self._notify("config_dir_opened")
 
     def _show_devices(self, _icon=None, _item=None):
         subprocess.Popen(
@@ -243,6 +278,7 @@ class WindowsTrayApp:
             cwd=str(Path(__file__).resolve().parent.parent),
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
+        self._notify("devices_opened")
 
     def _test_status(self, _icon=None, _item=None):
         def _run():
@@ -253,13 +289,11 @@ class WindowsTrayApp:
 
     def _install_autostart(self, _icon=None, _item=None):
         install_autostart()
-        self._status.set_state("polish_recording")
-        threading.Timer(1.0, lambda: self._status.set_state("idle")).start()
+        self._notify("autostart_enabled")
 
     def _uninstall_autostart(self, _icon=None, _item=None):
         uninstall_autostart()
-        self._status.set_state("polish_recording")
-        threading.Timer(1.0, lambda: self._status.set_state("idle")).start()
+        self._notify("autostart_disabled")
 
     @staticmethod
     def _make_icon() -> Image.Image:
