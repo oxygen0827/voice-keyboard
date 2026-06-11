@@ -25,6 +25,19 @@ python packaging/macos/setup.py py2app
 python packaging/macos/setup.py py2app -A
 ```
 
+## 运行和权限身份
+
+源码运行优先使用仓库脚本：
+
+```bash
+scripts/run-local.sh
+scripts/run-local.sh --background
+scripts/run-local.sh --status
+scripts/run-local.sh --permissions
+```
+
+macOS 的 TCC 权限绑定到启动身份。源码运行时，辅助功能、输入监听、麦克风权限通常要授予 Terminal/iTerm/Python；打包后要授予 `Voice Keyboard.app`。如果源码运行能启动但热键或录音无效，先看 `scripts/run-local.sh --permissions`，不要直接判断语音或热键代码坏了。
+
 ## 已知坑
 
 - **adhoc 签名 TCC 漂移**：每次 rebuild 后 bundle 哈希变化，系统设置里的「辅助功能 / 麦克风 / 输入监控」授权会失效，需要手动移除再重新添加。可考虑申请 Apple Developer 证书做正式签名。

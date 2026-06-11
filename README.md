@@ -83,13 +83,32 @@ cp .env.example .env
 Start the runtime:
 
 ```bash
-.venv/bin/python -m agent.main --no-serial
+scripts/run-local.sh
+```
+
+Run in the background and write PID/log paths:
+
+```bash
+scripts/run-local.sh --background
+scripts/run-local.sh --status
+```
+
+Stop the local runtime:
+
+```bash
+scripts/run-local.sh --kill-only
 ```
 
 List audio devices:
 
 ```bash
 .venv/bin/python -m agent.main --list-devices
+```
+
+On macOS, System Settings grants apply to the launching app. Source runs usually need permissions for Terminal/iTerm/Python; packaged runs need permissions for `Voice Keyboard.app`. Check the current launch identity with:
+
+```bash
+scripts/run-local.sh --permissions
 ```
 
 ## Configuration

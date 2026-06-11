@@ -4,12 +4,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON:-"$ROOT/.venv/bin/python"}"
 LOG_DIR="$ROOT/.local/logs"
+RUN_DIR="$ROOT/.local/run"
+PID_FILE="$RUN_DIR/voice-keyboard-local.pid"
+LOG_FILE="$LOG_DIR/voice-keyboard-local.log"
 
 KILL_FIRST=1
 KILL_ONLY=0
 BACKGROUND=0
 LIST_DEVICES=0
 HEADLESS=0
+STATUS_ONLY=0
+PERMISSIONS_ONLY=0
 
 usage() {
   cat <<'USAGE'
@@ -24,12 +29,16 @@ Options:
   --kill-only     Kill existing agent.main processes and exit.
   --background    Start in background and write a log under .local/logs/.
   --headless      Disable the floating status window and run terminal-only.
+  --status        Show whether the local engine PID file points to a running process.
+  --permissions   Print macOS permission status JSON and exit.
   --list-devices  List microphone devices and exit.
   -h, --help      Show this help.
 
 Examples:
   scripts/run-local.sh
   scripts/run-local.sh --background
+  scripts/run-local.sh --status
+  scripts/run-local.sh --permissions
   scripts/run-local.sh --headless
   scripts/run-local.sh --kill-only
   scripts/run-local.sh -- --headless
@@ -53,6 +62,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --headless)
       HEADLESS=1
+      shift
+      ;;
+    --status)
+      STATUS_ONLY=1
+      KILL_FIRST=0
+      shift
+      ;;
+    --permissions)
+      PERMISSIONS_ONLY=1
+      KILL_FIRST=0
       shift
       ;;
     --list-devices)
@@ -87,6 +106,47 @@ find_engine_pids() {
   pgrep -f '[Pp]ython.*(-m[[:space:]]+agent\.main|agent/main\.py)' 2>/dev/null || true
 }
 
+pid_file_pid() {
+  if [[ ! -f "$PID_FILE" ]]; then
+    return 1
+  fi
+  local pid
+  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+  printf '%s\n' "$pid"
+}
+
+is_pid_running() {
+  local pid="$1"
+  kill -0 "$pid" 2>/dev/null
+}
+
+print_permission_hint() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return
+  fi
+  echo "[run-local] Permissions: scripts/run-local.sh --permissions"
+  echo "[run-local] System Settings grants apply to the launching app (Terminal/Python for source runs, Voice Keyboard.app for packaged runs)."
+}
+
+show_status() {
+  local pid
+  pid="$(pid_file_pid || true)"
+  if [[ -n "${pid:-}" ]] && is_pid_running "$pid"; then
+    echo "[run-local] Status: running"
+    echo "[run-local] PID: $pid"
+    echo "[run-local] PID file: $PID_FILE"
+    echo "[run-local] Log: $LOG_FILE"
+    return 0
+  fi
+  echo "[run-local] Status: not running"
+  echo "[run-local] PID file: $PID_FILE"
+  echo "[run-local] Log: $LOG_FILE"
+  return 1
+}
+
 kill_existing() {
   local pids
   pids="$(find_engine_pids | tr '\n' ' ' | xargs || true)"
@@ -105,7 +165,13 @@ kill_existing() {
     echo "[run-local] Force killing remaining process(es): $survivors"
     kill -9 $survivors 2>/dev/null || true
   fi
+  rm -f "$PID_FILE"
 }
+
+if [[ "$STATUS_ONLY" == "1" ]]; then
+  show_status
+  exit $?
+fi
 
 if [[ "$KILL_FIRST" == "1" ]]; then
   kill_existing
@@ -113,6 +179,10 @@ fi
 
 if [[ "$KILL_ONLY" == "1" ]]; then
   exit 0
+fi
+
+if [[ "$PERMISSIONS_ONLY" == "1" ]]; then
+  exec "$PYTHON_BIN" -m agent.main --permissions-json
 fi
 
 if [[ "$LIST_DEVICES" == "1" ]]; then
@@ -134,11 +204,15 @@ fi
 echo "[run-local] Starting: ${CMD[*]}"
 
 if [[ "$BACKGROUND" == "1" ]]; then
-  mkdir -p "$LOG_DIR"
-  LOG_FILE="$LOG_DIR/voice-keyboard-local.log"
+  mkdir -p "$LOG_DIR" "$RUN_DIR"
   nohup "${CMD[@]}" >"$LOG_FILE" 2>&1 &
-  echo "[run-local] Started PID=$!"
+  pid="$!"
+  printf '%s\n' "$pid" >"$PID_FILE"
+  echo "[run-local] Started PID=$pid"
+  echo "[run-local] PID file: $PID_FILE"
   echo "[run-local] Log: $LOG_FILE"
+  print_permission_hint
 else
+  print_permission_hint
   exec "${CMD[@]}"
 fi
