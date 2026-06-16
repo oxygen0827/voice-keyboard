@@ -1,6 +1,6 @@
 ﻿import time
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from agent.ai_handler import AIHandler
 from agent.input_environment import TextTarget
@@ -60,6 +60,20 @@ class FakeStatus:
         self.states.append(state)
 
 class AIHandlerRuntimeTests(unittest.TestCase):
+    def test_constructor_passes_confirmation_callback_to_executor(self):
+        confirm = MagicMock()
+
+        with patch("agent.ai_handler.InstructionModeExecutor") as executor_cls:
+            AIHandler(
+                FakeSTT("send"),
+                MagicMock(),
+                MagicMock(),
+                input_environment=FakeEnv(),
+                confirm_operation=confirm,
+            )
+
+        self.assertEqual(executor_cls.call_args.kwargs["confirm_operation"], confirm)
+
     def test_records_executor_failure_status_after_execution(self):
         llm = MagicMock()
         llm.chat.return_value = '{"type":"shortcut","name":"missing"}'

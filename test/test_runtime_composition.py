@@ -75,6 +75,7 @@ class RuntimeCompositionTests(unittest.TestCase):
             patch("agent.runtime_composition.SpeechInterpretationProviderFactory") as factory_cls,
             patch("agent.ai_handler.AIHandler") as handler_cls,
             patch("agent.memo_store.MemoStore"),
+            patch("agent.operation_confirmation.make_operation_confirmation", return_value="confirm") as confirm_factory,
             patch("agent.main.make_utterance_handler", return_value=MagicMock()),
             patch("agent.push_to_talk.PushToTalk") as ptt_cls,
         ):
@@ -99,6 +100,8 @@ class RuntimeCompositionTests(unittest.TestCase):
             ),
         )
         self.assertNotIn("personal_lexicon", handler_cls.call_args.kwargs)
+        self.assertEqual(handler_cls.call_args.kwargs["confirm_operation"], "confirm")
+        confirm_factory.assert_called_once()
         ptt_cls.return_value.start.assert_called_once_with()
 
 

@@ -53,7 +53,8 @@ _SESSION_ERROR_STATES = {
 class AIHandler:
     def __init__(self, stt_client, llm_editor, buf, memo_store=None,
                  status_window=None, history=None, input_environment=None,
-                 intent_fallbacks=None, intent_training=None):
+                 intent_fallbacks=None, intent_training=None,
+                 confirm_operation=None):
         self._stt             = stt_client
         self._llm             = llm_editor
         self._env             = input_environment or TyperInputEnvironment(buf)
@@ -73,6 +74,7 @@ class AIHandler:
             show=self._show,
             set_status=self._set_status,
             text_io=self._io_lock,
+            confirm_operation=confirm_operation,
         )
 
     def _record(self, mode: str, text: str = "", status: str = "ok", detail: str = ""):
