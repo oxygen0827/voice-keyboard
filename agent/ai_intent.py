@@ -28,6 +28,9 @@ class MemoEntries(Protocol):
     def get(self, key: str) -> str | None:
         ...
 
+    def records(self) -> tuple[MemoRecord, ...]:
+        ...
+
 
 @dataclass(frozen=True)
 class IntentContext:
@@ -953,6 +956,13 @@ def memo_records(
 ) -> tuple[MemoRecord, ...]:
     if entries is None:
         return ()
+    store_records = getattr(entries, "records", None)
+    if callable(store_records):
+        records = store_records()
+        if isinstance(records, (list, tuple)) and all(
+            isinstance(record, MemoRecord) for record in records
+        ):
+            return tuple(records)
     records = []
     for key in entries.keys():
         records.append(MemoRecord(

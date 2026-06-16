@@ -50,6 +50,8 @@ class MemoRecord:
     key: str
     value: str = ""
     aliases: tuple[str, ...] = ()
+    value_type: str = ""
+    sensitive: bool = False
 
 
 @dataclass(frozen=True)
@@ -240,7 +242,7 @@ class MemoResolver:
         record: MemoRecord,
     ) -> _ScoredMemoCandidate | None:
         key_text = normalize_memo_text(record.key)
-        value_type = detect_memo_value_type(record.key, record.value)
+        value_type = record.value_type or detect_memo_value_type(record.key, record.value)
         query_type = detect_memo_query_type(query_text)
         name_aliases = _record_name_aliases(record)
         type_aliases = _record_type_aliases(value_type)

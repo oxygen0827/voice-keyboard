@@ -43,10 +43,14 @@ def main() -> None:
     parser.add_argument(
         "--model-registry-dir",
         default="",
-        help="optional local intent model registry dir; trains and activates a model version",
+        help="optional local intent model registry dir; registers a model version and guards activation when evaluated",
     )
     parser.add_argument("--model-version", default="", help="model version label")
-    parser.add_argument("--model-report-dir", default="", help="optional report dir for model evaluation")
+    parser.add_argument(
+        "--model-report-dir",
+        default="",
+        help="optional report dir for model evaluation; candidate activates only if it does not regress",
+    )
     parser.add_argument(
         "--model-min-similarity",
         type=float,
@@ -82,6 +86,7 @@ def main() -> None:
         print(
             f"model_version={report['model']['version']} "
             f"model_examples={report['model']['examples']} "
+            f"model_version_path={report['model'].get('version_path', '')} "
             f"model_current={report['model']['current']}"
         )
     if "model_evaluation" in report:
@@ -90,6 +95,13 @@ def main() -> None:
             f"model_report={report['model_evaluation']['path']} "
             f"model_accuracy={model_report['accuracy_label']} "
             f"model_correct={model_report['correct']} model_total={model_report['total']}"
+        )
+    if "model_activation" in report:
+        activation = report["model_activation"]
+        print(
+            f"model_activation={activation['reason']} "
+            f"should_activate={str(activation['should_activate']).lower()} "
+            f"activated={str(activation.get('activated', False)).lower()}"
         )
 
 

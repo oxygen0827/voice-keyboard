@@ -82,6 +82,9 @@ class IntentTrainingRecorder:
         intent_result: dict | None = None,
         status: str = "",
         detail: str = "",
+        operation_risk: str | None = None,
+        confirmation_triggered: bool | None = None,
+        user_cancelled: bool | None = None,
     ) -> None:
         if not self._config.enabled:
             return
@@ -109,6 +112,12 @@ class IntentTrainingRecorder:
             "review_label": "",
             "review_note": "",
         }
+        if operation_risk is not None:
+            sample["operation_risk"] = str(operation_risk or "")
+        if confirmation_triggered is not None:
+            sample["confirmation_triggered"] = bool(confirmation_triggered)
+        if user_cancelled is not None:
+            sample["user_cancelled"] = bool(user_cancelled)
         try:
             self._config.path.parent.mkdir(parents=True, exist_ok=True)
             with self._config.path.open("a", encoding="utf-8") as f:

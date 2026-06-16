@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent.intent_evaluation import compare_evaluation_reports, evaluate_reviewed_samples, write_evaluation_report
-from agent.intent_model import train_intent_model
+from agent.intent_model import activate_intent_model_version, train_intent_model
 from agent.intent_sync import sync_corrected_intents
 
 
@@ -57,26 +57,40 @@ def run_training_loop(
     if model_registry_dir is not None:
         registry = Path(model_registry_dir).expanduser()
         current_model_path = registry / "current.json"
+        candidate_output_path = registry / "candidates" / "candidate.json"
         model = train_intent_model(
             sample_path,
-            current_model_path,
+            candidate_output_path,
             version=model_version,
             registry_dir=registry,
+            activate=False,
         )
         report["model"] = model
-        if model_report_dir is not None:
+        if model_report_dir is None:
+            report["model_activation"] = {
+                "should_activate": False,
+                "reason": "not_evaluated",
+                "activated": False,
+            }
+        else:
+            candidate_model_path = Path(model.get("version_path") or current_model_path)
             report["model_evaluation"] = write_evaluation_report(
                 sample_path,
                 model_report_dir,
                 override_path=override_path,
-                intent_model_path=current_model_path,
+                intent_model_path=candidate_model_path,
                 intent_model_min_similarity=model_min_similarity,
                 version=model["version"],
             )
-            report["model_activation"] = _model_activation_decision(
+            activation = _model_activation_decision(
                 baseline=evaluation,
                 candidate=report["model_evaluation"]["report"],
             )
+            activation["activated"] = False
+            if activation["should_activate"]:
+                activation["activation"] = activate_intent_model_version(registry, model["version"])
+                activation["activated"] = True
+            report["model_activation"] = activation
     return report
 
 def _model_activation_decision(*, baseline: dict, candidate: dict) -> dict:

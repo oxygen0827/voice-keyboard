@@ -42,6 +42,7 @@ def train_intent_model(
     *,
     version: str = "",
     registry_dir: Path | str | None = None,
+    activate: bool = True,
 ) -> dict:
     rows = _load_jsonl(Path(source).expanduser())
     examples: dict[str, dict] = {}
@@ -84,10 +85,12 @@ def train_intent_model(
         version_path = _model_version_path(registry, model_version)
         version_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(out_path, version_path)
-        activate_summary = activate_intent_model_version(registry, model_version)
         summary["registered"] = True
-        summary["current"] = activate_summary["current"]
+        summary["current"] = str(registry / "current.json")
         summary["version_path"] = str(version_path)
+        if activate:
+            activate_summary = activate_intent_model_version(registry, model_version)
+            summary["current"] = activate_summary["current"]
     return summary
 
 

@@ -222,6 +222,16 @@ class MemoResolverTests(unittest.TestCase):
         self.assertTrue(result.can_recall)
         self.assertEqual(result.key, "白光宇最喜欢说的话")
 
+    def test_explicit_record_value_type_overrides_detected_type(self):
+        result = self.resolve(
+            "我的邮箱是什么",
+            MemoRecord("备用联系方式", "not-an-email", value_type="contact.email"),
+        )
+
+        self.assertTrue(result.can_recall)
+        self.assertEqual(result.key, "备用联系方式")
+        self.assertEqual(result.value_type, "contact.email")
+
 
 if __name__ == "__main__":
     unittest.main()

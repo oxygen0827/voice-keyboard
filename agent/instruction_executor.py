@@ -7,6 +7,7 @@ import threading
 from typing import Callable, ContextManager
 
 from agent.input_environment import OperationWindow, ReplacementPlan, TextTarget
+from agent.local_operation_policy import apply_local_operation_policy
 from agent.punctuation import normalize_spoken_punctuation
 from agent.memo import MemoOperationResult, Memo
 from agent.ai_intent import looks_like_whole_delete_instruction
@@ -38,6 +39,7 @@ class InstructionModeExecutor:
         set_status: Callable[[str], None] | None = None,
         text_io: ContextManager | None = None,
         provider_call_timeout: float = _PROVIDER_CALL_TIMEOUT_SECONDS,
+        confirm_operation: Callable[[str, str], bool] | None = None,
     ):
         self._llm = llm_editor
         self._env = input_environment
@@ -46,7 +48,11 @@ class InstructionModeExecutor:
         self._set_status = set_status or (lambda state: None)
         self._text_io = text_io
         self._provider_call_timeout = provider_call_timeout
+        self._confirm_operation = confirm_operation or (lambda name, reason: False)
         self.last_status: tuple[str, str] = ("ok", "")
+        self.last_operation_risk: str = ""
+        self.last_confirmation_triggered: bool | None = None
+        self.last_user_cancelled: bool | None = None
 
     def execute(
         self,
@@ -56,26 +62,42 @@ class InstructionModeExecutor:
         target: TextTarget | None = None,
     ) -> bool:
         self.last_status = ("ok", operation.kind)
+        self.last_operation_risk = ""
+        self.last_confirmation_triggered = None
+        self.last_user_cancelled = None
         if operation.kind == "shortcut":
             policy = self._env.shortcut_policy_for_invocation(operation.name)
-            if not policy.found:
+            local_policy = apply_local_operation_policy(policy)
+            self.last_operation_risk = local_policy.risk
+            if local_policy.requires_confirmation:
+                self.last_confirmation_triggered = True
+                if not self._confirm_operation(operation.name, local_policy.reason):
+                    self.last_user_cancelled = True
+                    self._show_failure(
+                        f"快捷键已取消：{operation.name}",
+                        f"shortcut_cancelled:{operation.name}",
+                    )
+                    return True
+                self.last_user_cancelled = False
+                self.last_status = ("ok", f"shortcut_confirmed:{operation.name}")
+            if not local_policy.found:
                 self._show_failure(
                     f"没有找到快捷键：{operation.name}",
                     f"shortcut_missing:{operation.name}",
                 )
                 return True
-            elif policy.allowed:
+            elif local_policy.allowed or local_policy.requires_confirmation:
                 if not self._env.send_shortcut(operation.name):
                     self._show_failure(
                         f"快捷键执行失败：{operation.name}",
                         f"shortcut_failed:{operation.name}",
                     )
                     return True
-                elif policy.risk == "high":
+                elif local_policy.risk == "high":
                     print(
                         "[ai] 高风险快捷键已执行: "
-                        f"name={policy.name!r} source={policy.source!r} "
-                        f"application={policy.application!r}"
+                        f"name={local_policy.name!r} source={local_policy.source!r} "
+                        f"application={local_policy.application!r}"
                     )
             else:
                 self._show_failure(

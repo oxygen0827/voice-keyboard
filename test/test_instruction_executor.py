@@ -32,7 +32,7 @@ class InstructionModeExecutorTests(unittest.TestCase):
         env.send_shortcut.assert_not_called()
         self.assertEqual(messages, ["没有找到快捷键：provider invented"])
 
-    def test_single_high_risk_shortcut_invocation_is_marked_but_not_blocked(self):
+    def test_single_high_risk_shortcut_invocation_requires_confirmation_before_execution(self):
         env = MagicMock()
         env.shortcut_policy_for_invocation.return_value = ShortcutPolicyDecision(
             name="发送",
@@ -44,13 +44,52 @@ class InstructionModeExecutorTests(unittest.TestCase):
         )
         env.send_shortcut.return_value = True
         messages = []
-        executor = InstructionModeExecutor(MagicMock(), env, show=messages.append)
+        confirmed = []
+        executor = InstructionModeExecutor(
+            MagicMock(),
+            env,
+            show=messages.append,
+            confirm_operation=lambda name, reason: confirmed.append((name, reason)) or True,
+        )
 
         executor.execute(VoiceTextOperation("shortcut", name="发送"), "", "")
 
         env.shortcut_policy_for_invocation.assert_called_once_with("发送")
         env.send_shortcut.assert_called_once_with("发送")
+        self.assertEqual(confirmed, [("发送", "high_risk_requires_confirmation")])
         self.assertEqual(messages, [])
+        self.assertEqual(executor.last_status, ("ok", "shortcut_confirmed:发送"))
+        self.assertEqual(executor.last_operation_risk, "high")
+        self.assertTrue(executor.last_confirmation_triggered)
+        self.assertFalse(executor.last_user_cancelled)
+
+    def test_single_high_risk_shortcut_cancel_does_not_execute(self):
+        env = MagicMock()
+        env.shortcut_policy_for_invocation.return_value = ShortcutPolicyDecision(
+            name="发送",
+            found=True,
+            allowed=True,
+            risk="high",
+            source="application",
+            application="Codex (com.openai.codex)",
+        )
+        messages = []
+        executor = InstructionModeExecutor(
+            MagicMock(),
+            env,
+            show=messages.append,
+            confirm_operation=lambda name, reason: False,
+        )
+
+        keep_status = executor.execute(VoiceTextOperation("shortcut", name="发送"), "", "")
+
+        self.assertTrue(keep_status)
+        env.send_shortcut.assert_not_called()
+        self.assertEqual(messages, ["快捷键已取消：发送"])
+        self.assertEqual(executor.last_status, ("error", "shortcut_cancelled:发送"))
+        self.assertEqual(executor.last_operation_risk, "high")
+        self.assertTrue(executor.last_confirmation_triggered)
+        self.assertTrue(executor.last_user_cancelled)
 
     def test_shortcut_execution_failure_keeps_feedback_visible(self):
         env = MagicMock()

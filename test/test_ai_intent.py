@@ -480,6 +480,36 @@ class AIIntentTests(unittest.TestCase):
         self.assertEqual(records[0].value, "大美女")
         self.assertEqual(records[0].aliases, ())
 
+    def test_memo_records_use_store_records_when_available(self):
+        memory_entries = MagicMock()
+        memory_entries.records.return_value = (
+            MemoRecord(
+                "备用联系方式",
+                "not-an-email",
+                aliases=("邮箱",),
+                value_type="contact.email",
+                sensitive=True,
+            ),
+        )
+
+        records = memo_records(memory_entries)
+
+        self.assertEqual(records, memory_entries.records.return_value)
+        memory_entries.keys.assert_not_called()
+        memory_entries.get.assert_not_called()
+
+    def test_memo_records_fall_back_to_keys_and_get(self):
+        class LegacyMemoryEntries:
+            def keys(self):
+                return ["白光宇最喜欢说的话"]
+
+            def get(self, key: str):
+                return {"白光宇最喜欢说的话": "大美女"}.get(key)
+
+        records = memo_records(LegacyMemoryEntries())
+
+        self.assertEqual(records, (MemoRecord("白光宇最喜欢说的话", "大美女"),))
+
     def test_classifier_keeps_structured_result(self):
         llm = MagicMock()
         llm.chat.return_value = '```json\n{"type":"shortcut","name":"保存"}\n```'

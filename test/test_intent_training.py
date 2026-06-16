@@ -57,6 +57,29 @@ class IntentTrainingTests(unittest.TestCase):
             self.assertEqual(row["review_label"], "")
             self.assertEqual(row["review_note"], "")
 
+    def test_recorder_writes_operation_risk_and_confirmation_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "samples.jsonl"
+            recorder = IntentTrainingRecorder(IntentTrainingConfig(
+                enabled=True,
+                path=path,
+            ))
+
+            recorder.record(
+                text="发送一下",
+                intent_result={"type": "shortcut", "name": "发送"},
+                status="error",
+                detail="shortcut_cancelled:发送",
+                operation_risk="high",
+                confirmation_triggered=True,
+                user_cancelled=True,
+            )
+
+            row = json.loads(path.read_text(encoding="utf-8").strip())
+            self.assertEqual(row["operation_risk"], "high")
+            self.assertTrue(row["confirmation_triggered"])
+            self.assertTrue(row["user_cancelled"])
+
     def test_load_samples_respects_limit_from_end(self):
         with tempfile.TemporaryDirectory() as td:
             source = Path(td) / "samples.jsonl"

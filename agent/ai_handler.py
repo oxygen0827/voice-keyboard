@@ -195,6 +195,13 @@ class AIHandler:
             intent_result=result,
             status=status,
             detail=intent_detail,
+            operation_risk=getattr(self._executor, "last_operation_risk", None),
+            confirmation_triggered=getattr(
+                self._executor,
+                "last_confirmation_triggered",
+                None,
+            ),
+            user_cancelled=getattr(self._executor, "last_user_cancelled", None),
         )
         self._record("ai", text, status, intent_detail)
         return keep_status
