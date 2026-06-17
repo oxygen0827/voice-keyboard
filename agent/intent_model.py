@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+import requests
+
 from agent.intent_overrides import normalize_instruction_text, normalize_intent
 
 
@@ -159,6 +161,41 @@ def rollback_intent_model(registry_dir: Path | str) -> dict:
         if version and version != current and _model_version_path(registry, version).exists():
             return activate_intent_model_version(registry, version)
     raise ValueError("no previous intent model version")
+
+
+def pull_published_intent_model(
+    server: str,
+    registry_dir: Path | str,
+    *,
+    token: str = "",
+    http=requests,
+    timeout: int = 30,
+) -> dict:
+    registry = Path(registry_dir).expanduser()
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = http.get(
+        server.rstrip("/") + "/v1/intent-models/published/download",
+        headers=headers,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    version = _safe_model_version(str(payload.get("version") or "server"))
+    version_path = _model_version_path(registry, version)
+    version_path.parent.mkdir(parents=True, exist_ok=True)
+    version_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    model = load_intent_model(version_path)
+    if model is None:
+        version_path.unlink(missing_ok=True)
+        raise ValueError("downloaded intent model is invalid")
+    activation = activate_intent_model_version(registry, version)
+    return {
+        **activation,
+        "examples": len(model.examples),
+        "downloaded": str(version_path),
+    }
 
 
 def _load_jsonl(path: Path) -> list[dict]:
