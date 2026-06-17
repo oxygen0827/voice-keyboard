@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from training_server.config import ServerConfig, sqlite_path_from_url
@@ -24,6 +27,28 @@ class ReviewRequest(BaseModel):
 
 class PhraseReviewRequest(ReviewRequest):
     text: str
+
+
+def _published_model_path(cfg: ServerConfig):
+    return Path(cfg.model_dir).expanduser() / "current.json"
+
+
+def _published_model_metadata(cfg: ServerConfig) -> dict:
+    path = _published_model_path(cfg)
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="published model not found")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="published model is invalid") from e
+    examples = payload.get("examples") if isinstance(payload, dict) else None
+    if not isinstance(examples, dict):
+        raise HTTPException(status_code=500, detail="published model is invalid")
+    return {
+        "version": str(payload.get("version") or ""),
+        "examples": len(examples),
+        "created_at": float(payload.get("created_at") or 0),
+    }
 
 
 def create_app(config: ServerConfig | None = None) -> FastAPI:
@@ -96,6 +121,19 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         _auth: None = Depends(require_token),
     ) -> dict:
         return {"items": store.list_phrase_groups(limit=limit, offset=offset)}
+
+    @app.get("/v1/intent-models/published")
+    def published_model_metadata(_auth: None = Depends(require_token)) -> dict:
+        return _published_model_metadata(cfg)
+
+    @app.get("/v1/intent-models/published/download")
+    def download_published_model(_auth: None = Depends(require_token)) -> FileResponse:
+        _published_model_metadata(cfg)
+        return FileResponse(
+            _published_model_path(cfg),
+            media_type="application/json",
+            filename="intent_model.json",
+        )
 
     @app.post("/v1/intent-samples/{sample_id}/review")
     def review_sample(

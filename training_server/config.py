@@ -11,12 +11,14 @@ from pathlib import Path
 class ServerConfig:
     database_url: str = "sqlite:///./intent_training.db"
     upload_token: str = ""
+    model_dir: str = "./intent_models"
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
         return cls(
             database_url=os.getenv("INTENT_TRAINING_DATABASE_URL", "sqlite:///./intent_training.db"),
             upload_token=os.getenv("INTENT_TRAINING_UPLOAD_TOKEN", ""),
+            model_dir=os.getenv("INTENT_TRAINING_MODEL_DIR", "./intent_models"),
         )
 
 

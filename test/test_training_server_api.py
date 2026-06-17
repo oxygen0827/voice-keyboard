@@ -1,5 +1,7 @@
+import json
 import tempfile
 import unittest
+from pathlib import Path
 
 try:
     from fastapi.testclient import TestClient
@@ -136,6 +138,63 @@ class TrainingServerApiTests(unittest.TestCase):
             response = client.get("/v1/stats")
 
             self.assertEqual(response.status_code, 401)
+
+    def test_published_model_api_returns_metadata_and_download(self):
+        from training_server.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            model_dir = Path(td) / "models"
+            model_dir.mkdir()
+            (model_dir / "current.json").write_text(
+                json.dumps({
+                    "version": "server-v1",
+                    "created_at": 123.0,
+                    "examples": {
+                        "查找": {"type": "shortcut", "name": "查找"},
+                        "保存": {"type": "shortcut", "name": "保存"},
+                    },
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            app = create_app(ServerConfig(
+                database_url=f"sqlite:///{td}/training.db",
+                upload_token="secret",
+                model_dir=str(model_dir),
+            ))
+            client = TestClient(app)
+            headers = {"Authorization": "Bearer secret"}
+
+            metadata = client.get("/v1/intent-models/published", headers=headers)
+            self.assertEqual(metadata.status_code, 200)
+            self.assertEqual(metadata.json(), {
+                "version": "server-v1",
+                "examples": 2,
+                "created_at": 123.0,
+            })
+
+            download = client.get("/v1/intent-models/published/download", headers=headers)
+            self.assertEqual(download.status_code, 200)
+            self.assertEqual(download.headers["content-type"], "application/json")
+            self.assertEqual(download.json()["version"], "server-v1")
+
+    def test_published_model_api_returns_404_without_current_model(self):
+        from training_server.api import create_app
+
+        with tempfile.TemporaryDirectory() as td:
+            model_dir = Path(td) / "models"
+            app = create_app(ServerConfig(
+                database_url=f"sqlite:///{td}/training.db",
+                upload_token="secret",
+                model_dir=str(model_dir),
+            ))
+            client = TestClient(app)
+            headers = {"Authorization": "Bearer secret"}
+
+            metadata = client.get("/v1/intent-models/published", headers=headers)
+            download = client.get("/v1/intent-models/published/download", headers=headers)
+
+            self.assertEqual(metadata.status_code, 404)
+            self.assertEqual(download.status_code, 404)
 
 
 if __name__ == "__main__":

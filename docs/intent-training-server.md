@@ -16,6 +16,7 @@ batches, stores samples, supports review labels, and exposes statistics.
 - Corrected intent review payloads
 - Frequent phrase grouping
 - Bulk review by exact sample text
+- Published intent-model metadata and JSON download endpoints
 - Basic stats
 - Client upload CLI
 
@@ -41,6 +42,7 @@ python -m venv .venv-server
 ```bash
 export INTENT_TRAINING_DATABASE_URL=sqlite:///./intent_training.db
 export INTENT_TRAINING_UPLOAD_TOKEN=change-me
+export INTENT_TRAINING_MODEL_DIR=./intent_models
 uvicorn training_server.api:app --host 0.0.0.0 --port 8000
 ```
 
@@ -49,6 +51,7 @@ Windows:
 ```powershell
 $env:INTENT_TRAINING_DATABASE_URL = "sqlite:///./intent_training.db"
 $env:INTENT_TRAINING_UPLOAD_TOKEN = "change-me"
+$env:INTENT_TRAINING_MODEL_DIR = ".\intent_models"
 uvicorn training_server.api:app --host 0.0.0.0 --port 8000
 ```
 
@@ -124,6 +127,23 @@ List frequent phrases:
 GET /v1/intent-phrases?limit=30
 Authorization: Bearer <token>
 ```
+
+Read published model metadata:
+
+```text
+GET /v1/intent-models/published
+Authorization: Bearer <token>
+```
+
+Download the published model JSON:
+
+```text
+GET /v1/intent-models/published/download
+Authorization: Bearer <token>
+```
+
+The published model is `current.json` under `INTENT_TRAINING_MODEL_DIR`. The
+file uses the same JSON shape produced by `tools/train_intent_model.py`.
 
 Review sample:
 

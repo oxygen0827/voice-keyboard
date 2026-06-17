@@ -159,6 +159,7 @@ pip install -r requirements-server.txt
 ```bash
 export INTENT_TRAINING_DATABASE_URL="sqlite:///./intent_training.db"
 export INTENT_TRAINING_UPLOAD_TOKEN="change-me"
+export INTENT_TRAINING_MODEL_DIR="./intent_models"
 uvicorn training_server.api:app --host 0.0.0.0 --port 8000
 ```
 
@@ -276,7 +277,8 @@ http://SERVER:8000/review
 ### P2：服务器端模型训练和发布
 
 - 在 4060Ti 服务器上训练真正的语义分类器或小模型。
-- 服务端保存模型版本、训练数据版本和评测报告。
+- 服务端已提供已发布模型的 metadata 和 JSON 下载接口，读取 `INTENT_TRAINING_MODEL_DIR/current.json`。
+- 服务端仍需保存模型版本、训练数据版本和评测报告。
 - 只发布通过评测 guard 的 candidate。
 - 客户端按版本拉取已发布模型。
 - 客户端保留本地回滚能力。
@@ -329,13 +331,13 @@ http://SERVER:8000/review
 2. 用固定评测集比较 baseline 和候选模型。
 3. 在 Windows 上真实验证高风险确认弹窗，确认 `发送/提交/关闭/删除` 类操作不会误触发。
 4. 在服务器上做第一版语义分类器或小模型训练实验。
-5. 建立服务端模型版本发布接口。
-6. 让客户端拉取服务器发布模型，并保留本地回滚。
+5. 让客户端拉取服务器发布模型，并保留本地回滚。
+6. 建立服务端模型版本、训练数据版本和评测报告登记。
 7. 把高风险操作确认策略纳入评测指标。
 
 ## 当前仓库状态备注
 
-截至 2026-06-17，模型激活 guard、Memo metadata、本地高风险策略和 Windows 高风险确认 adapter 已提交到本地 `main`，尚未推送远端。
+截至 2026-06-17，模型激活 guard、Memo metadata、本地高风险策略、Windows 高风险确认 adapter、Memo alias 编辑入口和服务端模型发布接口已推进到 `main`。
 
 已验证：
 
