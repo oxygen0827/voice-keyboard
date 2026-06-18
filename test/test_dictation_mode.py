@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock
 
+from agent.correction_memory import CorrectionMemory
 from agent.dictation_mode import (
     DictationMode,
     clean_generated_text,
@@ -91,7 +92,7 @@ class DictationModeModuleTests(unittest.TestCase):
         env.insert_output_text.assert_called_once_with("例如：苹果香蕉！")
         history.append.assert_called_once_with("dictate", "例如：苹果香蕉！", "ok", "")
 
-    def test_normal_dictation_inserts_recognized_text_without_personal_dictionary(self):
+    def test_normal_dictation_inserts_recognized_text_when_dictionary_is_empty(self):
         module, _stt, env, _status, history = self.make_module("白光雨最喜欢说的话")
 
         module.handle_utterance(b"pcm")
@@ -99,6 +100,47 @@ class DictationModeModuleTests(unittest.TestCase):
         env.insert_output_text.assert_called_once_with("白光雨最喜欢说的话")
         history.append.assert_called_once_with("dictate", "白光雨最喜欢说的话", "ok", "")
         _status.show_typing_message.assert_not_called()
+
+    def test_normal_dictation_applies_confirmed_correction_memory(self):
+        module, _stt, env, _status, history = self.make_module("白光雨最喜欢说的话")
+        memory = MagicMock(spec=CorrectionMemory)
+        memory.apply.return_value = "白光宇最喜欢说的话"
+        module.correction_memory = memory
+
+        module.handle_utterance(b"pcm")
+
+        memory.apply.assert_called_once_with("白光雨最喜欢说的话")
+        env.insert_output_text.assert_called_once_with("白光宇最喜欢说的话")
+        history.append.assert_called_once_with("dictate", "白光宇最喜欢说的话", "ok", "")
+
+    def test_observes_previous_manual_correction_before_next_dictation(self):
+        module, _stt, env, status, _history = self.make_module("下一句")
+        tracker = MagicMock()
+        tracker.observe_current_text.return_value = MagicMock(
+            confirmed=[
+                MagicMock(wrong="王琦", correct="王齐"),
+            ],
+        )
+        module.correction_tracker = tracker
+
+        module.handle_utterance(b"pcm")
+
+        tracker.observe_current_text.assert_called_once_with()
+        status.show_message.assert_called_once_with("已将「王齐」加入词典", 5.0)
+        tracker.remember_inserted.assert_called_once_with("下一句")
+
+    def test_schedules_background_correction_observation_after_insert(self):
+        module, _stt, env, _status, _history = self.make_module("王琦王琦小王琦")
+        tracker = MagicMock()
+        tracker.observe_current_text.return_value = MagicMock(confirmed=[])
+        scheduler = MagicMock()
+        module.correction_tracker = tracker
+        module.correction_scheduler = scheduler
+
+        module.handle_utterance(b"pcm")
+
+        tracker.remember_inserted.assert_called_once_with("王琦王琦小王琦")
+        scheduler.schedule.assert_called_once_with()
 
     def test_polish_stt_uses_dedicated_transcription_method_when_available(self):
         stt = MagicMock(spec=["transcribe", "transcribe_polished"])

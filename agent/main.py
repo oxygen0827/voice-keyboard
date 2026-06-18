@@ -160,7 +160,8 @@ def make_serial_handlers(buf: TextBuffer, history: History | None = None, input_
 
 def make_utterance_handler(stt_client, buf: TextBuffer, editor=None,
                            status_window=None, history: History | None = None,
-                           input_environment=None):
+                           input_environment=None, correction_config=None,
+                           return_mode: bool = False):
     return _make_dictation_utterance_handler(
         stt_client,
         buf,
@@ -168,6 +169,8 @@ def make_utterance_handler(stt_client, buf: TextBuffer, editor=None,
         status_window=status_window,
         history=history,
         input_environment=input_environment,
+        correction_config=correction_config,
+        return_mode=return_mode,
     )
 
 
@@ -193,6 +196,7 @@ def list_devices():
         "  audio:\n"
         "    device: 2\n"
         "    device: \"MacBook\"\n"
+        "    device: xiao_ble  # XIAO nRF52840 Sense BLE 音频\n"
     )
 
 

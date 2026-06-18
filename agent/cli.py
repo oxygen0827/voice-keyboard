@@ -21,6 +21,11 @@ import sounddevice as sd
 from agent.audio_monitor import find_device
 from agent.config import load as load_config
 from agent.stt import STTClient
+from agent.xiao_ble_audio import (
+    is_xiao_ble_device_hint,
+    record_xiao_ble_for_seconds,
+    record_xiao_ble_until_enter,
+)
 
 SAMPLE_RATE = 16000
 BLOCK_SAMPLES = 1024
@@ -57,6 +62,12 @@ def _resolve_device(device_hint: Optional[str] = "auto"):
 
 
 def record_for_seconds(seconds: float, device_hint: Optional[str] = "auto") -> bytes:
+    if is_xiao_ble_device_hint(device_hint):
+        print(f"[rec] XIAO BLE 录音 {seconds:.1f}s...", flush=True)
+        pcm = record_xiao_ble_for_seconds(seconds, device_hint=str(device_hint))
+        print(f"[rec] 完成，时长 {len(pcm) / SAMPLE_RATE / 2:.2f}s")
+        return pcm
+
     device = _resolve_device(device_hint)
     print(f"[rec] 录音 {seconds:.1f}s...", flush=True)
     chunks: list[bytes] = []
@@ -80,6 +91,11 @@ def record_for_seconds(seconds: float, device_hint: Optional[str] = "auto") -> b
 
 
 def record_until_enter(device_hint: Optional[str] = "auto") -> bytes:
+    if is_xiao_ble_device_hint(device_hint):
+        pcm = record_xiao_ble_until_enter(device_hint=str(device_hint))
+        print(f"[rec] 完成，时长 {len(pcm) / SAMPLE_RATE / 2:.2f}s")
+        return pcm
+
     device = _resolve_device(device_hint)
 
     q: queue.Queue[bytes] = queue.Queue()

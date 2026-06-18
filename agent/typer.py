@@ -233,12 +233,17 @@ def type_text(text: str) -> None:
     """在当前焦点输入框打出任意 Unicode 文字（含汉字）"""
     if not text:
         return
-    if _OS == "Darwin":
-        _type_via_quartz(text)
-    elif _OS == "Windows":
-        _type_via_sendinput(text)
-    else:
-        _type_via_xtest(text)  # Linux
+    global _simulating
+    _simulating = True
+    try:
+        if _OS == "Darwin":
+            _type_via_quartz(text)
+        elif _OS == "Windows":
+            _type_via_sendinput(text)
+        else:
+            _type_via_xtest(text)  # Linux
+    finally:
+        _simulating = False
 
 
 def has_focused_text_input() -> bool:
@@ -677,6 +682,98 @@ def get_caret_text_window(max_chars: int = 600) -> CaretTextWindow | None:
     except Exception as e:
         print(f"[typer] get_caret_text_window 失败: {e}")
         return None
+
+
+def get_focused_text_value(max_chars: int = 2000) -> str:
+    """Return the focused editable text without slicing around the caret."""
+    if _OS != "Darwin":
+        return ""
+    focused = _focused_accessibility_element()
+    if focused is None:
+        return ""
+    try:
+        text = _read_accessibility_text(focused)
+        if len(text) > max_chars:
+            return text[-max_chars:]
+        return text
+    except Exception as e:
+        print(f"[typer] get_focused_text_value 失败: {e}")
+        return ""
+
+
+def _read_accessibility_text(element, *, depth: int = 0, max_depth: int = 3) -> str:
+    text = _read_accessibility_text_from_element(element)
+    if text:
+        return text
+    if depth >= max_depth:
+        return ""
+    for child in _accessibility_children(element):
+        text = _read_accessibility_text(child, depth=depth + 1, max_depth=max_depth)
+        if text:
+            return text
+    return ""
+
+
+def _read_accessibility_text_from_element(element) -> str:
+    value = _ax_attribute(element, "AXValue")
+    if isinstance(value, str) and value:
+        return value
+    text = _read_accessibility_string_for_full_range(element)
+    if text:
+        return text
+    return ""
+
+
+def _read_accessibility_string_for_full_range(element) -> str:
+    length_value = _ax_attribute(element, "AXNumberOfCharacters")
+    try:
+        length = int(length_value)
+    except (TypeError, ValueError):
+        return ""
+    if length <= 0:
+        return ""
+    try:
+        cf_range = ApplicationServices.CFRangeMake(0, length)
+        ax_range = ApplicationServices.AXValueCreate(
+            ApplicationServices.kAXValueCFRangeType,
+            cf_range,
+        )
+        result = ApplicationServices.AXUIElementCopyParameterizedAttributeValue(
+            element,
+            "AXStringForRange",
+            ax_range,
+            None,
+        )
+    except Exception:
+        return ""
+    if not isinstance(result, tuple) or len(result) < 2:
+        return ""
+    err, value = result[0], result[1]
+    if err != 0 or value is None:
+        return ""
+    return str(value)
+
+
+def _accessibility_children(element) -> tuple:
+    for attr in ("AXChildren", "AXVisibleChildren", "AXRows", "AXContents"):
+        value = _ax_attribute(element, attr)
+        if isinstance(value, (list, tuple)) and value:
+            return tuple(value)
+    return ()
+
+
+def _ax_attribute(element, attr: str):
+    try:
+        err, value = ApplicationServices.AXUIElementCopyAttributeValue(
+            element,
+            attr,
+            None,
+        )
+        if err == 0 and value is not None:
+            return value
+    except Exception:
+        return None
+    return None
 
 
 _SENTENCE_BOUNDARIES = frozenset("。！？!?…\n")

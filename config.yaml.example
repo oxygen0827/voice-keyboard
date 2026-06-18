@@ -94,11 +94,16 @@ audio:
 
   device: auto              # auto = 自动查找 ESP32 UAC 麦克风，找不到用系统默认
                             # 其他示例：
+                            #   device: xiao_ble        # XIAO nRF52840 Sense（PsyGuard BLE 固件）
+                            #   device: xiao_ble:PsyGuard # 指定 BLE 名称/地址片段
                             #   device: "MacBook"        # 内置麦克风
                             #   device: "Insta360"       # Insta360 麦克风
                             #   device: "DJI"            # 大疆麦克风
                             #   device: "Yeti"           # Blue Yeti USB 麦克风
                             #   device: 2                # 直接填序号（用 --list-devices 查）
+  xiao_ble:
+    trim_silence: false     # 默认不裁剪，避免误切掉短句开头；调试时再打开
+    normalize_gain: false   # 默认不自动增益，避免把 BLE 噪声/削波放大
   vad_aggressiveness: 2     # VAD 灵敏度 0~3（仅 mode: vad 时生效）
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -158,6 +163,17 @@ llm:
 #   refresh_token: "..."
 #   cloud_bridge_path: "/path/to/cloud-bridge.json"
 #   model: glm-4-flash
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Dictation Mode 个人词典 / 纠错记忆
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+correction_memory:
+  enabled: true
+  path: ~/.voice-keyboard/correction_memory.json
+  # 同一类“错词 -> 正词”至少观察到几次，才自动加入词典。
+  confirm_threshold: 2
+  # 只在语音输入后短时间内观察用户手动修改，避免学习无关输入。
+  observe_window_seconds: 30
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Instruction Mode

@@ -365,7 +365,8 @@ def _preview(text: str, limit: int = 28) -> str:
 
 def _operation_message(operation) -> str:
     if operation.kind == "shortcut":
-        return f"\u51c6\u5907\u6267\u884c\u5feb\u6377\u952e\uff1a{operation.name or '\u672a\u547d\u540d'}"
+        name = operation.name or "未命名"
+        return f"准备执行快捷键：{name}"
     labels = {
         "undo": "\u51c6\u5907\u64a4\u9500",
         "delete": "\u51c6\u5907\u5220\u9664\u5185\u5bb9",

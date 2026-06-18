@@ -22,6 +22,7 @@ class FakeTextIO:
         self.can_insert = True
         self.confirm_paste = False
         self.caret_window = None
+        self.focused_text_value = ""
         self.can_replace_text_window = True
 
     def can_insert_text(self) -> bool:
@@ -42,6 +43,10 @@ class FakeTextIO:
     def get_caret_text_window(self):
         self.calls.append(("get_caret_text_window",))
         return self.caret_window
+
+    def get_focused_text_value(self):
+        self.calls.append(("get_focused_text_value",))
+        return self.focused_text_value
 
     def type_text(self, text: str) -> None:
         self.calls.append(("type_text", text))
@@ -299,6 +304,15 @@ class InputEnvironmentTests(unittest.TestCase):
         self.assertIsNotNone(result.window)
         self.assertEqual(result.window.text, "current sentence.")
         self.assertEqual(result.window.source, "caret")
+
+    def test_correction_learning_uses_full_focused_text_before_caret_slice(self):
+        text_io = FakeTextIO()
+        text_io.focused_text_value = "文净，文净，文净"
+        text_io.caret_window = CaretTextWindow("文净，文净，文", "caret_sentence")
+        env = TyperInputEnvironment(TextBuffer(), text_io=text_io)
+
+        self.assertEqual(env.current_text_for_correction_learning(), "文净，文净，文净")
+        self.assertNotIn(("get_caret_text_window",), text_io.calls)
 
     def test_operation_window_prefers_last_output_over_caret_window(self):
         buf = TextBuffer()

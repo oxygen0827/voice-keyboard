@@ -7,6 +7,7 @@ platform typing details.
 from dataclasses import dataclass
 from typing import Literal
 
+from agent.correction_memory import CorrectionTextSnapshot
 from agent.text_buffer import TextBuffer
 from agent.text_io import ShortcutPolicyDecision, TextIO, TyperTextIO
 
@@ -131,6 +132,25 @@ class TyperInputEnvironment:
             return TextInsertionResult(inserted_text="")
         self.insert_text(text)
         return TextInsertionResult(inserted_text=text)
+
+    def current_text_for_correction_learning(self) -> str:
+        return self.current_text_snapshot_for_correction_learning().text
+
+    def current_text_snapshot_for_correction_learning(self) -> CorrectionTextSnapshot:
+        if hasattr(self._text_io, "get_focused_text_value"):
+            value = self._text_io.get_focused_text_value()
+            if value:
+                return CorrectionTextSnapshot(value, source="AXValue")
+        window = self._text_io.get_caret_text_window()
+        if window is not None and window.text:
+            return CorrectionTextSnapshot(
+                window.text,
+                source=f"caret:{window.source}",
+            )
+        return CorrectionTextSnapshot(
+            self._buf.current_segment,
+            source="tracked_segment",
+        )
 
     def insert_text_after_selection(self, text: str, selected: str = "") -> None:
         if selected:

@@ -6,7 +6,7 @@ LSUIElement=true 的应用没有 dock 图标，菜单栏图标是用户唯一可
 import objc
 from AppKit import (
     NSApplication, NSImage, NSMenu, NSMenuItem,
-    NSStatusBar, NSVariableStatusItemLength,
+    NSImageLeft, NSStatusBar,
 )
 from Foundation import NSObject
 
@@ -25,7 +25,7 @@ class MenuBar(NSObject):
             pass
 
         bar = NSStatusBar.systemStatusBar()
-        item = bar.statusItemWithLength_(28.0)  # 固定 28px，避免被压缩到看不见
+        item = bar.statusItemWithLength_(52.0)  # 固定宽度，避免被压缩到看不见
         button = item.button()
         button.setTitle_("VK")  # fallback，确保任何情况下都不会"完全空白"
         try:
@@ -33,7 +33,12 @@ class MenuBar(NSObject):
                 "mic.fill", "Voice Keyboard",
             )
             if img is not None:
+                try:
+                    img.setTemplate_(True)
+                except Exception:
+                    pass
                 button.setImage_(img)
+                button.setImagePosition_(NSImageLeft)
         except Exception:
             pass
         try:

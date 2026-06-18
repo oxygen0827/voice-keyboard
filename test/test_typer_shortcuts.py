@@ -1178,6 +1178,66 @@ class TyperShortcutTests(unittest.TestCase):
         self.assertEqual(window.text, text)
         self.assertEqual(window.source, "text_field")
 
+    def test_get_focused_text_value_prefers_accessibility_value(self):
+        focused = object()
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "_focused_accessibility_element", return_value=focused),
+            patch.object(typer, "ApplicationServices") as ax,
+        ):
+            ax.AXUIElementCopyAttributeValue.return_value = (0, "文净，文净，文净")
+
+            self.assertEqual(typer.get_focused_text_value(), "文净，文净，文净")
+
+        ax.AXUIElementCopyParameterizedAttributeValue.assert_not_called()
+
+    def test_get_focused_text_value_uses_string_for_range_when_value_missing(self):
+        focused = object()
+        text = "文净，文净，文净"
+
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "_focused_accessibility_element", return_value=focused),
+            patch.object(typer, "ApplicationServices") as ax,
+        ):
+            ax.kAXValueCFRangeType = "range"
+            ax.CFRangeMake.side_effect = lambda location, length: (location, length)
+            ax.AXValueCreate.side_effect = lambda _value_type, value: value
+
+            def copy_attr(_element, attr, _default):
+                if attr == "AXValue":
+                    return 1, None
+                if attr == "AXNumberOfCharacters":
+                    return 0, len(text)
+                return 1, None
+
+            ax.AXUIElementCopyAttributeValue.side_effect = copy_attr
+            ax.AXUIElementCopyParameterizedAttributeValue.return_value = (0, text)
+
+            self.assertEqual(typer.get_focused_text_value(), text)
+
+        ax.AXUIElementCopyParameterizedAttributeValue.assert_called_once_with(
+            focused,
+            "AXStringForRange",
+            (0, len(text)),
+            None,
+        )
+
+    def test_type_text_marks_simulating_while_emitting_text(self):
+        states = []
+
+        def emit(_text):
+            states.append(typer.is_simulating())
+
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "_type_via_quartz", side_effect=emit),
+        ):
+            typer.type_text("文静")
+
+        self.assertEqual(states, [True])
+        self.assertFalse(typer.is_simulating())
+
     def test_accessibility_selected_range_reads_pyobjc_return_tuple(self):
         app_services = typer.ApplicationServices
         selected_range = app_services.AXValueCreate(

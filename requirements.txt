@@ -1,6 +1,7 @@
 pyserial
 pynput
 sounddevice
+bleak
 # webrtcvad 仅 VAD 模式需要，PTT 模式无需安装
 # Python 3.12 及以下可直接安装：pip install webrtcvad
 # Python 3.13+：目前 webrtcvad 暂无预编译包，请使用 PTT 模式（audio.mode: ptt）

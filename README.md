@@ -26,6 +26,10 @@ The Windows client has the main local workflow in place:
 - AI intent diagnostics and correction workflow
 - Local-only correction mode when no training server is configured
 - Optional training server for sample upload, review, correction, and stats
+- Dictation correction memory on macOS for editable inputs that expose their
+  text through Accessibility. The current verified path is TextEdit: after
+  Dictation Mode inserts text, repeated manual corrections can be learned as a
+  local wrong-to-correct dictionary entry and applied to later dictation.
 
 The intent model loop is still evolving. The current implementation combines deterministic rules, local correction overrides, lightweight local intent data, and optional LLM interpretation. A stronger semantic classifier can be trained later from corrected real usage samples.
 
@@ -135,6 +139,8 @@ Common sections:
 - `llm`: model provider for instruction interpretation, rewriting, polishing, and generated text.
 - `audio`: capture mode, hotkeys, audio device, and VAD settings.
 - `typing`: text insertion and shortcut execution behavior.
+- `correction_memory`: local Dictation Mode correction dictionary and learning
+  settings.
 - `instruction_mode`: local intent rules, memo triggers, overrides, diagnostics, and training sync.
 
 Typical hotkey shape:
@@ -146,6 +152,26 @@ audio:
   ai_key: alt_r
   device: auto
 ```
+
+Typical correction-memory shape:
+
+```yaml
+correction_memory:
+  enabled: true
+  path: ~/.voice-keyboard/correction_memory.json
+  confirm_threshold: 2
+  observe_window_seconds: 30
+  observe_delays: [0.8, 2, 5, 12]
+  debug: false
+```
+
+Correction memory is separate from Memo. It learns small Dictation Mode
+corrections such as `文静 -> 文净` after the user manually fixes Voice Keyboard
+Engine output in the same Tracked Segment. On macOS the current robust path uses
+Accessibility text observation (`AXValue`) plus keyboard edit tracking. TextEdit
+has been verified. Apps that do not expose their live input text through
+Accessibility, such as some Electron/chat inputs, may still need app-specific
+or lower-level capture work before automatic learning is reliable there.
 
 Secrets should stay out of git. Use `config.yaml`, `.env`, environment variables, or a local secret manager. The repository tracks only examples such as `config.yaml.example` and `.env.example`.
 
@@ -235,6 +261,20 @@ python -m compileall -q agent training_server tools test
 ```
 
 Some behavior depends on OS permissions, a real focused input field, or an available desktop session. For day-to-day development, prefer focused unit tests around the module you changed.
+
+Focused tests for Dictation Mode correction memory:
+
+```bash
+python -m unittest test.test_correction_memory test.test_runtime_composition test.test_dictation_mode
+```
+
+Manual macOS smoke test:
+
+1. Start the runtime with `python -m agent.main --no-serial`.
+2. Open TextEdit and focus a blank document.
+3. Use Dictation Mode to insert `文静，文静，文静`.
+4. Manually change the three `静` characters to `净`.
+5. Wait for the local dictionary confirmation prompt.
 
 ## Packaging
 

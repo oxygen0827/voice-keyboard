@@ -59,6 +59,9 @@ class TextIO(Protocol):
     def get_caret_text_window(self) -> CaretTextWindow | None:
         ...
 
+    def get_focused_text_value(self) -> str:
+        ...
+
     def type_text(self, text: str) -> None:
         ...
 
@@ -119,6 +122,9 @@ class TyperTextIO:
         if window is None:
             return None
         return CaretTextWindow(text=window.text, source=window.source)
+
+    def get_focused_text_value(self) -> str:
+        return typer.get_focused_text_value()
 
     def type_text(self, text: str) -> None:
         typer.type_text(text)

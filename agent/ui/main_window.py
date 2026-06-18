@@ -203,6 +203,7 @@ class _SettingsTab(NSObject):
         doc.addSubview_(_label("device", NSMakeRect(20, y, 160, 20)))
         pop = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(180, y - 4, 380, 26))
         pop.addItemWithTitle_("auto")
+        pop.addItemWithTitle_("xiao_ble")
         try:
             for i, d in enumerate(sd.query_devices()):
                 if d["max_input_channels"] > 0:
