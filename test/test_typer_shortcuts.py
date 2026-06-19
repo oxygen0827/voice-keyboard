@@ -10,6 +10,7 @@ from agent import app_launcher
 from agent import macos_window_actions
 from agent import typer
 from agent import windows_window_actions
+from agent.focused_text_capture import FocusedTextSnapshot
 
 
 class TyperShortcutTests(unittest.TestCase):
@@ -1182,7 +1183,11 @@ class TyperShortcutTests(unittest.TestCase):
         focused = object()
         with (
             patch.object(typer, "_OS", "Darwin"),
-            patch.object(typer, "_focused_accessibility_element", return_value=focused),
+            patch.object(
+                typer,
+                "_focused_accessibility_element_with_source",
+                return_value=(focused, "app"),
+            ),
             patch.object(typer, "ApplicationServices") as ax,
         ):
             ax.AXUIElementCopyAttributeValue.return_value = (0, "文净，文净，文净")
@@ -1191,13 +1196,178 @@ class TyperShortcutTests(unittest.TestCase):
 
         ax.AXUIElementCopyParameterizedAttributeValue.assert_not_called()
 
+    def test_inspect_focused_text_reports_accessibility_value_probe(self):
+        focused = object()
+        app = typer.ActiveApplication("TextEdit", "com.apple.TextEdit", 123)
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(
+                typer,
+                "_focused_accessibility_element_with_source",
+                return_value=(focused, "app"),
+            ),
+            patch.object(typer, "_get_accessibility_selected_range", return_value=(3, 0)),
+            patch.object(typer, "ApplicationServices") as ax,
+        ):
+            def copy_attr(_element, attr, _default):
+                if attr == "AXRole":
+                    return 0, "AXTextArea"
+                if attr == "AXSubrole":
+                    return 0, "AXStandardWindow"
+                if attr == "AXValue":
+                    return 0, "文净，文净，文净"
+                return 1, None
+
+            ax.AXUIElementCopyAttributeValue.side_effect = copy_attr
+
+            snapshot = typer.inspect_focused_text()
+
+        self.assertEqual(snapshot.text, "文净，文净，文净")
+        self.assertEqual(snapshot.source, "AXValue")
+        self.assertEqual(snapshot.confidence, "high")
+        self.assertEqual(snapshot.app_label, "TextEdit (com.apple.TextEdit)")
+        self.assertEqual(snapshot.role, "AXTextArea")
+        self.assertEqual(snapshot.selected_range, (3, 0))
+        self.assertIn(("AXValue", True), [(p.name, p.ok) for p in snapshot.probes])
+
+    def test_inspect_focused_text_falls_back_to_system_wide_focus(self):
+        app_root = object()
+        system_root = object()
+        focused = object()
+        app = typer.ActiveApplication("Codex", "com.openai.codex", 123)
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "NSWorkspace") as workspace,
+            patch.object(typer, "ApplicationServices") as ax,
+        ):
+            frontmost = workspace.sharedWorkspace.return_value.frontmostApplication.return_value
+            frontmost.processIdentifier.return_value = 123
+            ax.AXUIElementCreateApplication.return_value = app_root
+            ax.AXUIElementCreateSystemWide.return_value = system_root
+
+            def copy_attr(element, attr, _default):
+                if element is app_root and attr == "AXFocusedUIElement":
+                    return 1, None
+                if element is system_root and attr == "AXFocusedUIElement":
+                    return 0, focused
+                if element is focused and attr == "AXValue":
+                    return 0, "真实输入框文本"
+                return 1, None
+
+            ax.AXUIElementCopyAttributeValue.side_effect = copy_attr
+
+            snapshot = typer.inspect_focused_text()
+
+        self.assertEqual(snapshot.text, "真实输入框文本")
+        self.assertEqual(snapshot.source, "AXValue")
+        self.assertIn(("AXFocusedUIElement", "system_wide"), [
+            (p.name, p.detail) for p in snapshot.probes
+        ])
+
+    def test_inspect_focused_text_scans_windows_when_focus_is_missing(self):
+        app_root = object()
+        system_root = object()
+        window = object()
+        text_area = object()
+        app = typer.ActiveApplication("微信", "com.tencent.xinWeChat", 123)
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "NSWorkspace") as workspace,
+            patch.object(typer, "ApplicationServices") as ax,
+        ):
+            frontmost = workspace.sharedWorkspace.return_value.frontmostApplication.return_value
+            frontmost.processIdentifier.return_value = 123
+            ax.AXUIElementCreateApplication.return_value = app_root
+            ax.AXUIElementCreateSystemWide.return_value = system_root
+
+            def copy_attr(element, attr, _default):
+                if attr == "AXFocusedUIElement":
+                    return 1, None
+                if element is app_root and attr == "AXFocusedWindow":
+                    return 1, None
+                if element is app_root and attr == "AXWindows":
+                    return 0, [window]
+                if element is window and attr == "AXChildren":
+                    return 0, [text_area]
+                if element is text_area and attr == "AXRole":
+                    return 0, "AXTextArea"
+                if element is text_area and attr == "AXValue":
+                    return 0, "微信输入框文本"
+                return 1, None
+
+            ax.AXUIElementCopyAttributeValue.side_effect = copy_attr
+
+            snapshot = typer.inspect_focused_text()
+
+        self.assertEqual(snapshot.text, "微信输入框文本")
+        self.assertEqual(snapshot.source, "AXValue")
+        self.assertIn(("AXWindowScan", "AXWindows"), [
+            (p.name, p.detail) for p in snapshot.probes
+        ])
+
+    def test_inspect_focused_text_reports_window_scan_failure_detail(self):
+        app_root = object()
+        system_root = object()
+        window = object()
+        group = object()
+        button = object()
+        app = typer.ActiveApplication("Codex", "com.openai.codex", 123)
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "NSWorkspace") as workspace,
+            patch.object(typer, "ApplicationServices") as ax,
+        ):
+            frontmost = workspace.sharedWorkspace.return_value.frontmostApplication.return_value
+            frontmost.processIdentifier.return_value = 123
+            ax.AXUIElementCreateApplication.return_value = app_root
+            ax.AXUIElementCreateSystemWide.return_value = system_root
+
+            def copy_attr(element, attr, _default):
+                if attr == "AXFocusedUIElement":
+                    return 1, None
+                if element is app_root and attr == "AXFocusedWindow":
+                    return 1, None
+                if element is app_root and attr == "AXWindows":
+                    return 0, [window]
+                if element is window and attr == "AXRole":
+                    return 0, "AXWindow"
+                if element is window and attr == "AXChildren":
+                    return 0, [group]
+                if element is group and attr == "AXRole":
+                    return 0, "AXGroup"
+                if element is group and attr == "AXChildren":
+                    return 0, [button]
+                if element is button and attr == "AXRole":
+                    return 0, "AXButton"
+                return 1, None
+
+            ax.AXUIElementCopyAttributeValue.side_effect = copy_attr
+
+            snapshot = typer.inspect_focused_text()
+
+        self.assertEqual(snapshot.source, "unsupported")
+        scan_probe = next(p for p in snapshot.probes if p.name == "AXWindowScan")
+        self.assertFalse(scan_probe.ok)
+        self.assertIn("not_found", scan_probe.detail)
+        self.assertIn("windows=1", scan_probe.detail)
+        self.assertIn("visited=3", scan_probe.detail)
+        self.assertIn("AXButton:1", scan_probe.detail)
+
     def test_get_focused_text_value_uses_string_for_range_when_value_missing(self):
         focused = object()
         text = "文净，文净，文净"
 
         with (
             patch.object(typer, "_OS", "Darwin"),
-            patch.object(typer, "_focused_accessibility_element", return_value=focused),
+            patch.object(
+                typer,
+                "_focused_accessibility_element_with_source",
+                return_value=(focused, "app"),
+            ),
             patch.object(typer, "ApplicationServices") as ax,
         ):
             ax.kAXValueCFRangeType = "range"
@@ -1222,6 +1392,67 @@ class TyperShortcutTests(unittest.TestCase):
             (0, len(text)),
             None,
         )
+
+    def test_inspect_focused_text_reports_string_for_range_probe(self):
+        focused = object()
+        text = "文净，文净，文净"
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(
+                typer,
+                "_focused_accessibility_element_with_source",
+                return_value=(focused, "app"),
+            ),
+            patch.object(typer, "ApplicationServices") as ax,
+        ):
+            ax.kAXValueCFRangeType = "range"
+            ax.CFRangeMake.side_effect = lambda location, length: (location, length)
+            ax.AXValueCreate.side_effect = lambda _value_type, value: value
+
+            def copy_attr(_element, attr, _default):
+                if attr == "AXValue":
+                    return 1, None
+                if attr == "AXNumberOfCharacters":
+                    return 0, len(text)
+                return 1, None
+
+            ax.AXUIElementCopyAttributeValue.side_effect = copy_attr
+            ax.AXUIElementCopyParameterizedAttributeValue.return_value = (0, text)
+
+            snapshot = typer.inspect_focused_text()
+
+        self.assertEqual(snapshot.text, text)
+        self.assertEqual(snapshot.source, "AXStringForRange")
+        self.assertEqual(snapshot.confidence, "high")
+        self.assertIn(("AXStringForRange", True), [(p.name, p.ok) for p in snapshot.probes])
+
+    def test_inspect_screen_text_delegates_to_ocr_capture(self):
+        expected = FocusedTextSnapshot(
+            text="李立夫",
+            source="ocr_window",
+            confidence="medium",
+        )
+        with patch("agent.screen_ocr_capture.capture_screen_text", return_value=expected) as capture:
+            snapshot = typer.inspect_screen_text(reference_text="李丽夫", max_chars=123)
+
+        self.assertIs(snapshot, expected)
+        capture.assert_called_once_with(reference_text="李丽夫", max_chars=123)
+
+    def test_inspect_screen_text_reports_ocr_error(self):
+        app = typer.ActiveApplication("Codex", "com.openai.codex", 123)
+        with (
+            patch("agent.typer.current_application", return_value=app),
+            patch(
+                "agent.screen_ocr_capture.capture_screen_text",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            snapshot = typer.inspect_screen_text(reference_text="李丽夫")
+
+        self.assertEqual(snapshot.source, "ocr_error")
+        self.assertEqual(snapshot.app_name, "Codex")
+        self.assertTrue(snapshot.probes)
+        self.assertEqual(snapshot.probes[0].name, "ScreenOCR")
 
     def test_type_text_marks_simulating_while_emitting_text(self):
         states = []

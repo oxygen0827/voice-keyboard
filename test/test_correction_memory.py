@@ -29,6 +29,16 @@ class CorrectionMemoryTests(unittest.TestCase):
             (),
         )
 
+    def test_does_not_infer_mixed_pinyin_or_symbol_candidate(self):
+        self.assertEqual(
+            infer_correction_pairs("宋海丽，宋海丽，宋海丽", "宋海丽，宋海丽，宋海cao"),
+            (),
+        )
+        self.assertEqual(
+            infer_correction_pairs("宋海丽，宋海丽，宋海丽", "宋海丽，宋海丽，宋海]cao3"),
+            (),
+        )
+
     def test_allows_input_environment_context_around_edited_segment(self):
         corrections = infer_correction_pairs(
             "王琦王琦小王琦",
@@ -53,6 +63,21 @@ class CorrectionMemoryTests(unittest.TestCase):
             self.assertTrue(second.newly_confirmed)
             self.assertEqual(memory.apply("王琦今天来了"), "王齐今天来了")
 
+    def test_exposes_candidates_path_and_threshold_for_dictionary_ui(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "correction.json"
+            memory = CorrectionMemory(path, confirm_threshold=3)
+
+            memory.learn("李长寿", "李长守")
+
+            self.assertEqual(memory.path, path)
+            self.assertEqual(memory.confirm_threshold, 3)
+            self.assertEqual(memory.entries, ())
+            self.assertEqual(
+                [(item.wrong, item.correct, item.count) for item in memory.candidates],
+                [("李长寿", "李长守", 1)],
+            )
+
     def test_repeated_evidence_from_single_segment_can_confirm(self):
         with tempfile.TemporaryDirectory() as tmp:
             memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=2)
@@ -64,6 +89,36 @@ class CorrectionMemoryTests(unittest.TestCase):
                 [("王琦", "王齐", True)],
             )
             self.assertEqual(memory.apply("小王琦"), "小王齐")
+
+    def test_prefers_full_name_over_inner_two_character_alias(self):
+        corrections = infer_correction_pairs(
+            "胡任袁，胡任袁，胡任袁",
+            "胡任远，胡任远，胡任远",
+        )
+
+        self.assertEqual(
+            [(item.wrong, item.correct, item.evidence_count) for item in corrections],
+            [("胡任袁", "胡任远", 3)],
+        )
+
+    def test_infers_repeated_three_character_name_correction(self):
+        corrections = infer_correction_pairs(
+            "胡人远，胡人远，胡人远",
+            "胡任远，胡任远，胡任远",
+        )
+
+        self.assertEqual(
+            [(item.wrong, item.correct, item.evidence_count) for item in corrections],
+            [("胡人远", "胡任远", 3)],
+        )
+
+    def test_keeps_nickname_alias_when_full_prefixed_name_is_seen(self):
+        corrections = infer_correction_pairs("小王琦，小王琦", "小王齐，小王齐")
+
+        self.assertEqual(
+            [(item.wrong, item.correct, item.evidence_count) for item in corrections],
+            [("小王琦", "小王齐", 2), ("王琦", "王齐", 2)],
+        )
 
     def test_tracker_observes_pending_dictation_against_current_text(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,6 +244,142 @@ class CorrectionMemoryTests(unittest.TestCase):
             )
             self.assertTrue(result.decisions[-1].source.startswith("shadow+AXValue"))
 
+    def test_tracker_uses_shadow_when_accessibility_text_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)
+            tracker = CorrectionLearningTracker(
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+            )
+
+            tracker.remember_inserted("文静")
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            tracker.record_key_press(SimpleNamespace(char="净"))
+            result = tracker.observe_current_text()
+
+            self.assertEqual(
+                [(item.wrong, item.correct) for item in result.confirmed],
+                [("文静", "文净")],
+            )
+            self.assertEqual(
+                result.decisions[-1].source,
+                "shadow+unsupported:empty_current_text",
+            )
+
+    def test_tracker_ignores_screen_ocr_from_voice_keyboard_own_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = {"value": 100.0}
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)
+            tracker = CorrectionLearningTracker(
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+                read_screen_text=lambda reference: CorrectionTextSnapshot(
+                    "Voice Keyboard\n设置\n快捷键\n历史\n词典| 输入诊断\n"
+                    "已确认 13条\n胡日远 胡任远",
+                    source="ocr_window",
+                    detail="app=python",
+                ),
+                clock=lambda: now["value"],
+            )
+
+            tracker.remember_inserted("你知道胡任远是谁吗？")
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            for char in "ma":
+                tracker.record_key_press(SimpleNamespace(char=char))
+            now["value"] += 1.0
+            result = tracker.observe_current_text()
+
+            self.assertEqual(result.confirmed, ())
+            self.assertEqual(result.candidates, ())
+            self.assertEqual(memory.candidates, ())
+
+    def test_tracker_waits_for_ime_when_only_shadow_deletion_is_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)
+            tracker = CorrectionLearningTracker(
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+            )
+
+            tracker.remember_inserted("文静")
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            for char in "jing":
+                tracker.record_key_press(SimpleNamespace(char=char))
+            result = tracker.observe_current_text()
+
+            self.assertEqual(result.confirmed, ())
+            self.assertEqual(result.decisions[-1].decision, "waiting")
+            self.assertEqual(result.decisions[-1].reason, "awaiting_ime_commit")
+
+    def test_tracker_does_not_record_pinyin_as_shadow_replacement_when_ime_is_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)
+            tracker = CorrectionLearningTracker(
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+            )
+
+            tracker.remember_inserted("宋海丽，宋海丽，宋海丽")
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            for char in "cao3]cli":
+                tracker.record_key_press(SimpleNamespace(char=char))
+            result = tracker.observe_current_text()
+
+            self.assertEqual(result.confirmed, ())
+            self.assertEqual(result.candidates, ())
+            self.assertEqual(memory.candidates, ())
+            self.assertEqual(result.decisions[-1].decision, "waiting")
+
+    def test_tracker_learns_from_repeated_committed_replacements_without_text_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=2)
+            tracker = CorrectionLearningTracker(
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+            )
+
+            tracker.remember_inserted("文静，文静")
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            tracker.record_committed_text("净")
+            first = tracker.observe_current_text()
+            for _ in range(3):
+                tracker.record_key_press(SimpleNamespace(name="left"))
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            tracker.record_committed_text("净")
+            second = tracker.observe_current_text()
+
+            self.assertEqual(first.confirmed, ())
+            self.assertEqual(
+                [(item.wrong, item.correct) for item in second.confirmed],
+                [("文静", "文净")],
+            )
+
+    def test_tracker_prefers_full_three_character_name_from_committed_middle_replacements(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=2)
+            tracker = CorrectionLearningTracker(
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+            )
+
+            tracker.remember_inserted("胡人远，胡人远")
+            tracker.record_key_press(SimpleNamespace(name="left"))
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            tracker.record_committed_text("任")
+            tracker.record_key_press(SimpleNamespace(name="home"))
+            tracker.record_key_press(SimpleNamespace(name="right"))
+            tracker.record_key_press(SimpleNamespace(name="right"))
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            tracker.record_committed_text("任")
+            result = tracker.observe_current_text()
+
+            self.assertEqual(
+                [(item.wrong, item.correct) for item in result.confirmed],
+                [("胡人远", "胡任远")],
+            )
+            self.assertEqual(memory.apply("胡人远"), "胡任远")
+            self.assertEqual(memory.apply("胡人"), "胡人")
+
     def test_tracker_waits_for_ime_when_accessibility_text_is_partial(self):
         with tempfile.TemporaryDirectory() as tmp:
             memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)
@@ -206,6 +397,93 @@ class CorrectionMemoryTests(unittest.TestCase):
 
             self.assertEqual(result.confirmed, ())
             self.assertEqual(result.decisions[-1].decision, "waiting")
+            self.assertEqual(result.decisions[-1].reason, "awaiting_ime_commit")
+
+    def test_tracker_uses_screen_ocr_when_ime_commit_is_not_observable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = {"value": 100.0}
+            ocr_calls = []
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)
+            tracker = CorrectionLearningTracker(
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+                read_screen_text=lambda reference: (
+                    ocr_calls.append(reference)
+                    or CorrectionTextSnapshot(
+                        "李立夫，李立夫，李立夫",
+                        source="ocr_window",
+                        detail="VisionOCR:ok(lines=1)",
+                    )
+                ),
+                clock=lambda: now["value"],
+            )
+
+            tracker.remember_inserted("李丽夫，李丽夫，李丽夫")
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            for char in "fu":
+                tracker.record_key_press(SimpleNamespace(char=char))
+            now["value"] += 1.0
+            result = tracker.observe_current_text()
+
+            self.assertEqual(ocr_calls, ["李丽夫，李丽夫，李丽夫"])
+            self.assertEqual(
+                [(item.wrong, item.correct) for item in result.confirmed],
+                [("李丽夫", "李立夫")],
+            )
+            self.assertEqual(result.decisions[-1].source, "ocr_window")
+
+    def test_tracker_uses_screen_ocr_for_repeated_three_character_name_when_ime_commit_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = {"value": 100.0}
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)
+            tracker = CorrectionLearningTracker(
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+                read_screen_text=lambda reference: CorrectionTextSnapshot(
+                    "胡任远，胡任远，胡任远",
+                    source="ocr_screen_below_window",
+                    detail="VisionOCRBelowWindow:ok(lines=1)",
+                ),
+                clock=lambda: now["value"],
+            )
+
+            tracker.remember_inserted("无人远，无人远，无人远")
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            for char in "hu ":
+                tracker.record_key_press(SimpleNamespace(char=char))
+            now["value"] += 1.0
+            result = tracker.observe_current_text()
+
+            self.assertEqual(
+                [(item.wrong, item.correct) for item in result.confirmed],
+                [("无人远", "胡任远")],
+            )
+            self.assertEqual(result.decisions[-1].source, "ocr_screen_below_window")
+
+    def test_tracker_waits_before_trying_screen_ocr_after_recent_edit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = {"value": 100.0}
+            ocr_calls = []
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)
+            tracker = CorrectionLearningTracker(
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+                read_screen_text=lambda reference: (
+                    ocr_calls.append(reference)
+                    or CorrectionTextSnapshot("李立夫", source="ocr_window")
+                ),
+                clock=lambda: now["value"],
+            )
+
+            tracker.remember_inserted("李丽夫")
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            for char in "fu":
+                tracker.record_key_press(SimpleNamespace(char=char))
+            now["value"] += 0.2
+            result = tracker.observe_current_text()
+
+            self.assertEqual(ocr_calls, [])
+            self.assertEqual(result.confirmed, ())
             self.assertEqual(result.decisions[-1].reason, "awaiting_ime_commit")
 
     def test_tracker_refreshes_observation_window_when_user_edits(self):

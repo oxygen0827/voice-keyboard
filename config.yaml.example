@@ -174,6 +174,10 @@ correction_memory:
   confirm_threshold: 2
   # 只在语音输入后短时间内观察用户手动修改，避免学习无关输入。
   observe_window_seconds: 30
+  # AX 读不到真实输入框时，短暂等待用户停止编辑后尝试 macOS 屏幕 OCR。
+  # 需要给运行 Voice Keyboard Engine 的终端/Python 授予 Screen Recording 权限。
+  screen_ocr_fallback: true
+  screen_ocr_after_edit_seconds: 0.8
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Instruction Mode

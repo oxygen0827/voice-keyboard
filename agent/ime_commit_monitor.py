@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import sys
+import time
 from typing import Callable
 
 
 class ImeCommitMonitor:
-    def __init__(self, on_text: Callable[[str], None]):
+    def __init__(
+        self,
+        on_text: Callable[[str], None],
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        dedupe_window_seconds: float = 0.08,
+    ):
         self._on_text = on_text
+        self._clock = clock
+        self._dedupe_window_seconds = max(0.0, float(dedupe_window_seconds))
+        self._last_text = ""
+        self._last_text_at = 0.0
         self._monitor = None
         self._event_tap = None
         self._event_source = None
@@ -26,8 +37,7 @@ class ImeCommitMonitor:
                 if typer.is_simulating():
                     return None
                 text = str(event.characters() or "")
-                if text:
-                    self._on_text(text)
+                self._emit_text(text)
                 return None
 
             self._monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
@@ -63,8 +73,7 @@ class ImeCommitMonitor:
                 if typer.is_simulating():
                     return event
                 text = _unicode_from_cg_event(Quartz, event)
-                if text:
-                    self._on_text(text)
+                self._emit_text(text)
                 return event
 
             tap = Quartz.CGEventTapCreate(
@@ -90,6 +99,21 @@ class ImeCommitMonitor:
             self._event_tap = None
             self._event_source = None
             return False
+
+    def _emit_text(self, text: str) -> bool:
+        value = str(text or "")
+        if not value:
+            return False
+        now = self._clock()
+        if (
+            value == self._last_text
+            and now - self._last_text_at <= self._dedupe_window_seconds
+        ):
+            return False
+        self._last_text = value
+        self._last_text_at = now
+        self._on_text(value)
+        return True
 
     def stop(self) -> None:
         if self._monitor is not None:

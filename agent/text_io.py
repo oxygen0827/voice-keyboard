@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from agent import typer
+from agent.focused_text_capture import FocusedTextSnapshot
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,12 @@ class TextIO(Protocol):
         ...
 
     def get_focused_text_value(self) -> str:
+        ...
+
+    def inspect_focused_text(self) -> FocusedTextSnapshot:
+        ...
+
+    def inspect_screen_text(self, *, reference_text: str = "") -> FocusedTextSnapshot:
         ...
 
     def type_text(self, text: str) -> None:
@@ -125,6 +132,12 @@ class TyperTextIO:
 
     def get_focused_text_value(self) -> str:
         return typer.get_focused_text_value()
+
+    def inspect_focused_text(self) -> FocusedTextSnapshot:
+        return typer.inspect_focused_text()
+
+    def inspect_screen_text(self, *, reference_text: str = "") -> FocusedTextSnapshot:
+        return typer.inspect_screen_text(reference_text=reference_text)
 
     def type_text(self, text: str) -> None:
         typer.type_text(text)

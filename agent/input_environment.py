@@ -137,6 +137,19 @@ class TyperInputEnvironment:
         return self.current_text_snapshot_for_correction_learning().text
 
     def current_text_snapshot_for_correction_learning(self) -> CorrectionTextSnapshot:
+        if hasattr(self._text_io, "inspect_focused_text"):
+            snapshot = self._text_io.inspect_focused_text()
+            if getattr(snapshot, "has_real_text", False):
+                return CorrectionTextSnapshot(
+                    snapshot.text,
+                    source=snapshot.source,
+                    detail=(
+                        f"confidence={snapshot.confidence};"
+                        f"app={snapshot.app_label};"
+                        f"role={snapshot.role};"
+                        f"range={snapshot.selected_range}"
+                    ),
+                )
         if hasattr(self._text_io, "get_focused_text_value"):
             value = self._text_io.get_focused_text_value()
             if value:
@@ -150,6 +163,28 @@ class TyperInputEnvironment:
         return CorrectionTextSnapshot(
             self._buf.current_segment,
             source="tracked_segment",
+        )
+
+    def screen_text_snapshot_for_correction_learning(
+        self,
+        reference_text: str = "",
+    ) -> CorrectionTextSnapshot:
+        if not hasattr(self._text_io, "inspect_screen_text"):
+            return CorrectionTextSnapshot("", source="ocr_unavailable")
+        snapshot = self._text_io.inspect_screen_text(reference_text=reference_text)
+        probes = ",".join(
+            f"{probe.name}:{'ok' if probe.ok else 'no'}"
+            + (f"({probe.detail})" if probe.detail else "")
+            for probe in snapshot.probes
+        )
+        return CorrectionTextSnapshot(
+            snapshot.text,
+            source=snapshot.source,
+            detail=(
+                f"confidence={snapshot.confidence};"
+                f"app={snapshot.app_label};"
+                f"probes={probes}"
+            ),
         )
 
     def insert_text_after_selection(self, text: str, selected: str = "") -> None:

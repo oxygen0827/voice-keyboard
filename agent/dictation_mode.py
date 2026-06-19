@@ -299,6 +299,11 @@ def make_utterance_handler(
                 if hasattr(env, "current_text_snapshot_for_correction_learning")
                 else env.current_text_for_correction_learning
             ),
+            (
+                env.screen_text_snapshot_for_correction_learning
+                if hasattr(env, "screen_text_snapshot_for_correction_learning")
+                else None
+            ),
         )
     scheduler = correction_scheduler
     mode = None

@@ -8,6 +8,7 @@ from agent.input_environment import (
     TextTarget,
     TyperInputEnvironment,
 )
+from agent.focused_text_capture import FocusedTextSnapshot
 from agent.text_buffer import TextBuffer
 from agent.text_io import CaretTextWindow
 from agent.text_io import ShortcutCatalogEntry
@@ -23,6 +24,8 @@ class FakeTextIO:
         self.confirm_paste = False
         self.caret_window = None
         self.focused_text_value = ""
+        self.focused_snapshot = None
+        self.screen_snapshot = None
         self.can_replace_text_window = True
 
     def can_insert_text(self) -> bool:
@@ -47,6 +50,18 @@ class FakeTextIO:
     def get_focused_text_value(self):
         self.calls.append(("get_focused_text_value",))
         return self.focused_text_value
+
+    def inspect_focused_text(self):
+        self.calls.append(("inspect_focused_text",))
+        if self.focused_snapshot is not None:
+            return self.focused_snapshot
+        return FocusedTextSnapshot()
+
+    def inspect_screen_text(self, *, reference_text: str = ""):
+        self.calls.append(("inspect_screen_text", reference_text))
+        if self.screen_snapshot is not None:
+            return self.screen_snapshot
+        return FocusedTextSnapshot(source="ocr_unavailable")
 
     def type_text(self, text: str) -> None:
         self.calls.append(("type_text", text))
@@ -307,12 +322,59 @@ class InputEnvironmentTests(unittest.TestCase):
 
     def test_correction_learning_uses_full_focused_text_before_caret_slice(self):
         text_io = FakeTextIO()
-        text_io.focused_text_value = "文净，文净，文净"
+        text_io.focused_snapshot = FocusedTextSnapshot(
+            text="文净，文净，文净",
+            source="AXValue",
+            confidence="high",
+            app_name="TextEdit",
+            bundle_id="com.apple.TextEdit",
+            role="AXTextArea",
+        )
         text_io.caret_window = CaretTextWindow("文净，文净，文", "caret_sentence")
         env = TyperInputEnvironment(TextBuffer(), text_io=text_io)
 
         self.assertEqual(env.current_text_for_correction_learning(), "文净，文净，文净")
         self.assertNotIn(("get_caret_text_window",), text_io.calls)
+
+    def test_correction_learning_uses_caret_window_when_focused_snapshot_is_low_confidence(self):
+        text_io = FakeTextIO()
+        text_io.focused_snapshot = FocusedTextSnapshot(
+            text="stale tracked",
+            source="tracked_segment",
+            confidence="low",
+        )
+        text_io.focused_text_value = ""
+        text_io.caret_window = CaretTextWindow("文净，文净，文净", "caret_sentence")
+        env = TyperInputEnvironment(TextBuffer(), text_io=text_io)
+
+        snapshot = env.current_text_snapshot_for_correction_learning()
+
+        self.assertEqual(snapshot.text, "文净，文净，文净")
+        self.assertEqual(snapshot.source, "caret:caret_sentence")
+
+    def test_correction_learning_exposes_screen_ocr_snapshot(self):
+        text_io = FakeTextIO()
+        text_io.screen_snapshot = FocusedTextSnapshot(
+            text="李立夫，李立夫，李立夫",
+            source="ocr_window",
+            confidence="medium",
+            app_name="Codex",
+            bundle_id="com.openai.codex",
+            probes=(),
+        )
+        env = TyperInputEnvironment(TextBuffer(), text_io=text_io)
+
+        snapshot = env.screen_text_snapshot_for_correction_learning(
+            "李丽夫，李丽夫，李丽夫"
+        )
+
+        self.assertEqual(snapshot.text, "李立夫，李立夫，李立夫")
+        self.assertEqual(snapshot.source, "ocr_window")
+        self.assertIn("confidence=medium", snapshot.detail)
+        self.assertEqual(
+            text_io.calls[-1],
+            ("inspect_screen_text", "李丽夫，李丽夫，李丽夫"),
+        )
 
     def test_operation_window_prefers_last_output_over_caret_window(self):
         buf = TextBuffer()

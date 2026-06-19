@@ -36,6 +36,9 @@ import yaml
 
 from agent import typer as _typer
 from agent import permissions as _perm
+from agent.config import load as _load_runtime_config
+from agent.correction_memory import CorrectionMemory
+from agent.focused_text_capture import FocusedTextSnapshot, format_focused_text_snapshot
 from agent.history import History
 from agent.intent_diagnostics import (
     format_evaluation_mismatches,
@@ -527,6 +530,21 @@ _MODE_LABEL = {
 }
 
 
+def _dictionary_row(status: str, entry) -> dict:
+    updated_at = float(getattr(entry, "updated_at", 0.0) or 0.0)
+    updated_text = "-"
+    if updated_at > 0:
+        updated_text = time.strftime("%m-%d %H:%M:%S", time.localtime(updated_at))
+    return {
+        "status": status,
+        "wrong": getattr(entry, "wrong", ""),
+        "correct": getattr(entry, "correct", ""),
+        "count": str(getattr(entry, "count", "")),
+        "updated_at": updated_text,
+        "updated_at_raw": updated_at,
+    }
+
+
 class _HistoryTab(NSObject):
     def initWithApp_(self, app):
         self = objc.super(_HistoryTab, self).init()
@@ -628,6 +646,228 @@ class _HistoryTab(NSObject):
     def _alert(self, title, msg):
         a = NSAlert.alloc().init()
         a.setMessageText_(title); a.setInformativeText_(msg); a.runModal()
+
+
+# ── 词典 tab ─────────────────────────────────────────────────────
+
+class _DictionaryTab(NSObject):
+    def initWithApp_(self, app):
+        self = objc.super(_DictionaryTab, self).init()
+        if self is None:
+            return None
+        self._app = app
+        self._rows: list[dict] = []
+        self._memory = None
+        self.view = self._build()
+        self.reload_(None)
+        return self
+
+    @objc.python_method
+    def _build(self) -> NSView:
+        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 600, 480))
+        v.addSubview_(_button("刷新", NSMakeRect(20, 440, 80, 26), self, b"reload:"))
+        v.addSubview_(_button("打开文件", NSMakeRect(110, 440, 90, 26), self, b"openFile:"))
+
+        summary = _label("", NSMakeRect(215, 444, 365, 20))
+        summary.setSelectable_(True)
+        v.addSubview_(summary)
+        self._summary_label = summary
+
+        hint = _label("", NSMakeRect(20, 416, 560, 20))
+        hint.setSelectable_(True)
+        v.addSubview_(hint)
+        self._hint_label = hint
+
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 20, 560, 385))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(1)
+        table = NSTableView.alloc().initWithFrame_(scroll.bounds())
+        table.setUsesAlternatingRowBackgroundColors_(True)
+
+        for ident, title, w in (
+            ("status", "状态", 70),
+            ("wrong", "识别成", 135),
+            ("correct", "修正为", 135),
+            ("count", "次数", 55),
+            ("updated_at", "更新时间", 150),
+        ):
+            col = NSTableColumn.alloc().initWithIdentifier_(ident)
+            col.headerCell().setStringValue_(title)
+            col.setWidth_(w)
+            table.addTableColumn_(col)
+
+        table.setDelegate_(self)
+        table.setDataSource_(self)
+        scroll.setDocumentView_(table)
+        v.addSubview_(scroll)
+        self._table = table
+        return v
+
+    def reload_(self, sender):
+        try:
+            cfg = _load_runtime_config()
+            memory = CorrectionMemory.from_config(cfg.get("correction_memory", {}))
+            self._memory = memory
+            confirmed = [
+                _dictionary_row("已确认", entry)
+                for entry in memory.entries
+            ]
+            self._rows = sorted(
+                confirmed,
+                key=lambda row: (-row.get("updated_at_raw", 0.0), row.get("wrong", "")),
+            )
+            self._summary_label.setStringValue_(
+                f"已确认 {len(confirmed)} 条 / 阈值 {memory.confirm_threshold} 次"
+            )
+            self._hint_label.setStringValue_(str(memory.path))
+        except Exception as e:
+            print(f"[ui] 词典读取失败: {e}")
+            self._rows = []
+            self._summary_label.setStringValue_(f"词典读取失败: {e}")
+            self._hint_label.setStringValue_("")
+        self._table.reloadData()
+
+    def numberOfRowsInTableView_(self, t):
+        return len(self._rows)
+
+    def tableView_objectValueForTableColumn_row_(self, t, col, row):
+        if row < 0 or row >= len(self._rows):
+            return ""
+        e = self._rows[row]
+        ident = col.identifier()
+        return e.get(str(ident), "")
+
+    def openFile_(self, sender):
+        memory = self._memory
+        path = getattr(memory, "path", None)
+        if path is None:
+            return
+        from AppKit import NSWorkspace
+        if path.exists():
+            NSWorkspace.sharedWorkspace().openFile_(str(path))
+        else:
+            self._alert("词典文件还没创建", str(path))
+
+    @objc.python_method
+    def _alert(self, title, msg):
+        a = NSAlert.alloc().init()
+        a.setMessageText_(title); a.setInformativeText_(msg); a.runModal()
+
+
+# ── 输入诊断 tab ─────────────────────────────────────────────────
+
+class _CaptureDiagnosticsTab(NSObject):
+    def initWithApp_(self, app):
+        self = objc.super(_CaptureDiagnosticsTab, self).init()
+        if self is None:
+            return None
+        self._app = app
+        self._rows: list[dict] = []
+        self._snapshot = FocusedTextSnapshot()
+        self.view = self._build()
+        self.reload_(None)
+        return self
+
+    @objc.python_method
+    def _build(self) -> NSView:
+        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 600, 480))
+        v.addSubview_(_button("刷新", NSMakeRect(20, 440, 80, 26), self, b"reload:"))
+        self._summary_label = _label("", NSMakeRect(112, 444, 468, 20))
+        self._summary_label.setSelectable_(True)
+        v.addSubview_(self._summary_label)
+
+        self._app_label = _label("", NSMakeRect(20, 408, 560, 20))
+        self._app_label.setSelectable_(True)
+        v.addSubview_(self._app_label)
+
+        self._element_label = _label("", NSMakeRect(20, 382, 560, 20))
+        self._element_label.setSelectable_(True)
+        v.addSubview_(self._element_label)
+
+        self._text_label = _label("", NSMakeRect(20, 356, 560, 20))
+        self._text_label.setSelectable_(True)
+        v.addSubview_(self._text_label)
+
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 20, 560, 320))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(1)
+        table = NSTableView.alloc().initWithFrame_(scroll.bounds())
+        table.setUsesAlternatingRowBackgroundColors_(True)
+
+        for ident, title, w in (
+            ("name", "Probe", 150),
+            ("ok", "结果", 55),
+            ("value", "值", 180),
+            ("detail", "细节", 170),
+        ):
+            col = NSTableColumn.alloc().initWithIdentifier_(ident)
+            col.headerCell().setStringValue_(title)
+            col.setWidth_(w)
+            table.addTableColumn_(col)
+
+        table.setDelegate_(self)
+        table.setDataSource_(self)
+        scroll.setDocumentView_(table)
+        v.addSubview_(scroll)
+        self._table = table
+        return v
+
+    def reload_(self, sender):
+        try:
+            snapshot = _typer.inspect_focused_text()
+        except Exception as e:
+            snapshot = FocusedTextSnapshot(
+                probes=(),
+                source="error",
+            )
+            self._summary_label.setStringValue_(f"读取失败: {e}")
+        else:
+            self._summary_label.setStringValue_(
+                f"source={snapshot.source} / confidence={snapshot.confidence}"
+            )
+            print(format_focused_text_snapshot(snapshot))
+        self._apply_snapshot(snapshot)
+
+    @objc.python_method
+    def show_snapshot(self, snapshot):
+        if snapshot is None:
+            self.reload_(None)
+            return
+        self._summary_label.setStringValue_(
+            f"source={snapshot.source} / confidence={snapshot.confidence}"
+        )
+        self._apply_snapshot(snapshot)
+
+    @objc.python_method
+    def _apply_snapshot(self, snapshot):
+        self._snapshot = snapshot
+        self._app_label.setStringValue_(
+            f"App: {snapshot.app_label} / pid={snapshot.pid or '-'}"
+        )
+        self._element_label.setStringValue_(
+            f"Element: role={snapshot.role or '-'} / subrole={snapshot.subrole or '-'} / range={snapshot.selected_range or '-'}"
+        )
+        self._text_label.setStringValue_(
+            f"Text: {snapshot.text_for_log(220) if snapshot.text else '-'}"
+        )
+        self._rows = [
+            {
+                "name": probe.name,
+                "ok": "✓" if probe.ok else "×",
+                "value": probe.value,
+                "detail": probe.detail,
+            }
+            for probe in snapshot.probes
+        ]
+        self._table.reloadData()
+
+    def numberOfRowsInTableView_(self, t):
+        return len(self._rows)
+
+    def tableView_objectValueForTableColumn_row_(self, t, col, row):
+        if row < 0 or row >= len(self._rows):
+            return ""
+        return self._rows[row].get(str(col.identifier()), "")
 
 
 # ── 意图诊断 tab ─────────────────────────────────────────────────
@@ -1292,6 +1532,8 @@ class MainWindow(NSObject):
             ("settings", "设置",   _SettingsTab),
             ("shortcuts", "快捷键", _ShortcutsTab),
             ("history",  "历史",   _HistoryTab),
+            ("dictionary", "词典", _DictionaryTab),
+            ("capture", "输入诊断", _CaptureDiagnosticsTab),
             ("intent", "意图诊断", _IntentDiagnosticsTab),
             ("memo",    "备忘", _MemoTab),
             ("perms",    "权限",   _PermsTab),
@@ -1328,3 +1570,13 @@ class MainWindow(NSObject):
         if idx >= 0:
             self._tab_view.selectTabViewItemAtIndex_(idx)
         self.show_(None)
+
+    @objc.python_method
+    def show_capture_snapshot(self, snapshot):
+        tab = self._tabs.get("capture")
+        if tab is not None and hasattr(tab, "show_snapshot"):
+            try:
+                tab.show_snapshot(snapshot)
+            except Exception as e:
+                print(f"[ui] 输入诊断快照展示失败: {e}")
+        self.show_tab("capture")

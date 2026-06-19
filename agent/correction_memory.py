@@ -12,6 +12,7 @@ import json
 import re
 import threading
 import time
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,10 +21,12 @@ from typing import Callable, Iterable
 
 _DEFAULT_PATH = Path.home() / ".voice-keyboard" / "correction_memory.json"
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_CJK_TERM_RE = re.compile(r"^[\u3400-\u9fff]+$")
 _SPACE_RE = re.compile(r"\s")
 _EDGE_PUNCTUATION_RE = re.compile(r"^[\s，。,.、；;：:！？!?（）()【】\[\]「」『』\"'“”‘’]+|[\s，。,.、；;：:！？!?（）()【】\[\]「」『』\"'“”‘’]+$")
 _PUNCTUATION_ONLY_RE = re.compile(r"^[\s，。,.、；;：:！？!?（）()【】\[\]「」『』\"'“”‘’]+$")
 _PUNCTUATION_SPLIT_RE = re.compile(r"[\s，。,.、；;：:！？!?（）()【】\[\]「」『』\"'“”‘’]+")
+_NICKNAME_PREFIXES = {"小", "老", "阿"}
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,7 @@ class CorrectionCaptureDecision:
     decision: str
     reason: str
     source: str = "unknown"
+    detail: str = ""
     before: str = ""
     after: str = ""
     inferred: tuple[InferredCorrection, ...] = ()
@@ -84,6 +88,10 @@ class _PendingCorrectionObservation:
     keyboard_edit_seen: bool = False
     awaiting_ime_commit: bool = False
     composition_text: str = ""
+    last_deleted_text: str = ""
+    last_deleted_context: str = ""
+    last_deleted_context_index: int = 0
+    committed_replacement_evidence: dict[tuple[str, str], int] = field(default_factory=dict)
     recorded_evidence: dict[tuple[str, str], int] = field(default_factory=dict)
 
 
@@ -124,6 +132,20 @@ class CorrectionMemory:
         with self._lock:
             self._reload_if_changed()
             return tuple(self._entries.values())
+
+    @property
+    def candidates(self) -> tuple[CorrectionEntry, ...]:
+        with self._lock:
+            self._reload_if_changed()
+            return tuple(self._candidates.values())
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def confirm_threshold(self) -> int:
+        return self._confirm_threshold
 
     def apply(self, text: str) -> str:
         if not self._enabled or not text:
@@ -278,16 +300,23 @@ class CorrectionLearningTracker:
         memory: CorrectionMemory,
         read_current_text: Callable[[], str | CorrectionTextSnapshot | None],
         *,
+        read_screen_text: Callable[[str], str | CorrectionTextSnapshot | None] | None = None,
         observe_window_seconds: float = 30.0,
         max_pending: int = 5,
+        screen_ocr_after_edit_seconds: float = 0.8,
         clock: Callable[[], float] = time.time,
         debug: bool = False,
     ):
         self._memory = memory
         self._read_current_text = read_current_text
+        self._read_screen_text = read_screen_text
         self._observe_window_seconds = max(1.0, float(observe_window_seconds or 30.0))
         self._observe_grace_seconds = 1.0
         self._max_pending = max(1, int(max_pending or 5))
+        self._screen_ocr_after_edit_seconds = max(
+            0.1,
+            float(screen_ocr_after_edit_seconds or 0.8),
+        )
         self._clock = clock
         self._debug = bool(debug)
         self._pending: deque[_PendingCorrectionObservation] = deque(maxlen=self._max_pending)
@@ -297,14 +326,20 @@ class CorrectionLearningTracker:
         cls,
         cfg: dict | None,
         memory: CorrectionMemory,
-        read_current_text: Callable[[], str | None],
+        read_current_text: Callable[[], str | CorrectionTextSnapshot | None],
+        read_screen_text: Callable[[str], str | CorrectionTextSnapshot | None] | None = None,
     ) -> "CorrectionLearningTracker":
         cfg = cfg or {}
+        screen_ocr_enabled = bool(cfg.get("screen_ocr_fallback", True))
         return cls(
             memory,
             read_current_text,
+            read_screen_text=read_screen_text if screen_ocr_enabled else None,
             observe_window_seconds=float(cfg.get("observe_window_seconds", 30.0) or 30.0),
             max_pending=int(cfg.get("max_pending", 5) or 5),
+            screen_ocr_after_edit_seconds=float(
+                cfg.get("screen_ocr_after_edit_seconds", 0.8) or 0.8
+            ),
             debug=bool(cfg.get("debug", False)),
         )
 
@@ -330,11 +365,11 @@ class CorrectionLearningTracker:
         if action == "backspace":
             if pending.composition_text:
                 pending.composition_text = pending.composition_text[:-1]
-                if not pending.composition_text:
-                    pending.awaiting_ime_commit = False
+                pending.inserted_at = self._clock()
                 return
             if pending.caret <= 0:
                 return
+            _record_pending_deletion(pending, pending.caret - 1, pending.caret)
             deleted = pending.shadow_text[pending.caret - 1:pending.caret]
             pending.shadow_text = (
                 pending.shadow_text[:pending.caret - 1]
@@ -350,6 +385,7 @@ class CorrectionLearningTracker:
         if action == "delete":
             if pending.caret >= len(pending.shadow_text):
                 return
+            _record_pending_deletion(pending, pending.caret, pending.caret + 1)
             deleted = pending.shadow_text[pending.caret:pending.caret + 1]
             pending.shadow_text = (
                 pending.shadow_text[:pending.caret]
@@ -378,16 +414,19 @@ class CorrectionLearningTracker:
             return
         if pending.awaiting_ime_commit:
             if _CJK_RE.search(text):
+                _record_committed_replacement_evidence(pending, text)
                 pending.composition_text = ""
                 pending.awaiting_ime_commit = False
             elif _ime_composition_key_text(text):
                 pending.composition_text += text
+                pending.inserted_at = self._clock()
                 return
             elif text in (" ", "\n") and pending.composition_text:
+                pending.inserted_at = self._clock()
                 return
             else:
-                pending.composition_text = ""
-                pending.awaiting_ime_commit = False
+                pending.inserted_at = self._clock()
+                return
         pending.shadow_text = (
             pending.shadow_text[:pending.caret]
             + text
@@ -405,6 +444,8 @@ class CorrectionLearningTracker:
         if not value or not _CJK_RE.search(value):
             return False
         pending = self._pending[-1]
+        if pending.awaiting_ime_commit:
+            _record_committed_replacement_evidence(pending, value)
         pending.shadow_text = (
             pending.shadow_text[:pending.caret]
             + value
@@ -433,22 +474,19 @@ class CorrectionLearningTracker:
             print(f"[correction] 读取当前文本失败: {e}")
             return CorrectionObservationResult()
         if not snapshot.text:
-            self._debug_decision(
-                CorrectionCaptureDecision(
+            shadow_ready = any(
+                pending.shadow_changed
+                for pending in self._pending
+            )
+            if not shadow_ready:
+                decision = CorrectionCaptureDecision(
                     decision="unsupported",
                     reason="empty_current_text",
                     source=snapshot.source,
+                    detail=snapshot.detail,
                 )
-            )
-            return CorrectionObservationResult(
-                decisions=(
-                    CorrectionCaptureDecision(
-                        decision="unsupported",
-                        reason="empty_current_text",
-                        source=snapshot.source,
-                    ),
-                )
-            )
+                self._debug_decision(decision)
+                return CorrectionObservationResult(decisions=(decision,))
 
         decisions: list[CorrectionCaptureDecision] = []
         candidates: list[LearnedCorrection] = []
@@ -487,13 +525,18 @@ class CorrectionLearningTracker:
         snapshot: CorrectionTextSnapshot,
     ) -> CorrectionObservationResult | None:
         before = pending.text
+        snapshot = self._maybe_read_screen_snapshot(pending, snapshot)
         observed, source = _choose_observed_text(pending, before, snapshot)
-        inferred = infer_correction_pairs(before, observed)
+        inferred = _merge_inferred_corrections(
+            infer_correction_pairs(before, observed),
+            _committed_replacement_inferred(pending),
+        )
         self._debug_decision(
             CorrectionCaptureDecision(
                 decision="observed",
                 reason="snapshot",
                 source=source,
+                detail=snapshot.detail,
                 before=before,
                 after=observed,
                 inferred=inferred,
@@ -504,6 +547,7 @@ class CorrectionLearningTracker:
                 decision="waiting",
                 reason="before_still_present",
                 source=source,
+                detail=snapshot.detail,
                 before=before,
                 after=observed,
                 inferred=inferred,
@@ -515,6 +559,7 @@ class CorrectionLearningTracker:
                 decision="waiting",
                 reason="awaiting_ime_commit",
                 source=source,
+                detail=snapshot.detail,
                 before=before,
                 after=observed,
                 inferred=inferred,
@@ -530,6 +575,7 @@ class CorrectionLearningTracker:
                 decision="skipped",
                 reason="no_keyboard_edit_for_new_content",
                 source=source,
+                detail=snapshot.detail,
                 before=before,
                 after=observed,
                 inferred=inferred,
@@ -541,6 +587,7 @@ class CorrectionLearningTracker:
                 decision="skipped",
                 reason="no_inferred_pairs",
                 source=source,
+                detail=snapshot.detail,
                 before=before,
                 after=observed,
                 inferred=inferred,
@@ -559,6 +606,7 @@ class CorrectionLearningTracker:
             decision=decision_name,
             reason=reason,
             source=source,
+            detail=snapshot.detail,
             before=before,
             after=observed,
             inferred=inferred,
@@ -569,6 +617,42 @@ class CorrectionLearningTracker:
             confirmed=result.confirmed,
             decisions=(decision,),
         )
+
+    def _maybe_read_screen_snapshot(
+        self,
+        pending: _PendingCorrectionObservation,
+        snapshot: CorrectionTextSnapshot,
+    ) -> CorrectionTextSnapshot:
+        if self._read_screen_text is None:
+            return snapshot
+        if not _should_try_screen_ocr(
+            pending,
+            snapshot,
+            now=self._clock(),
+            after_edit_seconds=self._screen_ocr_after_edit_seconds,
+        ):
+            return snapshot
+        try:
+            screen_snapshot = _coerce_snapshot(self._read_screen_text(pending.text))
+        except Exception as e:
+            print(f"[correction] 屏幕 OCR 读取失败: {e}")
+            return snapshot
+        if not screen_snapshot.text:
+            self._debug_log(
+                "屏幕 OCR 无文本 "
+                f"source={screen_snapshot.source} detail={screen_snapshot.detail!r}"
+            )
+            return snapshot
+        if _screen_ocr_snapshot_is_self_ui(screen_snapshot):
+            self._debug_log("屏幕 OCR 已跳过：当前是 Voice Keyboard 自己的窗口")
+            return snapshot
+        if not _screen_ocr_snapshot_is_relevant(pending.text, screen_snapshot.text):
+            self._debug_log(
+                "屏幕 OCR 已跳过：与待学习片段重叠不足 "
+                f"source={screen_snapshot.source} text={_preview(screen_snapshot.text)!r}"
+            )
+            return snapshot
+        return screen_snapshot
 
     def _record_new_evidence(
         self,
@@ -610,11 +694,12 @@ class CorrectionLearningTracker:
         inferred_part = f" inferred={inferred}" if inferred else ""
         before_part = f" before={_preview(decision.before)!r}" if decision.before else ""
         after_part = f" after={_preview(decision.after)!r}" if decision.after else ""
+        detail_part = f" detail={decision.detail!r}" if decision.detail else ""
         print(
             "[correction-capture] "
             f"decision={decision.decision} reason={decision.reason} "
             f"source={decision.source}"
-            f"{before_part}{after_part}{inferred_part}"
+            f"{detail_part}{before_part}{after_part}{inferred_part}"
         )
 
     def _remove_pending(self, pending: _PendingCorrectionObservation) -> None:
@@ -753,7 +838,7 @@ def _select_correction_counts(
     for pair, count in grouped.items():
         selected[pair] = max(selected.get(pair, 0), count)
     if selected:
-        return selected
+        return _filter_subsumed_correction_counts(selected)
 
     return dict([max(
         counts.items(),
@@ -761,10 +846,224 @@ def _select_correction_counts(
     )])
 
 
+def _filter_subsumed_correction_counts(
+    counts: dict[tuple[str, str], int],
+) -> dict[tuple[str, str], int]:
+    selected = dict(counts)
+    items = list(counts.items())
+    for (wrong, correct), count in items:
+        for (long_wrong, long_correct), long_count in items:
+            if (wrong, correct) == (long_wrong, long_correct):
+                continue
+            if long_count < count:
+                continue
+            if len(long_wrong) <= len(wrong) or len(long_correct) <= len(correct):
+                continue
+            start = long_wrong.find(wrong)
+            if start < 0:
+                continue
+            if long_correct[start:start + len(correct)] != correct:
+                continue
+            if _allowed_prefixed_alias(
+                wrong,
+                correct,
+                long_wrong,
+                long_correct,
+                start=start,
+            ):
+                continue
+            selected.pop((wrong, correct), None)
+            break
+    return selected
+
+
+def _allowed_prefixed_alias(
+    wrong: str,
+    correct: str,
+    long_wrong: str,
+    long_correct: str,
+    *,
+    start: int,
+) -> bool:
+    if start <= 0:
+        return False
+    wrong_prefix = long_wrong[:start]
+    correct_prefix = long_correct[:start]
+    if wrong_prefix != correct_prefix:
+        return False
+    if not all(char in _NICKNAME_PREFIXES for char in wrong_prefix):
+        return False
+    return long_wrong[start:] == wrong and long_correct[start:] == correct
+
+
+def _record_committed_replacement_evidence(
+    pending: _PendingCorrectionObservation,
+    replacement: str,
+) -> None:
+    replacement = _replacement_term(replacement)
+    if not replacement or len(replacement) != 1 or not _CJK_RE.search(replacement):
+        return
+    context = pending.last_deleted_context or pending.text
+    context_index = pending.last_deleted_context_index
+    for wrong, correct in _event_replacement_candidates(
+        context,
+        replacement,
+        context_index=context_index,
+        deleted_text=pending.last_deleted_text,
+    ):
+        key = (wrong, correct)
+        pending.committed_replacement_evidence[key] = (
+            pending.committed_replacement_evidence.get(key, 0) + 1
+        )
+
+
+def _record_pending_deletion(
+    pending: _PendingCorrectionObservation,
+    start: int,
+    end: int,
+) -> None:
+    text = pending.shadow_text
+    deleted = text[start:end]
+    context_start = max(0, start - 2)
+    context_end = min(len(text), end + 2)
+    pending.last_deleted_text = deleted
+    pending.last_deleted_context = text[context_start:context_end]
+    pending.last_deleted_context_index = max(0, start - context_start)
+
+
+def _event_replacement_candidates(
+    text: str,
+    replacement: str,
+    *,
+    context_index: int | None = None,
+    deleted_text: str = "",
+) -> Iterable[tuple[str, str]]:
+    text = str(text or "")
+    replacement = _replacement_term(replacement)
+    if not text or len(replacement) != 1 or not _CJK_RE.search(replacement):
+        return
+    emitted: set[tuple[str, str]] = set()
+    indexes: Iterable[int]
+    if context_index is not None:
+        indexes = (max(0, min(int(context_index), len(text) - 1)),)
+    else:
+        indexes = range(len(text))
+    for index in indexes:
+        char = text[index]
+        if deleted_text and char != deleted_text:
+            continue
+        if char == replacement or not _CJK_RE.search(char):
+            continue
+        max_right = min(2, len(text) - index - 1)
+        for left in (1, 2):
+            start = index - left
+            if start < 0:
+                continue
+            for right in range(0, max_right + 1):
+                suffix = text[index + 1:index + 1 + right]
+                wrong = _clean_term(text[start:index + 1] + suffix)
+                correct = _clean_term(text[start:index] + replacement + suffix)
+                if _valid_pair(wrong, correct) and (wrong, correct) not in emitted:
+                    emitted.add((wrong, correct))
+                    yield wrong, correct
+
+
+def _committed_replacement_inferred(
+    pending: _PendingCorrectionObservation,
+) -> tuple[InferredCorrection, ...]:
+    return tuple(
+        InferredCorrection(wrong, correct, count)
+        for (wrong, correct), count in sorted(
+            pending.committed_replacement_evidence.items(),
+            key=lambda item: (-item[1], -len(item[0][0]), item[0][0]),
+        )
+    )
+
+
+def _merge_inferred_corrections(
+    *groups: tuple[InferredCorrection, ...],
+) -> tuple[InferredCorrection, ...]:
+    counts: dict[tuple[str, str], int] = {}
+    for group in groups:
+        for item in group:
+            key = (item.wrong, item.correct)
+            counts[key] = max(counts.get(key, 0), item.evidence_count)
+    counts = _filter_subsumed_correction_counts(counts)
+    return tuple(
+        InferredCorrection(wrong, correct, count)
+        for (wrong, correct), count in sorted(
+            counts.items(),
+            key=lambda item: (-item[1], -len(item[0][0]), item[0][0]),
+        )
+    )
+
+
 def _coerce_snapshot(value: str | CorrectionTextSnapshot | None) -> CorrectionTextSnapshot:
     if isinstance(value, CorrectionTextSnapshot):
         return value
     return CorrectionTextSnapshot(str(value or ""), source="legacy")
+
+
+def _should_try_screen_ocr(
+    pending: _PendingCorrectionObservation,
+    snapshot: CorrectionTextSnapshot,
+    *,
+    now: float,
+    after_edit_seconds: float,
+) -> bool:
+    if not pending.shadow_changed:
+        return False
+    if not pending.keyboard_edit_seen:
+        return False
+    if now - pending.inserted_at < after_edit_seconds:
+        return False
+    current = str(snapshot.text or "")
+    if pending.awaiting_ime_commit:
+        return True
+    if not current:
+        return True
+    if snapshot.source == "tracked_segment":
+        return True
+    if pending.text in current:
+        return True
+    return _looks_like_incomplete_ime_edit(pending.text, current)
+
+
+def _screen_ocr_snapshot_is_relevant(before: str, text: str) -> bool:
+    before = str(before or "").strip()
+    text = str(text or "").strip()
+    if not before or not text:
+        return False
+    segment = _best_after_segment(before, text)
+    if infer_correction_pairs(before, segment):
+        return True
+    if before in text:
+        return True
+    ratio = difflib.SequenceMatcher(a=before, b=segment, autojunk=False).ratio()
+    if ratio >= 0.45:
+        return True
+    before_terms = _cjk_terms(before)
+    text_terms = _cjk_terms(segment)
+    if not before_terms or not text_terms:
+        return False
+    return bool(before_terms & text_terms)
+
+
+def _screen_ocr_snapshot_is_self_ui(snapshot: CorrectionTextSnapshot) -> bool:
+    text = str(snapshot.text or "")
+    if "Voice Keyboard" not in text:
+        return False
+    markers = ("设置", "快捷键", "历史", "词典", "输入诊断", "权限")
+    return sum(1 for marker in markers if marker in text) >= 2
+
+
+def _cjk_terms(text: str) -> set[str]:
+    terms = set()
+    for token in _PUNCTUATION_SPLIT_RE.split(str(text or "")):
+        token = _clean_term(token)
+        if len(token) >= 2 and _CJK_TERM_RE.match(token):
+            terms.add(token)
+    return terms
 
 
 def _choose_observed_text(
@@ -775,6 +1074,8 @@ def _choose_observed_text(
     current = str(snapshot.text or "")
     if not pending.shadow_changed:
         return current, snapshot.source
+    if not current:
+        return pending.shadow_text, f"shadow+{snapshot.source}:empty_current_text"
     if before in current:
         return pending.shadow_text, f"shadow+{snapshot.source}:before_present"
     shadow_inferred = infer_correction_pairs(before, pending.shadow_text)
@@ -831,17 +1132,20 @@ def _candidate_terms(
 ) -> Iterable[tuple[str, str]]:
     wrong_piece = before[start:end]
     max_left = min(2, start)
+    max_right = min(2, len(before) - end)
     left_lengths = range(0, max_left + 1)
     if len(wrong_piece) == 1:
         left_lengths = range(1, max_left + 1)
     for left_len in left_lengths:
-        prefix = before[start - left_len:start]
-        wrong = prefix + wrong_piece
-        correct = prefix + replacement
-        wrong = _clean_term(wrong)
-        correct = _clean_term(correct)
-        if _valid_pair(wrong, correct):
-            yield wrong, correct
+        for right_len in range(0, max_right + 1):
+            prefix = before[start - left_len:start]
+            suffix = before[end:end + right_len]
+            wrong = prefix + wrong_piece + suffix
+            correct = prefix + replacement + suffix
+            wrong = _clean_term(wrong)
+            correct = _clean_term(correct)
+            if _valid_pair(wrong, correct):
+                yield wrong, correct
 
 
 def _best_after_segment(before: str, after: str) -> str:
@@ -867,7 +1171,7 @@ def _valid_pair(wrong: str, correct: str) -> bool:
         return False
     if _punctuation_only(wrong) or _punctuation_only(correct):
         return False
-    return bool(_CJK_RE.search(wrong) and _CJK_RE.search(correct))
+    return bool(_CJK_TERM_RE.match(wrong) and _CJK_TERM_RE.match(correct))
 
 
 def _looks_like_same_segment_edit(before: str, current: str) -> bool:
@@ -975,7 +1279,11 @@ def _key_name(key: object) -> str:
 
 
 def _printable_key_text(char: str) -> bool:
-    return bool(char and char.isprintable() and char not in ("\x7f", "\b"))
+    if not char or char in ("\x7f", "\b"):
+        return False
+    if unicodedata.category(char).startswith("C"):
+        return False
+    return char.isprintable()
 
 
 def _ime_composition_key_text(text: str) -> bool:

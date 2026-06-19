@@ -62,6 +62,8 @@ class MenuBar(NSObject):
             ("打开设置…", b"openSettings:"),
             ("快捷键…", b"openShortcuts:"),
             ("转写历史…", b"openHistory:"),
+            ("词典…", b"openDictionary:"),
+            ("输入诊断…", b"openCapture:"),
             ("意图诊断…", b"openIntent:"),
             ("备忘…", b"openMemo:"),
             ("权限自检…", b"openPerms:"),
@@ -98,6 +100,22 @@ class MenuBar(NSObject):
 
     def openHistory_(self, sender):
         self._app.main_window.show_tab("history")
+
+    def openDictionary_(self, sender):
+        self._app.main_window.show_tab("dictionary")
+
+    def openCapture_(self, sender):
+        try:
+            from agent import typer as _typer
+            from agent.focused_text_capture import format_focused_text_snapshot
+            snapshot = _typer.inspect_focused_text()
+            print(format_focused_text_snapshot(snapshot))
+        except Exception:
+            snapshot = None
+        if hasattr(self._app.main_window, "show_capture_snapshot"):
+            self._app.main_window.show_capture_snapshot(snapshot)
+        else:
+            self._app.main_window.show_tab("capture")
 
     def openIntent_(self, sender):
         self._app.main_window.show_tab("intent")
