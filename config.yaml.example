@@ -196,6 +196,22 @@ instruction_mode:
     token: ""
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Dictation Mode 个人词典 / 纠错记忆
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+correction_memory:
+  enabled: true
+  path: ~/.voice-keyboard/correction_memory.json
+  # 同一类“错词 -> 正词”至少观察到几次，才自动加入词典。
+  confirm_threshold: 2
+  # 听写后多久内观察用户手动修改。
+  observe_window_seconds: 30
+  max_pending: 5
+  # macOS 当前输入框读不到可靠文本时，允许用屏幕 OCR 辅助判断。
+  screen_ocr_fallback: true
+  screen_ocr_after_edit_seconds: 0.8
+  debug: false
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 打字与自定义快捷键
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 typing:

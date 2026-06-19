@@ -4,7 +4,7 @@ Voice Keyboard is a local-first voice keyboard engine for turning speech into te
 
 It is not a chatbot. The goal is to make common input work faster: dictation, rewriting selected text, triggering shortcuts, switching windows, launching apps, and recalling short reusable text snippets.
 
-The project currently focuses on the Windows desktop workflow while keeping macOS and Linux/headless code paths available where supported.
+The project currently focuses on the Windows desktop workflow while keeping macOS and Linux/headless code paths available where supported. Dictation correction learning is currently strongest on macOS because it uses Accessibility, input-monitoring, IME commit events, and an OCR fallback when focused text cannot be read directly.
 
 ## What It Does
 
@@ -12,6 +12,7 @@ The project currently focuses on the Windows desktop workflow while keeping macO
 - Instruction mode: hold a separate hotkey and speak an operation such as rewrite, summarize, delete, continue, press a shortcut, open an app, or recall a memo.
 - Local UI: Windows tray menu, main window, language switching, hotkey settings, history, memo management, and AI intent diagnostics.
 - Memo store: save and recall explicit short text snippets such as addresses, emails, and reusable phrases.
+- Dictation correction memory: learn repeated manual corrections as a local wrong-to-correct dictionary and apply them to later dictation.
 - Intent feedback loop: collect local intent samples, correct mistakes, sync with a training server, and use local overrides/model data to improve future intent decisions.
 - Headless CLI: record and print recognized speech without touching the active input field.
 
@@ -39,7 +40,7 @@ The intent model loop is still evolving. The current implementation combines det
 Platform notes:
 
 - Windows is the best-supported desktop target.
-- macOS requires microphone, Accessibility, and input-monitoring permissions.
+- macOS requires microphone, Accessibility, and input-monitoring permissions. Dictation correction learning also benefits from Screen Recording permission when the OCR fallback is enabled.
 - Linux/headless usage is mainly via `agent.cli`; desktop insertion depends on the local input stack.
 
 ## Quick Start
@@ -93,11 +94,15 @@ scripts/run-local.sh --background
 scripts/run-local.sh --status
 ```
 
+On macOS, `--status` also reports the `com.voicekeyboard.agent` LaunchAgent when that install path is active, even if the script PID file is missing or stale.
+
 Stop the local runtime:
 
 ```bash
 scripts/run-local.sh --kill-only
 ```
+
+`--kill-only` stops local `agent.main` processes started from this checkout. If the macOS LaunchAgent is installed, unload or restart it with `launchctl` instead.
 
 List audio devices:
 
@@ -134,6 +139,7 @@ Common sections:
 - `polish_stt`: optional speech-to-text provider settings for polished dictation.
 - `llm`: model provider for instruction interpretation, rewriting, polishing, and generated text.
 - `audio`: capture mode, hotkeys, audio device, and VAD settings.
+- `correction_memory`: local Dictation Mode correction dictionary and learning behavior.
 - `typing`: text insertion and shortcut execution behavior.
 - `instruction_mode`: local intent rules, memo triggers, overrides, diagnostics, and training sync.
 
@@ -146,6 +152,35 @@ audio:
   ai_key: alt_r
   device: auto
 ```
+
+Typical correction-memory shape:
+
+```yaml
+correction_memory:
+  enabled: true
+  path: ~/.voice-keyboard/correction_memory.json
+  confirm_threshold: 2
+  observe_window_seconds: 30
+  max_pending: 5
+  screen_ocr_fallback: true
+  screen_ocr_after_edit_seconds: 0.8
+  debug: false
+```
+
+After Dictation Mode inserts text, repeated manual fixes such as `王之行 -> 王知行`
+can be learned locally and applied before future dictation text reaches the
+current input field. The macOS UI includes a `词典` tab for confirmed and
+candidate entries.
+
+How the correction-memory loop works:
+
+1. Dictation Mode recognizes speech and applies existing Correction Dictionary entries before insertion.
+2. The engine remembers recently inserted Dictation text for a short observation window.
+3. If the user manually fixes the inserted text, the engine observes the focused text, IME committed text, key edits, or macOS OCR fallback.
+4. Repeated evidence creates a Correction Candidate and then promotes it to the confirmed Correction Dictionary after `confirm_threshold`.
+5. The `词典` tab can review confirmed entries, review candidates, delete entries, or copy the storage path.
+
+Correction Memory is separate from Memo. Memo stores user-provided snippets for later recall; Correction Memory only stores local wrong-to-correct pairs for Dictation.
 
 Secrets should stay out of git. Use `config.yaml`, `.env`, environment variables, or a local secret manager. The repository tracks only examples such as `config.yaml.example` and `.env.example`.
 
@@ -234,6 +269,12 @@ scripts/test-local.sh
 python -m compileall -q agent training_server tools test
 ```
 
+`test/test_typing.py` is a manual smoke script for real OS text insertion. It is safe to import during automated discovery, but it only types into the active field when run directly:
+
+```bash
+python test/test_typing.py
+```
+
 Some behavior depends on OS permissions, a real focused input field, or an available desktop session. For day-to-day development, prefer focused unit tests around the module you changed.
 
 ## Packaging
@@ -250,6 +291,8 @@ On managed corporate computers, unsigned executables may be blocked. For real di
 
 - [Agent guide](AGENTS.md)
 - [Ubiquitous language](UBIQUITOUS_LANGUAGE.md)
+- [Input Environment architecture](docs/architecture/input-environment-seam.md)
+- [Dictation correction memory architecture](docs/architecture/dictation-correction-memory.md)
 - [Current stage plan](docs/stage-development-plan.md)
 - [Intent training](docs/intent-training.md)
 - [Intent training server](docs/intent-training-server.md)

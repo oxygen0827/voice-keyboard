@@ -24,16 +24,22 @@ TEST_CASES = [
     ("cmd",  "保存"),
 ]
 
-print("3 秒后开始测试，请把光标点进任意输入框...")
-time.sleep(3)
 
-for kind, content in TEST_CASES:
-    if kind == "text":
-        print(f"[test] 打字: {content}")
-        type_text(content)
-    else:
-        print(f"[test] 指令: {content}")
-        send_shortcut(content)
-    time.sleep(2)
+def main() -> None:
+    print("3 秒后开始测试，请把光标点进任意输入框...")
+    time.sleep(3)
 
-print("[test] 完成")
+    for kind, content in TEST_CASES:
+        if kind == "text":
+            print(f"[test] 打字: {content}")
+            type_text(content)
+        else:
+            print(f"[test] 指令: {content}")
+            send_shortcut(content)
+        time.sleep(2)
+
+    print("[test] 完成")
+
+
+if __name__ == "__main__":
+    main()

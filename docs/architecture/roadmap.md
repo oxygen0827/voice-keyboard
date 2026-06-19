@@ -16,6 +16,7 @@ Initial implementation:
 - Input Environment now owns Text Revision / Text Removal target lookup and text-side effects.
 - Input Environment now owns generated-text insertion around Explicit Selection for Text Generation and Memo Operation output.
 - Platform text IO calls now sit behind a small adapter used by the Input Environment implementation.
+- Dictation Correction Memory now asks the Input Environment/TextIO seam for focused-text and screen-text snapshots instead of calling platform IO directly.
 - Text Revision now defaults to the current Tracked Segment when there is no Explicit Selection; specific Text Removal still requires Explicit Selection unless the user clearly asks for the whole current Operation Window.
 - Generic delete can remove the current Operation Window, or fall back to Select All + Delete when no window is available.
 - Next targeting work should broaden platform support for focused-field Operation Windows while preserving the rule that no-selection local partial removal fails closed.
@@ -88,6 +89,26 @@ Initial implementation:
 - `agent/capture_path_runtime.py`
 - `PushToTalk` now dispatches typed `UtteranceEvent` values internally while keeping the existing callback adapter interface.
 - `PushToTalk` now delegates enabled/disabled state, active capture pairing, and Dictation Mode polish toggling to a Capture Path runtime state machine.
+- On macOS, `PushToTalk` uses a Quartz listener so the same hotkey path can also forward non-hotkey edits to Dictation Correction Memory.
+
+## 4a. Dictation Correction Memory
+
+Status: in progress, bounded by ADR-0004.
+
+Keep local Dictation wrong-to-correct learning separate from Memo and Instruction Mode intent corrections.
+
+Initial implementation:
+
+- `agent/correction_memory.py`
+- `agent/focused_text_capture.py`
+- `agent/screen_ocr_capture.py`
+- `agent/ime_commit_monitor.py`
+- `agent/macos_keyboard_listener.py`
+- Dictation Mode now applies confirmed Correction Dictionary entries before insertion and remembers inserted Dictation text for learning.
+- Runtime Composition wires the tracker, observation scheduler, manual key events, and macOS IME committed-text monitor.
+- The Input Environment/TextIO seam exposes focused text and screen OCR snapshots for correction learning.
+- The macOS main window includes a `词典` tab for confirmed entries and candidates.
+- Windows and Linux currently apply existing Correction Dictionary entries but need platform-specific focused-text/key-edit/IME adapters for full automatic learning.
 
 ## 5. Speech Interpretation Provider Adapters
 

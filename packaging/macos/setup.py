@@ -63,6 +63,7 @@ OPTIONS = {
         "objc",
         "AppKit",
         "Foundation",
+        "CoreFoundation",
         "Quartz",
         "AVFoundation",
         "ApplicationServices",

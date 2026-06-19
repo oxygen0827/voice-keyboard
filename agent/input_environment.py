@@ -7,6 +7,7 @@ platform typing details.
 from dataclasses import dataclass
 from typing import Literal
 
+from agent.correction_memory import CorrectionTextSnapshot
 from agent.text_buffer import TextBuffer
 from agent.text_io import ShortcutPolicyDecision, TextIO, TyperTextIO
 
@@ -229,6 +230,32 @@ class TyperInputEnvironment:
 
     def active_application(self) -> str:
         return self._text_io.current_application_label()
+
+    def current_text_for_correction_learning(self) -> str:
+        return self.current_text_snapshot_for_correction_learning().text
+
+    def current_text_snapshot_for_correction_learning(self) -> CorrectionTextSnapshot:
+        if hasattr(self._text_io, "get_full_focused_text_snapshot"):
+            snapshot = self._text_io.get_full_focused_text_snapshot()
+            if snapshot.text:
+                return snapshot
+        caret_window = self._text_io.get_caret_text_window()
+        if caret_window is not None and caret_window.text:
+            return CorrectionTextSnapshot(
+                caret_window.text,
+                source=f"caret:{caret_window.source}",
+            )
+        if self._buf.last:
+            return CorrectionTextSnapshot(self._buf.last, source="tracked_segment")
+        return CorrectionTextSnapshot("", source="unavailable")
+
+    def screen_text_snapshot_for_correction_learning(
+        self,
+        expected_text: str = "",
+    ) -> CorrectionTextSnapshot:
+        if hasattr(self._text_io, "get_screen_text_snapshot"):
+            return self._text_io.get_screen_text_snapshot(expected_text)
+        return CorrectionTextSnapshot("", source="unsupported")
 
     def _operation_window_for_text_change(
         self,

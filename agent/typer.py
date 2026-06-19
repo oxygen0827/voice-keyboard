@@ -8,6 +8,11 @@ from agent import app_launcher
 from agent import macos_window_actions
 from agent import windows_window_actions
 from agent.app_shortcut_presets import MACOS_APP_SHORTCUT_PRESETS
+from agent.focused_text_capture import (
+    FocusedTextProbe,
+    FocusedTextSnapshot,
+    classify_text_capture,
+)
 from agent.local_operation_catalog import (
     LocalOperationCandidate,
     ShortcutCatalogEntry,
@@ -677,6 +682,415 @@ def get_caret_text_window(max_chars: int = 600) -> CaretTextWindow | None:
     except Exception as e:
         print(f"[typer] get_caret_text_window 失败: {e}")
         return None
+
+
+def get_focused_text_value(max_chars: int = 2000) -> str:
+    """Return the focused editable text without slicing around the caret."""
+    try:
+        text = inspect_focused_text(max_chars=max_chars).text
+        if len(text) > max_chars:
+            return text[-max_chars:]
+        return text
+    except Exception as e:
+        print(f"[typer] get_focused_text_value 失败: {e}")
+        return ""
+
+
+def inspect_focused_text(max_chars: int = 2000) -> FocusedTextSnapshot:
+    """Return focused text plus capture diagnostics for UI and learning gates."""
+    app = current_application()
+    if _OS != "Darwin":
+        return FocusedTextSnapshot(
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            probes=(FocusedTextProbe("platform", False, detail=_OS),),
+        )
+    focused, focus_source = _focused_accessibility_element_with_source()
+    focus_probe = FocusedTextProbe(
+        "AXFocusedUIElement",
+        focused is not None,
+        detail=focus_source,
+    )
+    window_scan_probe = None
+    if focused is None:
+        focused, window_source = _fallback_accessibility_text_element()
+        window_scan_probe = FocusedTextProbe(
+            "AXWindowScan",
+            focused is not None,
+            detail=window_source,
+        )
+        if focused is None:
+            return FocusedTextSnapshot(
+                app_name=app.name,
+                bundle_id=app.bundle_id,
+                pid=app.pid,
+                probes=(focus_probe, window_scan_probe),
+            )
+    try:
+        result = _inspect_accessibility_text(focused, max_chars=max_chars)
+        probes = [focus_probe]
+        if window_scan_probe is not None:
+            probes.append(window_scan_probe)
+        probes.extend(result["probes"])
+        return FocusedTextSnapshot(
+            text=result["text"],
+            source=result["source"],
+            confidence=classify_text_capture(
+                source=result["source"],
+                text=result["text"],
+                selected_range=result["selected_range"],
+            ),
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            role=result["role"],
+            subrole=result["subrole"],
+            selected_range=result["selected_range"],
+            probes=tuple(probes),
+        )
+    except Exception as e:
+        return FocusedTextSnapshot(
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            probes=(FocusedTextProbe("inspect", False, detail=str(e)),),
+        )
+
+
+def inspect_screen_text(
+    *,
+    reference_text: str = "",
+    max_chars: int = 4000,
+) -> FocusedTextSnapshot:
+    """Return screen OCR text plus capture diagnostics for correction learning."""
+    app = current_application()
+    try:
+        from agent.screen_ocr_capture import capture_screen_text
+
+        return capture_screen_text(
+            reference_text=reference_text,
+            max_chars=max_chars,
+        )
+    except Exception as e:
+        return FocusedTextSnapshot(
+            source="ocr_error",
+            confidence="unsupported",
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            probes=(FocusedTextProbe("ScreenOCR", False, detail=str(e)),),
+        )
+
+
+def get_full_focused_text_snapshot(max_chars: int = 2000):
+    from agent.correction_memory import CorrectionTextSnapshot
+
+    snapshot = inspect_focused_text(max_chars=max_chars)
+    detail = f"confidence={snapshot.confidence}"
+    if snapshot.role:
+        detail += f" role={snapshot.role}"
+    return CorrectionTextSnapshot(snapshot.text, source=snapshot.source, detail=detail)
+
+
+def get_screen_text_snapshot(expected_text: str = ""):
+    from agent.correction_memory import CorrectionTextSnapshot
+
+    snapshot = inspect_screen_text(reference_text=expected_text)
+    detail = f"confidence={snapshot.confidence}"
+    return CorrectionTextSnapshot(snapshot.text, source=snapshot.source, detail=detail)
+
+
+def _fallback_accessibility_text_element() -> tuple[object | None, str]:
+    if _OS != "Darwin":
+        return None, "unsupported_platform"
+    stats = _new_window_scan_stats()
+    try:
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        pid = app.processIdentifier() if app is not None else None
+        if not pid:
+            return None, "no_pid"
+        root = ApplicationServices.AXUIElementCreateApplication(pid)
+    except Exception:
+        return None, "app_root_failed"
+
+    roots = []
+    focused_window = _ax_attribute(root, "AXFocusedWindow")
+    stats["focused_window"] = "yes" if focused_window is not None else "no"
+    if focused_window is not None:
+        roots.append(("AXFocusedWindow", focused_window))
+    windows = _ax_iterable_attribute(root, "AXWindows")
+    stats["window_count"] = len(windows)
+    for window in windows:
+        roots.append(("AXWindows", window))
+    if not roots:
+        roots.append(("AXApplication", root))
+    stats["roots"] = [source for source, _element in roots]
+
+    seen: set[int] = set()
+    for source, element in roots:
+        found = _find_accessibility_text_element(element, seen=seen, stats=stats)
+        if found is not None:
+            return found, source
+    return None, _format_window_scan_stats(stats)
+
+
+def _find_accessibility_text_element(
+    element,
+    *,
+    seen: set[int],
+    stats: dict | None = None,
+    depth: int = 0,
+    max_depth: int = 8,
+):
+    if element is None:
+        return None
+    marker = id(element)
+    if marker in seen:
+        return None
+    seen.add(marker)
+    role = str(_ax_attribute(element, "AXRole") or "")
+    _record_window_scan_element(stats, role, depth)
+    if _accessibility_role_looks_editable(role):
+        return element
+    text = _read_accessibility_text_from_element(element)
+    if text:
+        return element
+    if depth >= max_depth:
+        return None
+    for child in _accessibility_children(element):
+        found = _find_accessibility_text_element(
+            child,
+            seen=seen,
+            stats=stats,
+            depth=depth + 1,
+            max_depth=max_depth,
+        )
+        if found is not None:
+            return found
+    return None
+
+
+def _new_window_scan_stats() -> dict:
+    return {
+        "focused_window": "unknown",
+        "window_count": "unknown",
+        "roots": [],
+        "visited": 0,
+        "max_depth": 0,
+        "roles": {},
+    }
+
+
+def _record_window_scan_element(stats: dict | None, role: str, depth: int) -> None:
+    if stats is None:
+        return
+    stats["visited"] = int(stats.get("visited", 0)) + 1
+    stats["max_depth"] = max(int(stats.get("max_depth", 0)), depth)
+    roles = stats.setdefault("roles", {})
+    role_name = role or "-"
+    roles[role_name] = int(roles.get(role_name, 0)) + 1
+
+
+def _format_window_scan_stats(stats: dict) -> str:
+    roots = ",".join(stats.get("roots") or ["-"])
+    roles = stats.get("roles") or {}
+    role_counts = ",".join(
+        f"{role}:{count}"
+        for role, count in sorted(
+            roles.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:8]
+    )
+    return (
+        "not_found "
+        f"focusedWindow={stats.get('focused_window', 'unknown')} "
+        f"windows={stats.get('window_count', 'unknown')} "
+        f"roots={roots} "
+        f"visited={stats.get('visited', 0)} "
+        f"maxDepth={stats.get('max_depth', 0)} "
+        f"roles={role_counts or '-'}"
+    )
+
+
+def _accessibility_role_looks_editable(role: str) -> bool:
+    return role in {"AXTextArea", "AXTextField", "AXComboBox", "AXSearchField"}
+
+
+def _read_accessibility_text(element, *, depth: int = 0, max_depth: int = 3) -> str:
+    result = _inspect_accessibility_text(
+        element,
+        depth=depth,
+        max_depth=max_depth,
+    )
+    return result["text"]
+
+
+def _inspect_accessibility_text(
+    element,
+    *,
+    depth: int = 0,
+    max_depth: int = 3,
+    max_chars: int = 2000,
+) -> dict:
+    probes: list[FocusedTextProbe] = []
+    role = str(_ax_attribute(element, "AXRole") or "")
+    subrole = str(_ax_attribute(element, "AXSubrole") or "")
+    selected_range = _get_accessibility_selected_range(element)
+    text, source = _read_accessibility_text_from_element_with_probes(
+        element,
+        probes,
+    )
+    if text:
+        if len(text) > max_chars:
+            text = text[-max_chars:]
+        return {
+            "text": text,
+            "source": source,
+            "role": role,
+            "subrole": subrole,
+            "selected_range": selected_range,
+            "probes": probes,
+        }
+    if depth < max_depth:
+        children = _accessibility_children(element)
+        probes.append(FocusedTextProbe("AXChildren", bool(children), detail=str(len(children))))
+        for child in children:
+            child_result = _inspect_accessibility_text(
+                child,
+                depth=depth + 1,
+                max_depth=max_depth,
+                max_chars=max_chars,
+            )
+            probes.extend(child_result["probes"])
+            if child_result["text"]:
+                source = f"child:{child_result['source']}"
+                return {
+                    "text": child_result["text"],
+                    "source": source,
+                    "role": role,
+                    "subrole": subrole,
+                    "selected_range": selected_range,
+                    "probes": probes,
+                }
+    else:
+        probes.append(FocusedTextProbe("AXChildren", False, detail="max_depth"))
+    return {
+        "text": "",
+        "source": "unsupported",
+        "role": role,
+        "subrole": subrole,
+        "selected_range": selected_range,
+        "probes": probes,
+    }
+
+
+def _read_accessibility_text_from_element(element) -> str:
+    text, _source = _read_accessibility_text_from_element_with_probes(element, [])
+    return text
+
+
+def _read_accessibility_text_from_element_with_probes(
+    element,
+    probes: list[FocusedTextProbe],
+) -> tuple[str, str]:
+    value = _ax_attribute(element, "AXValue")
+    if isinstance(value, str) and value:
+        probes.append(FocusedTextProbe("AXValue", True, _preview_text(value)))
+        return value, "AXValue"
+    probes.append(
+        FocusedTextProbe(
+            "AXValue",
+            False,
+            detail="empty" if value == "" else "missing",
+        )
+    )
+    text = _read_accessibility_string_for_full_range(element, probes)
+    if text:
+        return text, "AXStringForRange"
+    return "", "unsupported"
+
+
+def _read_accessibility_string_for_full_range(
+    element,
+    probes: list[FocusedTextProbe] | None = None,
+) -> str:
+    length_value = _ax_attribute(element, "AXNumberOfCharacters")
+    try:
+        length = int(length_value)
+    except (TypeError, ValueError):
+        if probes is not None:
+            probes.append(FocusedTextProbe("AXNumberOfCharacters", False, detail="missing"))
+        return ""
+    if length <= 0:
+        if probes is not None:
+            probes.append(FocusedTextProbe("AXNumberOfCharacters", False, detail=str(length)))
+        return ""
+    if probes is not None:
+        probes.append(FocusedTextProbe("AXNumberOfCharacters", True, detail=str(length)))
+    try:
+        cf_range = ApplicationServices.CFRangeMake(0, length)
+        ax_range = ApplicationServices.AXValueCreate(
+            ApplicationServices.kAXValueCFRangeType,
+            cf_range,
+        )
+        result = ApplicationServices.AXUIElementCopyParameterizedAttributeValue(
+            element,
+            "AXStringForRange",
+            ax_range,
+            None,
+        )
+    except Exception:
+        if probes is not None:
+            probes.append(FocusedTextProbe("AXStringForRange", False, detail="exception"))
+        return ""
+    if not isinstance(result, tuple) or len(result) < 2:
+        if probes is not None:
+            probes.append(FocusedTextProbe("AXStringForRange", False, detail="bad_result"))
+        return ""
+    err, value = result[0], result[1]
+    if err != 0 or value is None:
+        if probes is not None:
+            probes.append(FocusedTextProbe("AXStringForRange", False, detail=f"err={err}"))
+        return ""
+    if probes is not None:
+        probes.append(FocusedTextProbe("AXStringForRange", True, _preview_text(str(value))))
+    return str(value)
+
+
+def _accessibility_children(element) -> tuple:
+    for attr in ("AXChildren", "AXVisibleChildren", "AXRows", "AXContents"):
+        value = _ax_attribute(element, attr)
+        if isinstance(value, (list, tuple)) and value:
+            return tuple(value)
+    return ()
+
+
+def _ax_attribute(element, attr: str):
+    try:
+        err, value = ApplicationServices.AXUIElementCopyAttributeValue(
+            element,
+            attr,
+            None,
+        )
+        if err == 0 and value is not None:
+            return value
+    except Exception:
+        return None
+    return None
+
+
+def _ax_iterable_attribute(element, attr: str) -> tuple:
+    value = _ax_attribute(element, attr)
+    if isinstance(value, (list, tuple)):
+        return tuple(item for item in value if item is not None)
+    return ()
+
+
+def _preview_text(text: str, limit: int = 80) -> str:
+    value = str(text or "").replace("\n", "\\n")
+    suffix = "..." if len(value) > limit else ""
+    return value[:limit] + suffix
 
 
 _SENTENCE_BOUNDARIES = frozenset("。！？!?…\n")
