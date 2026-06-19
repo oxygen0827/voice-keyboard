@@ -15,6 +15,10 @@ class _FakeQuartz:
     kCGEventKeyUp = 11
     kCGEventFlagsChanged = 12
     kCGKeyboardEventKeycode = 100
+    kCGEventFlagMaskShift = 1 << 17
+    kCGEventFlagMaskControl = 1 << 18
+    kCGEventFlagMaskAlternate = 1 << 19
+    kCGEventFlagMaskCommand = 1 << 20
 
     @staticmethod
     def CGEventMaskBit(value):
@@ -23,6 +27,10 @@ class _FakeQuartz:
     @staticmethod
     def CGEventGetIntegerValueField(event, _field):
         return event["vk"]
+
+    @staticmethod
+    def CGEventGetFlags(event):
+        return event.get("flags", 0)
 
     @staticmethod
     def CGEventKeyboardGetUnicodeString(event, _max_len, _actual, _buffer):
@@ -65,10 +73,25 @@ class MacOSKeyboardListenerTests(unittest.TestCase):
         on_press = MagicMock()
         on_release = MagicMock()
         listener = MacOSKeyboardListener(on_press, on_release)
-        event = {"vk": 0x3C}
+        down = {"vk": 0x3C, "flags": _FakeQuartz.kCGEventFlagMaskShift}
+        up = {"vk": 0x3C, "flags": 0}
 
-        listener._handle_event(_FakeQuartz, _FakeQuartz.kCGEventFlagsChanged, event)
-        listener._handle_event(_FakeQuartz, _FakeQuartz.kCGEventFlagsChanged, event)
+        listener._handle_event(_FakeQuartz, _FakeQuartz.kCGEventFlagsChanged, down)
+        listener._handle_event(_FakeQuartz, _FakeQuartz.kCGEventFlagsChanged, up)
+
+        on_press.assert_called_once_with(kb.Key.shift_r)
+        on_release.assert_called_once_with(kb.Key.shift_r)
+
+    def test_repeated_modifier_flags_changed_does_not_emit_release_until_flag_clears(self):
+        on_press = MagicMock()
+        on_release = MagicMock()
+        listener = MacOSKeyboardListener(on_press, on_release)
+        down = {"vk": 0x3C, "flags": _FakeQuartz.kCGEventFlagMaskShift}
+        up = {"vk": 0x3C, "flags": 0}
+
+        listener._handle_event(_FakeQuartz, _FakeQuartz.kCGEventFlagsChanged, down)
+        listener._handle_event(_FakeQuartz, _FakeQuartz.kCGEventFlagsChanged, down)
+        listener._handle_event(_FakeQuartz, _FakeQuartz.kCGEventFlagsChanged, up)
 
         on_press.assert_called_once_with(kb.Key.shift_r)
         on_release.assert_called_once_with(kb.Key.shift_r)
