@@ -1178,6 +1178,30 @@ class TyperShortcutTests(unittest.TestCase):
         self.assertEqual(window.text, text)
         self.assertEqual(window.source, "text_field")
 
+    def test_inspect_focused_text_uses_focused_accessibility_element(self):
+        focused = object()
+
+        with (
+            patch.object(typer, "_OS", "Darwin"),
+            patch.object(typer, "_focused_accessibility_element", return_value=focused),
+            patch.object(typer, "_inspect_accessibility_text") as inspect_text,
+        ):
+            inspect_text.return_value = {
+                "text": "输入框内容",
+                "selected_range": (4, 0),
+                "role": "AXTextArea",
+                "subrole": "",
+                "source": "value",
+                "probes": (),
+            }
+
+            snapshot = typer.inspect_focused_text()
+
+        self.assertEqual(snapshot.text, "输入框内容")
+        self.assertEqual(snapshot.source, "value")
+        self.assertEqual(snapshot.probes[0].name, "AXFocusedUIElement")
+        self.assertTrue(snapshot.probes[0].ok)
+
     def test_accessibility_selected_range_reads_pyobjc_return_tuple(self):
         app_services = typer.ApplicationServices
         selected_range = app_services.AXValueCreate(

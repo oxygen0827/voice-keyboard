@@ -282,6 +282,13 @@ def _focused_accessibility_element():
         return None
 
 
+def _focused_accessibility_element_with_source():
+    if _OS != "Darwin":
+        return None, "platform"
+    focused = _focused_accessibility_element()
+    return focused, "frontmost_focused_element" if focused is not None else "missing"
+
+
 def _frontmost_app_identity() -> tuple[str, str, int | None]:
     if _OS == "Windows":
         return _frontmost_app_identity_windows()
