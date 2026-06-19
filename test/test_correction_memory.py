@@ -78,6 +78,32 @@ class CorrectionMemoryTests(unittest.TestCase):
                 [("李长寿", "李长守", 1)],
             )
 
+    def test_deletes_confirmed_dictionary_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "correction.json"
+            memory = CorrectionMemory(path, confirm_threshold=1)
+            memory.learn("王之行", "王知行")
+
+            self.assertTrue(memory.delete_entry("王之行"))
+            self.assertFalse(memory.delete_entry("王之行"))
+            self.assertEqual(memory.apply("王之行来了"), "王之行来了")
+
+            reloaded = CorrectionMemory(path, confirm_threshold=1)
+            self.assertEqual(reloaded.entries, ())
+
+    def test_deletes_candidate_dictionary_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "correction.json"
+            memory = CorrectionMemory(path, confirm_threshold=2)
+            memory.learn("王之行", "王知行")
+
+            self.assertTrue(memory.delete_candidate("王之行", "王知行"))
+            self.assertFalse(memory.delete_candidate("王之行", "王知行"))
+            self.assertEqual(memory.candidates, ())
+
+            reloaded = CorrectionMemory(path, confirm_threshold=2)
+            self.assertEqual(reloaded.candidates, ())
+
     def test_repeated_evidence_from_single_segment_can_confirm(self):
         with tempfile.TemporaryDirectory() as tmp:
             memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=2)

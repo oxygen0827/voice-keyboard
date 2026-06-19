@@ -28,7 +28,7 @@ class _FlippedView(NSView):
     """y=0 在顶部的 NSView，配合 NSScrollView 让滚动行为符合直觉（从上往下排版）。"""
     def isFlipped(self):
         return True
-from Foundation import NSIndexSet, NSMutableArray
+from Foundation import NSIndexSet
 from PyObjCTools import AppHelper
 
 import sounddevice as sd
@@ -542,6 +542,7 @@ def _dictionary_row(status: str, entry) -> dict:
         "count": str(getattr(entry, "count", "")),
         "updated_at": updated_text,
         "updated_at_raw": updated_at,
+        "kind": "confirmed" if status == "已记录" else "candidate",
     }
 
 
@@ -657,6 +658,9 @@ class _DictionaryTab(NSObject):
             return None
         self._app = app
         self._rows: list[dict] = []
+        self._confirmed_rows: list[dict] = []
+        self._candidate_rows: list[dict] = []
+        self._checked: set[tuple[str, str, str]] = set()
         self._memory = None
         self.view = self._build()
         self.reload_(None)
@@ -666,30 +670,41 @@ class _DictionaryTab(NSObject):
     def _build(self) -> NSView:
         v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 600, 480))
         v.addSubview_(_button("刷新", NSMakeRect(20, 440, 80, 26), self, b"reload:"))
-        v.addSubview_(_button("打开文件", NSMakeRect(110, 440, 90, 26), self, b"openFile:"))
+        v.addSubview_(_button("删除勾选", NSMakeRect(110, 440, 90, 26), self, b"deleteChecked:"))
+        v.addSubview_(_button("复制路径", NSMakeRect(210, 440, 90, 26), self, b"copyPath:"))
 
-        summary = _label("", NSMakeRect(215, 444, 365, 20))
+        v.addSubview_(_label("类别", NSMakeRect(318, 444, 40, 20)))
+        kind = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(358, 440, 120, 26))
+        for item in ("已记录词典", "待候选词典"):
+            kind.addItemWithTitle_(item)
+        kind.setTarget_(self)
+        kind.setAction_(b"filterChanged:")
+        v.addSubview_(kind)
+        self._kind_filter = kind
+
+        summary = _label("", NSMakeRect(20, 416, 560, 20))
         summary.setSelectable_(True)
         v.addSubview_(summary)
         self._summary_label = summary
 
-        hint = _label("", NSMakeRect(20, 416, 560, 20))
+        hint = _label("", NSMakeRect(20, 392, 560, 20))
         hint.setSelectable_(True)
         v.addSubview_(hint)
         self._hint_label = hint
 
-        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 20, 560, 385))
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 20, 560, 360))
         scroll.setHasVerticalScroller_(True)
         scroll.setBorderType_(1)
         table = NSTableView.alloc().initWithFrame_(scroll.bounds())
         table.setUsesAlternatingRowBackgroundColors_(True)
 
         for ident, title, w in (
-            ("status", "状态", 70),
-            ("wrong", "识别成", 135),
-            ("correct", "修正为", 135),
+            ("checked", "", 36),
+            ("status", "状态", 65),
+            ("wrong", "识别成", 130),
+            ("correct", "修正为", 130),
             ("count", "次数", 55),
-            ("updated_at", "更新时间", 150),
+            ("updated_at", "更新时间", 140),
         ):
             col = NSTableColumn.alloc().initWithIdentifier_(ident)
             col.headerCell().setStringValue_(title)
@@ -698,6 +713,8 @@ class _DictionaryTab(NSObject):
 
         table.setDelegate_(self)
         table.setDataSource_(self)
+        table.setTarget_(self)
+        table.setAction_(b"toggleChecked:")
         scroll.setDocumentView_(table)
         v.addSubview_(scroll)
         self._table = table
@@ -709,22 +726,54 @@ class _DictionaryTab(NSObject):
             memory = CorrectionMemory.from_config(cfg.get("correction_memory", {}))
             self._memory = memory
             confirmed = [
-                _dictionary_row("已确认", entry)
+                _dictionary_row("已记录", entry)
                 for entry in memory.entries
             ]
-            self._rows = sorted(
+            candidates = [
+                _dictionary_row("待候选", entry)
+                for entry in memory.candidates
+            ]
+            self._confirmed_rows = sorted(
                 confirmed,
                 key=lambda row: (-row.get("updated_at_raw", 0.0), row.get("wrong", "")),
             )
-            self._summary_label.setStringValue_(
-                f"已确认 {len(confirmed)} 条 / 阈值 {memory.confirm_threshold} 次"
+            self._candidate_rows = sorted(
+                candidates,
+                key=lambda row: (-row.get("updated_at_raw", 0.0), row.get("wrong", "")),
             )
             self._hint_label.setStringValue_(str(memory.path))
         except Exception as e:
             print(f"[ui] 词典读取失败: {e}")
             self._rows = []
+            self._confirmed_rows = []
+            self._candidate_rows = []
             self._summary_label.setStringValue_(f"词典读取失败: {e}")
             self._hint_label.setStringValue_("")
+            self._table.reloadData()
+            return
+        self._apply_filter()
+
+    def filterChanged_(self, sender):
+        self._apply_filter()
+
+    @objc.python_method
+    def _selected_kind(self) -> str:
+        title = self._kind_filter.titleOfSelectedItem() if self._kind_filter is not None else ""
+        return "candidate" if title == "待候选词典" else "confirmed"
+
+    @objc.python_method
+    def _apply_filter(self) -> None:
+        kind = self._selected_kind()
+        self._rows = list(self._candidate_rows if kind == "candidate" else self._confirmed_rows)
+        current_label = "待候选词典" if kind == "candidate" else "已记录词典"
+        threshold = getattr(self._memory, "confirm_threshold", "-")
+        checked_count = len([
+            row for row in self._rows
+            if self._row_key(row) in self._checked
+        ])
+        self._summary_label.setStringValue_(
+            f"当前：{current_label} {len(self._rows)} 条 / 已勾选 {checked_count} 条 / 已记录 {len(self._confirmed_rows)} 条 / 待候选 {len(self._candidate_rows)} 条 / 阈值 {threshold} 次"
+        )
         self._table.reloadData()
 
     def numberOfRowsInTableView_(self, t):
@@ -735,18 +784,92 @@ class _DictionaryTab(NSObject):
             return ""
         e = self._rows[row]
         ident = col.identifier()
+        if str(ident) == "checked":
+            return "☑" if self._row_key(e) in self._checked else "☐"
         return e.get(str(ident), "")
 
-    def openFile_(self, sender):
+    def toggleChecked_(self, sender):
+        row_index = self._table.clickedRow()
+        col_index = self._table.clickedColumn()
+        if row_index < 0 or row_index >= len(self._rows):
+            return
+        if col_index >= 0:
+            column = self._table.tableColumns()[col_index]
+            if str(column.identifier()) != "checked":
+                return
+        key = self._row_key(self._rows[row_index])
+        if key in self._checked:
+            self._checked.remove(key)
+        else:
+            self._checked.add(key)
+        self._apply_filter()
+
+    def deleteChecked_(self, sender):
+        selected = [
+            row for row in self._rows
+            if self._row_key(row) in self._checked
+        ]
+        selected = [
+            row for row in selected
+            if row.get("wrong", "") and row.get("correct", "")
+        ]
+        if not selected:
+            self._alert("请先勾选词典记录", "点击每行左侧的方框即可勾选。")
+            return
+        a = NSAlert.alloc().init()
+        if len(selected) == 1:
+            row = selected[0]
+            a.setMessageText_(
+                f"删除{row.get('status', '词典')}「{row.get('wrong')} -> {row.get('correct')}」？"
+            )
+        else:
+            a.setMessageText_(f"删除选中的 {len(selected)} 条词典记录？")
+        if any(row.get("kind") == "candidate" for row in selected):
+            a.setInformativeText_(
+                "删除候选后会从 0 次重新累计；删除已记录词典后，后续听写不会再自动应用对应修正。"
+            )
+        else:
+            a.setInformativeText_("删除后，后续听写不会再自动应用这条修正。")
+        a.addButtonWithTitle_("删除")
+        a.addButtonWithTitle_("取消")
+        if a.runModal() != NSAlertFirstButtonReturn:
+            return
+        memory = self._memory
+        if memory is None:
+            return
+        removed_count = 0
+        for row in selected:
+            wrong = row.get("wrong", "")
+            correct = row.get("correct", "")
+            if row.get("kind") == "candidate":
+                removed = memory.delete_candidate(wrong, correct)
+            else:
+                removed = memory.delete_entry(wrong)
+            if removed:
+                removed_count += 1
+                self._checked.discard(self._row_key(row))
+        if removed_count < len(selected):
+            self._alert("部分记录未删除", "有些记录可能已经不存在。")
+        self.reload_(None)
+
+    @objc.python_method
+    def _row_key(self, row: dict) -> tuple[str, str, str]:
+        return (
+            str(row.get("kind", "")),
+            str(row.get("wrong", "")),
+            str(row.get("correct", "")),
+        )
+
+    def copyPath_(self, sender):
         memory = self._memory
         path = getattr(memory, "path", None)
         if path is None:
             return
-        from AppKit import NSWorkspace
-        if path.exists():
-            NSWorkspace.sharedWorkspace().openFile_(str(path))
-        else:
-            self._alert("词典文件还没创建", str(path))
+        from AppKit import NSPasteboard, NSPasteboardTypeString
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(str(path), NSPasteboardTypeString)
+        self._alert("已复制词典路径", str(path))
 
     @objc.python_method
     def _alert(self, title, msg):

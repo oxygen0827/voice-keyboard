@@ -238,6 +238,32 @@ class CorrectionMemory:
             self._save()
             return LearnedCorrection(wrong, correct, next_count, False)
 
+    def delete_entry(self, wrong: str) -> bool:
+        wrong = _clean_term(wrong)
+        if not wrong:
+            return False
+        with self._lock:
+            self._reload_if_changed()
+            if wrong not in self._entries:
+                return False
+            self._entries.pop(wrong, None)
+            self._save()
+            return True
+
+    def delete_candidate(self, wrong: str, correct: str) -> bool:
+        wrong = _clean_term(wrong)
+        correct = _clean_term(correct)
+        if not wrong or not correct:
+            return False
+        with self._lock:
+            self._reload_if_changed()
+            key = (wrong, correct)
+            if key not in self._candidates:
+                return False
+            self._candidates.pop(key, None)
+            self._save()
+            return True
+
     def _load(self) -> None:
         if not self._path.exists():
             return
