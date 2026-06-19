@@ -77,6 +77,26 @@ class CapturePathTests(unittest.TestCase):
 
         on_key_press.assert_called_once_with(ordinary_key)
 
+    def test_push_to_talk_uses_quartz_listener_on_macos(self):
+        on_dictation = MagicMock()
+        ptt = PushToTalk(on_dictation, ptt_key="a")
+
+        with (
+            patch("agent.push_to_talk.sys.platform", "darwin"),
+            patch("agent.macos_keyboard_listener.MacOSKeyboardListener") as quartz_listener,
+            patch("agent.push_to_talk.kb.Listener") as pynput_listener,
+            patch.object(ptt, "_xiao_source", None),
+        ):
+            quartz_listener.return_value.start.return_value = None
+            ptt.start()
+
+        quartz_listener.assert_called_once_with(
+            on_press=ptt._on_press,
+            on_release=ptt._on_release,
+        )
+        quartz_listener.return_value.start.assert_called_once_with()
+        pynput_listener.assert_not_called()
+
     def test_push_to_talk_forwards_non_hotkey_releases_to_correction_tracker(self):
         on_dictation = MagicMock()
         on_key_release = MagicMock()
