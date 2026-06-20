@@ -102,8 +102,8 @@ audio:
                             #   device: "Yeti"           # Blue Yeti USB 麦克风
                             #   device: 2                # 直接填序号（用 --list-devices 查）
   xiao_ble:
-    trim_silence: false     # 默认不裁剪，避免误切掉短句开头；调试时再打开
-    normalize_gain: false   # 默认不自动增益，避免把 BLE 噪声/削波放大
+    trim_silence: true      # 裁掉首尾长静音，避免有效语音被静音稀释
+    normalize_gain: true    # XIAO BLE 录音偏小时先自动增益，再送 STT
   vad_aggressiveness: 2     # VAD 灵敏度 0~3（仅 mode: vad 时生效）
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

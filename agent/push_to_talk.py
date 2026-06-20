@@ -82,8 +82,8 @@ class PushToTalk:
         self._on_key_press      = on_key_press
         self._on_key_release    = on_key_release
         xiao_options = xiao_ble_options if isinstance(xiao_ble_options, dict) else {}
-        self._xiao_trim_silence = bool(xiao_options.get("trim_silence", False))
-        self._xiao_normalize_gain = bool(xiao_options.get("normalize_gain", False))
+        self._xiao_trim_silence = bool(xiao_options.get("trim_silence", True))
+        self._xiao_normalize_gain = bool(xiao_options.get("normalize_gain", True))
         self._device_idx        = None
         self._xiao_source: Optional[XiaoBleAudioSource] = None
         self._recording_from_xiao = False
@@ -387,23 +387,7 @@ class PushToTalk:
             f"silent={quality.silent_percent:.1f}% "
             f"clipped={quality.clipped_percent:.3f}%"
         )
-        if quality.rms < 35 or quality.max_amplitude < 450:
-            print("[xiao] 录音信号过弱，跳过 STT。请靠近一些或提高说话音量。")
-            self._set_status("empty_stt")
-            return None
-
         processed_pcm = pcm
-        if self._xiao_trim_silence:
-            trimmed_pcm, leading_sec, trailing_sec = trim_pcm_16k_silence(processed_pcm)
-            if leading_sec > 0 or trailing_sec > 0:
-                print(
-                    "[xiao] 首尾静音裁剪 "
-                    f"leading={leading_sec:.2f}s "
-                    f"trailing={trailing_sec:.2f}s "
-                    f"duration={analyze_pcm_16k(trimmed_pcm).duration_sec:.2f}s"
-                )
-                processed_pcm = trimmed_pcm
-
         if self._xiao_normalize_gain:
             normalized_pcm, gain, normalized = normalize_pcm_16k_for_stt(processed_pcm)
             if gain > 1.01:
@@ -415,6 +399,21 @@ class PushToTalk:
                     f"clipped={normalized.clipped_percent:.3f}%"
                 )
             processed_pcm = normalized_pcm
+        if self._xiao_trim_silence:
+            trimmed_pcm, leading_sec, trailing_sec = trim_pcm_16k_silence(processed_pcm)
+            if leading_sec > 0 or trailing_sec > 0:
+                print(
+                    "[xiao] 首尾静音裁剪 "
+                    f"leading={leading_sec:.2f}s "
+                    f"trailing={trailing_sec:.2f}s "
+                    f"duration={analyze_pcm_16k(trimmed_pcm).duration_sec:.2f}s"
+                )
+                processed_pcm = trimmed_pcm
+        processed_quality = analyze_pcm_16k(processed_pcm)
+        if processed_quality.rms < 35 and processed_quality.max_amplitude < 450:
+            print("[xiao] 录音信号过弱，跳过 STT。请靠近一些或提高说话音量。")
+            self._set_status("empty_stt")
+            return None
         return processed_pcm
 
     def _show_recording_status_if_active(self, expected_mode: str, state: str) -> None:

@@ -98,6 +98,13 @@ scripts/run-local.sh --background
 scripts/run-local.sh --status
 ```
 
+Background runs use `--no-ui` by default, so the macOS menu bar `VK` icon is
+hidden. To keep the right-side menu bar entry while running in the background:
+
+```bash
+scripts/run-local.sh --background --ui
+```
+
 Stop the local runtime:
 
 ```bash
@@ -189,6 +196,7 @@ Secrets should stay out of git. Use `config.yaml`, `.env`, environment variables
 | `python -m agent.main --no-serial` | Desktop runtime without hardware serial receiver |
 | `python -m agent.main --list-devices` | Print available audio devices |
 | `python -m agent.main --no-serial --no-ui` | Runtime without the main window, useful for debugging |
+| `scripts/run-local.sh --background --ui` | Background macOS/Linux local run with the macOS menu bar `VK` entry |
 | `python -m agent.windows_tray` | Windows tray wrapper |
 | `python -m agent.cli` | Headless command-line dictation |
 

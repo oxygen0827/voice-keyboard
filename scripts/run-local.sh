@@ -13,6 +13,7 @@ KILL_ONLY=0
 BACKGROUND=0
 LIST_DEVICES=0
 HEADLESS=0
+UI=0
 STATUS_ONLY=0
 PERMISSIONS_ONLY=0
 
@@ -28,6 +29,7 @@ Options:
   --no-kill       Do not kill existing agent.main processes first.
   --kill-only     Kill existing agent.main processes and exit.
   --background    Start in background and write a log under .local/logs/.
+  --ui            Show the macOS menu bar icon/main window entry.
   --headless      Disable the floating status window and run terminal-only.
   --status        Show whether the local engine PID file points to a running process.
   --permissions   Print macOS permission status JSON and exit.
@@ -37,6 +39,7 @@ Options:
 Examples:
   scripts/run-local.sh
   scripts/run-local.sh --background
+  scripts/run-local.sh --background --ui
   scripts/run-local.sh --status
   scripts/run-local.sh --permissions
   scripts/run-local.sh --headless
@@ -62,6 +65,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --headless)
       HEADLESS=1
+      shift
+      ;;
+    --ui)
+      UI=1
       shift
       ;;
     --status)
@@ -195,7 +202,7 @@ fi
 CMD=("$PYTHON_BIN" -u -m agent.main --no-serial)
 if [[ "$HEADLESS" == "1" ]]; then
   CMD+=(--headless)
-else
+elif [[ "$UI" != "1" ]]; then
   CMD+=(--no-ui)
 fi
 if [[ ${#AGENT_ARGS[@]} -gt 0 ]]; then

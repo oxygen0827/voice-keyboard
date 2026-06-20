@@ -64,6 +64,20 @@ _AI_DONE_RGB     = (0.20, 0.78, 0.50)
 _AI_ERROR_RGB    = (0.94, 0.20, 0.20)
 
 
+def _main_screen():
+    screen = NSScreen.mainScreen()
+    if screen is not None and hasattr(screen, "frame"):
+        return screen
+    try:
+        screens = NSScreen.screens()
+        for candidate in screens or []:
+            if candidate is not None and hasattr(candidate, "frame"):
+                return candidate
+    except Exception:
+        pass
+    return None
+
+
 class _DotView(NSView):
     def initWithFrame_(self, frame):
         self = objc.super(_DotView, self).initWithFrame_(frame)
@@ -103,7 +117,7 @@ class _Controller(NSObject):
 
     @objc.python_method
     def _build(self):
-        screen = NSScreen.mainScreen() or (NSScreen.screens() and NSScreen.screens()[0])
+        screen = _main_screen()
         if screen is None:
             print("[status] 找不到屏幕，悬浮窗不可用")
             return
@@ -238,7 +252,10 @@ class _Controller(NSObject):
         h = height
         w = _PAD_LEFT + _DOT_SIZE + _DOT_GAP + text_w + _PAD_RIGHT
 
-        screen = NSScreen.mainScreen() or NSScreen.screens()[0]
+        screen = _main_screen()
+        if screen is None:
+            print("[status] 找不到屏幕，无法显示悬浮状态")
+            return
         sf = screen.frame()
         x = sf.origin.x + (sf.size.width - w) / 2
         y = sf.origin.y + _BOTTOM_MARGIN
