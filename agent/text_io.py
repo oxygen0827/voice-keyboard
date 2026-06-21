@@ -3,8 +3,9 @@
 from dataclasses import dataclass
 from typing import Protocol
 
+from agent.correction_memory import CorrectionTextSnapshot
+from agent.focused_text_capture import FocusedTextCapture, TyperFocusedTextCapture
 from agent import typer
-from agent.focused_text_capture import FocusedTextSnapshot
 
 
 @dataclass(frozen=True)
@@ -60,13 +61,10 @@ class TextIO(Protocol):
     def get_caret_text_window(self) -> CaretTextWindow | None:
         ...
 
-    def get_focused_text_value(self) -> str:
+    def get_full_focused_text_snapshot(self) -> CorrectionTextSnapshot:
         ...
 
-    def inspect_focused_text(self) -> FocusedTextSnapshot:
-        ...
-
-    def inspect_screen_text(self, *, reference_text: str = "") -> FocusedTextSnapshot:
+    def get_screen_text_snapshot(self, expected_text: str = "") -> CorrectionTextSnapshot:
         ...
 
     def type_text(self, text: str) -> None:
@@ -108,9 +106,11 @@ class TextIO(Protocol):
         ...
 
 
-@dataclass(frozen=True)
 class TyperTextIO:
     """Adapter that keeps platform typing details out of Input Environment rules."""
+
+    def __init__(self, focused_text_capture: FocusedTextCapture | None = None):
+        self._focused_text_capture = focused_text_capture or TyperFocusedTextCapture()
 
     def can_insert_text(self) -> bool:
         return typer.has_focused_text_input()
@@ -125,19 +125,16 @@ class TyperTextIO:
         return typer.get_selection()
 
     def get_caret_text_window(self) -> CaretTextWindow | None:
-        window = typer.get_caret_text_window()
+        window = self._focused_text_capture.caret_window()
         if window is None:
             return None
         return CaretTextWindow(text=window.text, source=window.source)
 
-    def get_focused_text_value(self) -> str:
-        return typer.get_focused_text_value()
+    def get_full_focused_text_snapshot(self) -> CorrectionTextSnapshot:
+        return self._focused_text_capture.full_focused_snapshot()
 
-    def inspect_focused_text(self) -> FocusedTextSnapshot:
-        return typer.inspect_focused_text()
-
-    def inspect_screen_text(self, *, reference_text: str = "") -> FocusedTextSnapshot:
-        return typer.inspect_screen_text(reference_text=reference_text)
+    def get_screen_text_snapshot(self, expected_text: str = "") -> CorrectionTextSnapshot:
+        return self._focused_text_capture.screen_snapshot(expected_text)
 
     def type_text(self, text: str) -> None:
         typer.type_text(text)

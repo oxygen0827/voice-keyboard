@@ -25,11 +25,12 @@ class RuntimeBackend:
         self.reader = None
         self.audio = None
         self.ime_monitor = None
+        self.correction_observation = None
         self.input_environment = None
         self.hotkeys = {}
 
     def stop(self):
-        for attr in ("audio", "ime_monitor", "reader"):
+        for attr in ("audio", "ime_monitor", "correction_observation", "reader"):
             comp = getattr(self, attr, None)
             if comp is None:
                 continue
@@ -60,7 +61,7 @@ def build_runtime_backend(
     bk.input_environment = TyperInputEnvironment(buf)
 
     if not options.no_serial:
-        from agent.main import make_serial_handlers
+        from agent.runtime_handlers import make_serial_handlers
         on_text, on_cmd = make_serial_handlers(
             buf,
             history=history,
@@ -79,6 +80,7 @@ def build_runtime_backend(
         input_environment=bk.input_environment,
     )
     bk.ime_monitor = getattr(bk.audio, "_correction_ime_monitor", None)
+    bk.correction_observation = getattr(bk.audio, "_correction_observation", None)
     audio_cfg = bk.cfg.get("audio", {})
     bk.hotkeys = {
         "ptt_key": audio_cfg.get("ptt_key", "right_alt"),
@@ -140,8 +142,7 @@ def build_audio_runtime(
         except Exception as e:
             print(f"[agent] AIHandler 初始化失败: {e}")
 
-    from agent.main import make_utterance_handler
-    correction_tracker = None
+    from agent.runtime_handlers import make_utterance_handler
     utterance_handler_or_mode = make_utterance_handler(
         providers.utterance_stt,
         buf,
@@ -154,56 +155,47 @@ def build_audio_runtime(
     )
     if hasattr(utterance_handler_or_mode, "handle_utterance"):
         on_utterance = utterance_handler_or_mode.handle_utterance
-        correction_tracker = getattr(utterance_handler_or_mode, "correction_tracker", None)
-        correction_scheduler = getattr(utterance_handler_or_mode, "correction_scheduler", None)
+        correction_observation = getattr(
+            utterance_handler_or_mode,
+            "correction_observation_hooks",
+            None,
+        )
     else:
         on_utterance = utterance_handler_or_mode
-        correction_scheduler = None
+        correction_observation = None
 
     if mode == "ptt":
         try:
+            from agent.capture_path import UtteranceEvent
             from agent.push_to_talk import PushToTalk
         except ImportError as e:
             print(f"[agent] PTT 依赖缺失（{e}）")
             return None
 
         on_ai = ai_handler.handle if ai_handler else None
-        def on_manual_key_press(key) -> None:
-            if correction_tracker is None:
-                return
-            correction_tracker.record_key_press(key)
-            if (
-                correction_scheduler is not None
-                and hasattr(correction_scheduler, "schedule_after_edit")
-            ):
-                correction_scheduler.schedule_after_edit()
+        def on_capture_event(event: UtteranceEvent) -> None:
+            if event.mode == "dictation":
+                on_utterance(event.pcm, event.polish)
+            elif event.mode == "instruction" and on_ai is not None:
+                on_ai(event.pcm)
 
-        def on_manual_key_release(_key) -> None:
-            if (
-                correction_tracker is not None
-                and correction_scheduler is not None
-                and hasattr(correction_scheduler, "schedule_after_edit")
-            ):
-                correction_scheduler.schedule_after_edit()
+        def on_manual_key_press(key) -> None:
+            if correction_observation is not None:
+                correction_observation.record_key_press(key)
+
+        def on_manual_key_release(key) -> None:
+            if correction_observation is not None:
+                correction_observation.record_key_release(key)
 
         def on_committed_text(text: str) -> None:
             if (cfg.get("correction_memory", {}) or {}).get("debug", False):
                 preview = str(text or "").replace("\n", "\\n")[:40]
                 print(f"[ime] committed text captured={preview!r}")
-            if correction_tracker is None:
-                return
-            committed = correction_tracker.record_committed_text(text)
-            if (
-                committed
-                and
-                correction_scheduler is not None
-                and hasattr(correction_scheduler, "schedule_after_edit")
-            ):
-                correction_scheduler.schedule_after_edit()
+            if correction_observation is not None:
+                correction_observation.record_committed_text(text)
 
         ptt = PushToTalk(
-            on_utterance=on_utterance,
-            on_ai_utterance=on_ai,
+            on_event=on_capture_event,
             ptt_key=audio_cfg.get("ptt_key", "right_alt"),
             ai_key=audio_cfg.get("ai_key", default_ai_key()),
             toggle_key=audio_cfg.get("toggle_key"),
@@ -211,18 +203,19 @@ def build_audio_runtime(
             xiao_ble_options=audio_cfg.get("xiao_ble", {}),
             on_key_press=(
                 on_manual_key_press
-                if correction_tracker is not None
+                if correction_observation is not None and correction_observation.enabled
                 else None
             ),
             on_key_release=(
                 on_manual_key_release
-                if correction_tracker is not None
+                if correction_observation is not None and correction_observation.enabled
                 else None
             ),
             status_window=status_window,
         )
         ptt.start()
-        if correction_tracker is not None:
+        if correction_observation is not None and correction_observation.enabled:
+            ptt._correction_observation = correction_observation
             try:
                 from agent.ime_commit_monitor import ImeCommitMonitor
 

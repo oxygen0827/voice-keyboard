@@ -1,7 +1,10 @@
+import inspect
 import unittest
 from unittest.mock import MagicMock, patch
 
+from agent.capture_path import UtteranceEvent
 from agent.ai_intent import IntentFallbackOptions
+import agent.runtime_composition as runtime_composition
 from agent.runtime_composition import RuntimeBackend, RuntimeOptions, build_runtime_backend, options_from_args
 
 
@@ -30,13 +33,15 @@ class RuntimeCompositionTests(unittest.TestCase):
         backend = RuntimeBackend()
         backend.audio = Component("audio")
         backend.ime_monitor = Component("ime")
+        backend.correction_observation = Component("correction")
         backend.reader = Component("reader")
 
         backend.stop()
 
-        self.assertEqual(calls, ["audio", "ime", "reader"])
+        self.assertEqual(calls, ["audio", "ime", "correction", "reader"])
         self.assertIsNone(backend.audio)
         self.assertIsNone(backend.ime_monitor)
+        self.assertIsNone(backend.correction_observation)
         self.assertIsNone(backend.reader)
 
     def test_runtime_backend_builds_input_environment_without_cursor_monitors(self):
@@ -66,6 +71,12 @@ class RuntimeCompositionTests(unittest.TestCase):
 
         self.assertEqual(backend.hotkeys, {"ptt_key": "shift_r", "ai_key": "ctrl_r"})
 
+    def test_runtime_composition_does_not_depend_on_main_handler_factories(self):
+        source = inspect.getsource(runtime_composition)
+
+        self.assertNotIn("from agent.main import make_serial_handlers", source)
+        self.assertNotIn("from agent.main import make_utterance_handler", source)
+
     def test_build_audio_runtime_passes_intent_fallback_options_to_ai_handler(self):
         from agent.runtime_composition import build_audio_runtime
 
@@ -78,7 +89,7 @@ class RuntimeCompositionTests(unittest.TestCase):
             patch("agent.ai_handler.AIHandler") as handler_cls,
             patch("agent.memo_store.MemoStore"),
             patch("agent.operation_confirmation.make_operation_confirmation", return_value="confirm") as confirm_factory,
-            patch("agent.main.make_utterance_handler", return_value=MagicMock()) as utterance_handler,
+            patch("agent.runtime_handlers.make_utterance_handler", return_value=MagicMock()),
             patch("agent.push_to_talk.PushToTalk") as ptt_cls,
         ):
             factory_cls.return_value.create_provider_set.return_value = providers
@@ -107,29 +118,53 @@ class RuntimeCompositionTests(unittest.TestCase):
         self.assertNotIn("personal_lexicon", handler_cls.call_args.kwargs)
         self.assertEqual(handler_cls.call_args.kwargs["confirm_operation"], "confirm")
         confirm_factory.assert_called_once()
+        event_sink = ptt_cls.call_args.kwargs["on_event"]
+        self.assertTrue(callable(event_sink))
+        ptt_cls.return_value.start.assert_called_once_with()
+
+    def test_build_audio_runtime_passes_correction_config_to_utterance_handler(self):
+        from agent.runtime_composition import build_audio_runtime
+
+        providers = MagicMock()
+        providers.text_operation_editor = None
+        providers.instruction_stt = None
+        providers.utterance_stt = MagicMock()
+        mode = MagicMock()
+        mode.handle_utterance = MagicMock()
+        mode.correction_observation_hooks = None
+        with (
+            patch("agent.runtime_composition.SpeechInterpretationProviderFactory") as factory_cls,
+            patch("agent.runtime_handlers.make_utterance_handler", return_value=mode) as utterance_handler,
+            patch("agent.push_to_talk.PushToTalk"),
+        ):
+            factory_cls.return_value.create_provider_set.return_value = providers
+
+            build_audio_runtime({
+                "audio": {"mode": "ptt"},
+                "correction_memory": {"confirm_threshold": 3},
+            }, MagicMock())
+
         self.assertEqual(
             utterance_handler.call_args.kwargs["correction_config"],
             {"confirm_threshold": 3},
         )
         self.assertTrue(utterance_handler.call_args.kwargs["return_mode"])
-        ptt_cls.return_value.start.assert_called_once_with()
 
-    def test_build_audio_runtime_wires_correction_key_tracker_to_ptt(self):
+    def test_build_audio_runtime_wires_correction_observation_hooks_to_ptt(self):
         from agent.runtime_composition import build_audio_runtime
 
         providers = MagicMock()
         providers.text_operation_editor = None
         providers.instruction_stt = None
         providers.utterance_stt = MagicMock()
-        tracker = MagicMock()
-        scheduler = MagicMock()
+        hooks = MagicMock()
+        hooks.enabled = True
         mode = MagicMock()
         mode.handle_utterance = MagicMock()
-        mode.correction_tracker = tracker
-        mode.correction_scheduler = scheduler
+        mode.correction_observation_hooks = hooks
         with (
             patch("agent.runtime_composition.SpeechInterpretationProviderFactory") as factory_cls,
-            patch("agent.main.make_utterance_handler", return_value=mode),
+            patch("agent.runtime_handlers.make_utterance_handler", return_value=mode),
             patch("agent.ime_commit_monitor.ImeCommitMonitor") as ime_monitor_cls,
             patch("agent.push_to_talk.PushToTalk") as ptt_cls,
         ):
@@ -137,43 +172,46 @@ class RuntimeCompositionTests(unittest.TestCase):
 
             build_audio_runtime({"audio": {"mode": "ptt"}}, MagicMock())
 
+        ptt_cls.call_args.kwargs["on_event"](UtteranceEvent.dictation(b"pcm", polish=True))
+        mode.handle_utterance.assert_called_once_with(b"pcm", True)
+
         on_key_press = ptt_cls.call_args.kwargs["on_key_press"]
         key = MagicMock()
         on_key_press(key)
-        tracker.record_key_press.assert_called_once_with(key)
-        scheduler.schedule_after_edit.assert_called_once_with()
+        hooks.record_key_press.assert_called_once_with(key)
 
-        scheduler.schedule_after_edit.reset_mock()
         on_key_release = ptt_cls.call_args.kwargs["on_key_release"]
         on_key_release(key)
-        scheduler.schedule_after_edit.assert_called_once_with()
+        hooks.record_key_release.assert_called_once_with(key)
+
         on_committed_text = ime_monitor_cls.call_args.args[0]
         on_committed_text("净")
-        tracker.record_committed_text.assert_called_once_with("净")
-        self.assertEqual(scheduler.schedule_after_edit.call_count, 2)
+        hooks.record_committed_text.assert_called_once_with("净")
         ime_monitor_cls.return_value.start.assert_called_once_with()
         self.assertEqual(
             ptt_cls.return_value._correction_ime_monitor,
             ime_monitor_cls.return_value,
         )
+        self.assertEqual(
+            ptt_cls.return_value._correction_observation,
+            hooks,
+        )
 
-    def test_build_audio_runtime_does_not_reschedule_for_uncommitted_ime_keys(self):
+    def test_build_audio_runtime_does_not_wire_correction_observation_when_disabled(self):
         from agent.runtime_composition import build_audio_runtime
 
         providers = MagicMock()
         providers.text_operation_editor = None
         providers.instruction_stt = None
         providers.utterance_stt = MagicMock()
-        tracker = MagicMock()
-        tracker.record_committed_text.return_value = False
-        scheduler = MagicMock()
+        hooks = MagicMock()
+        hooks.enabled = False
         mode = MagicMock()
         mode.handle_utterance = MagicMock()
-        mode.correction_tracker = tracker
-        mode.correction_scheduler = scheduler
+        mode.correction_observation_hooks = hooks
         with (
             patch("agent.runtime_composition.SpeechInterpretationProviderFactory") as factory_cls,
-            patch("agent.main.make_utterance_handler", return_value=mode),
+            patch("agent.runtime_handlers.make_utterance_handler", return_value=mode),
             patch("agent.ime_commit_monitor.ImeCommitMonitor") as ime_monitor_cls,
             patch("agent.push_to_talk.PushToTalk") as ptt_cls,
         ):
@@ -181,56 +219,9 @@ class RuntimeCompositionTests(unittest.TestCase):
 
             build_audio_runtime({"audio": {"mode": "ptt"}}, MagicMock())
 
-        on_committed_text = ime_monitor_cls.call_args.args[0]
-        scheduler.schedule_after_edit.reset_mock()
-        on_committed_text("w")
-
-        tracker.record_committed_text.assert_called_once_with("w")
-        scheduler.schedule_after_edit.assert_not_called()
-
-    def test_build_audio_runtime_passes_xiao_ble_device_to_ptt(self):
-        from agent.runtime_composition import build_audio_runtime
-
-        providers = MagicMock()
-        providers.text_operation_editor = None
-        providers.instruction_stt = None
-        providers.utterance_stt = MagicMock()
-        with (
-            patch("agent.runtime_composition.SpeechInterpretationProviderFactory") as factory_cls,
-            patch("agent.main.make_utterance_handler", return_value=MagicMock()),
-            patch("agent.push_to_talk.PushToTalk") as ptt_cls,
-        ):
-            factory_cls.return_value.create_provider_set.return_value = providers
-
-            build_audio_runtime({"audio": {"mode": "ptt", "device": "xiao_ble"}}, MagicMock())
-
-        self.assertEqual(ptt_cls.call_args.kwargs["device"], "xiao_ble")
-        self.assertEqual(ptt_cls.call_args.kwargs["xiao_ble_options"], {})
-
-    def test_build_audio_runtime_passes_xiao_ble_audio_options_to_ptt(self):
-        from agent.runtime_composition import build_audio_runtime
-
-        providers = MagicMock()
-        providers.text_operation_editor = None
-        providers.instruction_stt = None
-        providers.utterance_stt = MagicMock()
-        xiao_ble_options = {"trim_silence": False, "normalize_gain": False}
-        with (
-            patch("agent.runtime_composition.SpeechInterpretationProviderFactory") as factory_cls,
-            patch("agent.main.make_utterance_handler", return_value=MagicMock()),
-            patch("agent.push_to_talk.PushToTalk") as ptt_cls,
-        ):
-            factory_cls.return_value.create_provider_set.return_value = providers
-
-            build_audio_runtime({
-                "audio": {
-                    "mode": "ptt",
-                    "device": "xiao_ble",
-                    "xiao_ble": xiao_ble_options,
-                },
-            }, MagicMock())
-
-        self.assertEqual(ptt_cls.call_args.kwargs["xiao_ble_options"], xiao_ble_options)
+        self.assertIsNone(ptt_cls.call_args.kwargs["on_key_press"])
+        self.assertIsNone(ptt_cls.call_args.kwargs["on_key_release"])
+        ime_monitor_cls.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -66,6 +66,17 @@ _MODIFIER_VKS = {
     0x3E,
 }
 
+_MODIFIER_FLAG_NAMES_BY_VK = {
+    0x36: "kCGEventFlagMaskCommand",
+    0x37: "kCGEventFlagMaskCommand",
+    0x38: "kCGEventFlagMaskShift",
+    0x3A: "kCGEventFlagMaskAlternate",
+    0x3B: "kCGEventFlagMaskControl",
+    0x3C: "kCGEventFlagMaskShift",
+    0x3D: "kCGEventFlagMaskAlternate",
+    0x3E: "kCGEventFlagMaskControl",
+}
+
 
 class MacOSKeyboardListener:
     """Listen to keyboard events without converting them through AppKit NSEvent."""
@@ -183,12 +194,16 @@ class MacOSKeyboardListener:
                 self._on_press(key)
                 self._on_release(key)
                 return
-            if vk in self._modifier_down:
-                self._modifier_down.discard(vk)
-                self._on_release(key)
-            else:
+            if vk not in _MODIFIER_VKS:
+                return
+            is_down = _modifier_is_down(quartz, event, vk)
+            was_down = vk in self._modifier_down
+            if is_down and not was_down:
                 self._modifier_down.add(vk)
                 self._on_press(key)
+            elif not is_down and was_down:
+                self._modifier_down.discard(vk)
+                self._on_release(key)
 
 
 def _event_mask(quartz) -> int:
@@ -216,6 +231,18 @@ def _vk_from_cg_event(quartz, event) -> int:
             quartz.kCGKeyboardEventKeycode,
         )
     )
+
+
+def _modifier_is_down(quartz, event, vk: int) -> bool:
+    mask_name = _MODIFIER_FLAG_NAMES_BY_VK.get(vk)
+    if not mask_name:
+        return False
+    try:
+        flags = int(quartz.CGEventGetFlags(event))
+        mask = int(getattr(quartz, mask_name))
+        return bool(flags & mask)
+    except Exception:
+        return False
 
 
 def _unicode_from_cg_event(quartz, event) -> str:

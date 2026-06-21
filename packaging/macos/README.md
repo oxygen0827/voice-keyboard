@@ -36,7 +36,17 @@ scripts/run-local.sh --status
 scripts/run-local.sh --permissions
 ```
 
+`scripts/run-local.sh --status` also recognizes the `com.voicekeyboard.agent` LaunchAgent when it is installed, so it remains useful after switching from a terminal background process to a login item style runtime.
+
 macOS 的 TCC 权限绑定到启动身份。源码运行时，辅助功能、输入监听、麦克风权限通常要授予 Terminal/iTerm/Python；打包后要授予 `Voice Keyboard.app`。如果源码运行能启动但热键或录音无效，先看 `scripts/run-local.sh --permissions`，不要直接判断语音或热键代码坏了。
+
+词典纠错学习还会用到这些 macOS 能力：
+
+- 输入监听：Quartz listener 捕获热键和普通编辑按键。
+- 辅助功能：读取当前输入框文本、执行文本插入和窗口操作。
+- 屏幕录制：仅在 `correction_memory.screen_ocr_fallback: true` 且需要 OCR 兜底时使用。
+
+py2app 配置显式包含 `CoreFoundation`、`Quartz`、`ApplicationServices`、`AppKit`、`Foundation` 和 `AVFoundation`，避免动态导入导致打包后监听器或权限检查缺模块。
 
 ## 已知坑
 

@@ -37,7 +37,7 @@ Useful commands:
 .venv/bin/python -m agent.main --list-devices
 .venv/bin/python -m agent.main --no-serial
 .venv/bin/python -m agent.cli --once --seconds 5
-pytest
+.venv/bin/python -m unittest discover -s test -v
 ```
 
 On macOS, Python.org builds may need:
@@ -51,15 +51,23 @@ SSL_CERT_FILE=$(.venv/bin/python -c "import certifi; print(certifi.where())") \
 
 | File | Responsibility |
 | --- | --- |
-| `agent/main.py` | Desktop runtime composition, config loading, monitors, serial reader, audio runtime |
+| `agent/main.py` | Desktop entry point, process flags, UI startup, compatibility wrappers |
+| `agent/runtime_composition.py` | Desktop runtime composition, config loading, serial/audio lifecycle, correction monitors |
+| `agent/runtime_handlers.py` | Runtime handler factories shared by desktop composition and legacy callers |
+| `agent/dictation_mode.py` | Dictation Mode transcription, cleanup, correction-memory application, insertion, status, history |
 | `agent/cli.py` | Headless record-and-print dictation |
 | `agent/push_to_talk.py` | PTT hotkey capture and utterance dispatch |
+| `agent/macos_keyboard_listener.py` | macOS Quartz key listener for hotkeys and correction edit tracking |
 | `agent/audio_monitor.py` | VAD capture path |
 | `agent/stt.py` | Speech-to-text provider adapters |
 | `agent/llm_editor.py` | LLM provider adapters for text operations |
 | `agent/ai_intent.py` | Instruction Mode classification and deterministic fallbacks |
 | `agent/ai_handler.py` | Instruction Mode orchestration and input side effects |
 | `agent/typer.py` | Cross-platform text insertion, selection replacement, erase, shortcuts |
+| `agent/correction_memory.py` | Dictation Correction Memory persistence, inference, tracking, and observation scheduling |
+| `agent/focused_text_capture.py` | Capture diagnostics for focused text snapshots |
+| `agent/screen_ocr_capture.py` | macOS screen OCR fallback for correction learning |
+| `agent/ime_commit_monitor.py` | macOS IME committed-text monitor for correction learning |
 | `agent/text_buffer.py` | Implementation support for Tracked Segment behavior |
 | `agent/keyboard_monitor.py` | Backspace/Delete/Enter monitoring for tracked text sync |
 | `agent/mouse_monitor.py` | Cursor movement detection for tracked text safety |
@@ -76,6 +84,7 @@ Important sections:
 - `llm`: provider used for Instruction Mode text interpretation and generation.
 - `ai_stt`: optional separate speech recognition provider for Instruction Mode.
 - `audio`: capture mode, hotkeys, device selection, and VAD settings.
+- `correction_memory`: Dictation Correction Memory path, confirmation threshold, observation window, and OCR fallback.
 - `typing`: text insertion backend.
 
 Use `typing.method: clip` for applications that reject Unicode keyboard event injection.
@@ -86,7 +95,8 @@ Use `typing.method: clip` for applications that reject Unicode keyboard event in
 | --- | --- | --- | --- |
 | Unicode insertion | Quartz `CGEventKeyboardSetUnicodeString` | `SendInput + KEYEVENTF_UNICODE` | X11/XTest path |
 | Clipboard fallback | Available | Recommended for some Electron apps | Available where clipboard tooling works |
-| Permissions | Accessibility, input monitoring, microphone | UAC and input APIs | X11/input permissions |
+| Correction learning | Accessibility text, Quartz key events, IME commits, optional OCR | Basic insertion path only unless platform capture is added | Basic insertion path only unless platform capture is added |
+| Permissions | Accessibility, input monitoring, microphone, Screen Recording for OCR fallback | UAC and input APIs | X11/input permissions |
 | Headless use | Use `agent.cli` | Use `agent.cli` | Use `agent.cli` |
 
 Keep desktop-specific imports out of `agent.cli`; headless Linux cannot assume X11, Wayland, tray, global hotkeys, or a focused input field.
@@ -118,15 +128,17 @@ This is a single-context repo with root `CONTEXT.md` and `docs/adr/`. See `docs/
 Run focused tests when editing a module:
 
 ```bash
-pytest test/test_ai_intent.py
-pytest test/test_ai_handler.py
-pytest test/test_typing.py
+.venv/bin/python -m unittest discover -s test -p 'test_ai_intent.py' -v
+.venv/bin/python -m unittest discover -s test -p 'test_ai_handler.py' -v
+.venv/bin/python -m unittest discover -s test -p 'test_correction_memory.py' -v
 ```
 
 Run the full suite before broader changes:
 
 ```bash
-pytest
+.venv/bin/python -m unittest discover -s test -v
 ```
 
-Typing and global hotkey behavior often require OS permissions and may not be fully covered by automated tests.
+`test/test_typing.py` is a manual smoke script. It should not be used as an automated test command; run it directly only when you intentionally want real OS text insertion.
+
+Typing, OCR, IME, and global hotkey behavior often require OS permissions and may not be fully covered by automated tests.

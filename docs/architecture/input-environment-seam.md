@@ -24,6 +24,7 @@ Current file:
 ```text
 agent/input_environment.py
 agent/text_io.py
+agent/focused_text_capture.py
 ```
 
 Suggested interface shape:
@@ -37,15 +38,26 @@ class TextTarget:
 class InputEnvironment:
     def target_for_instruction(self) -> TextTarget: ...
     def operation_window_for_instruction(self) -> OperationWindow: ...
+    def operation_window_for_text_revision(self, target: TextTarget | None = None, *, whole_scope: bool = False) -> OperationWindow: ...
+    def operation_window_for_text_removal(self, *, whole_scope: bool = False) -> OperationWindow: ...
+    def operation_window_for_whole_scope(self) -> OperationWindow: ...
     def apply_replacement_plan(self, plan: ReplacementPlan) -> TargetChangeResult: ...
     def insert_text(self, text: str) -> None: ...
     def insert_text_after_selection(self, text: str) -> None: ...
     def insert_generated_text(self, text: str) -> TextInsertionResult: ...
     def replace_selection(self, original: str, replacement: str) -> None: ...
     def delete_selection(self, original: str) -> None: ...
+    def current_text_snapshot_for_correction_learning(self) -> CorrectionTextSnapshot: ...
+    def screen_text_snapshot_for_correction_learning(self, expected_text: str = "") -> CorrectionTextSnapshot: ...
 ```
 
 The first implementation is intentionally small and wraps today's `typer` and `TextBuffer` behavior. The design pressure is that callers should express domain intent, not platform IO steps.
+
+Instruction Mode now uses the intent-specific lookup methods for Text Revision,
+Text Removal, and whole-scope requests. `operation_window_for_instruction`
+remains as a compatibility entry point, but new code should prefer the
+intent-specific methods because they make the tracked-segment vs caret-window
+choice explicit.
 
 ## Adapter
 
@@ -59,10 +71,18 @@ It owns:
 
 - `TextBuffer`
 - a platform text IO adapter that calls into `agent.typer`
+- a focused-text capture adapter for caret, focused-text, and screen snapshots
 - synchronizing selected replacements back into recent engine text
 - deciding the current safe Operation Window for replacement-style operations
 - verifying that a Replacement Plan only changes text inside the current Operation Window
 - moving to the end before insertion when an Explicit Selection exists
+- exposing focused-text and screen-text snapshots for Dictation Correction Memory without making Dictation Mode call platform IO directly
+
+`agent/text_io.py` still owns typing, shortcuts, and replacement side effects.
+`agent/focused_text_capture.py` owns read-only focused text capture and wraps the
+Accessibility/OCR functions currently implemented in `agent.typer`. This keeps
+future capture improvements out of Instruction Mode and Dictation Correction
+Memory.
 
 ## Migration Slices
 
@@ -79,7 +99,10 @@ It owns:
 11. Done: introduce Operation Window and Replacement Plan types.
 12. Done: route selected Text Revision, selected Text Removal, and whole-scope requests through locally verified Replacement Plans.
 13. Done: add macOS caret-local Operation Window discovery and controlled AX replacement behind the TextIO adapter.
-14. Later: remove the compatibility `buf` constructor path from runtime helpers once downstream callers have migrated.
+14. Done: add correction-learning text snapshots so Dictation Correction Memory can observe focused text through the same Input Environment/TextIO seams.
+15. Done: split focused text capture from the typing adapter so read-only capture can evolve independently from text insertion.
+16. Done: add intent-specific Operation Window lookup methods for Text Revision, Text Removal, and whole-scope operations.
+17. Later: remove the compatibility `buf` constructor path from runtime helpers once downstream callers have migrated.
 
 ## Test Surface
 
@@ -93,11 +116,13 @@ Tests should cover the interface:
 - Without an Explicit Selection, local partial replacement may use the current Tracked Segment; local partial removal asks for selection.
 - Without an Explicit Selection, whole-scope replacement/removal may use the current safe Operation Window.
 - Replacement Plan application refuses changes whose target text is absent, duplicated ambiguously, or outside the current Operation Window.
+- Correction-learning snapshots prefer full focused text, then caret-local text, then the current Tracked Segment, with screen OCR exposed separately as a lower-confidence fallback.
 
 ## Non-Goals
 
 - Do not move platform-specific typing behavior above the TextIO adapter.
 - Do not let provider behavior bypass local Replacement Plan verification.
+- Do not let Dictation Correction Memory call platform typing or OCR modules directly; keep those reads behind Input Environment/TextIO adapters.
 - Do not reintroduce local undo history; undo is the current application shortcut.
 - Do not redesign Instruction Mode classification yet.
 - Do not introduce multiple adapters until there is a second real runtime that needs one.

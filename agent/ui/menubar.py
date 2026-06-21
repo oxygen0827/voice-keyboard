@@ -6,7 +6,7 @@ LSUIElement=true 的应用没有 dock 图标，菜单栏图标是用户唯一可
 import objc
 from AppKit import (
     NSApplication, NSImage, NSMenu, NSMenuItem,
-    NSImageLeft, NSStatusBar,
+    NSStatusBar, NSVariableStatusItemLength,
 )
 from Foundation import NSObject
 
@@ -25,7 +25,7 @@ class MenuBar(NSObject):
             pass
 
         bar = NSStatusBar.systemStatusBar()
-        item = bar.statusItemWithLength_(52.0)  # 固定宽度，避免被压缩到看不见
+        item = bar.statusItemWithLength_(28.0)  # 固定 28px，避免被压缩到看不见
         button = item.button()
         button.setTitle_("VK")  # fallback，确保任何情况下都不会"完全空白"
         try:
@@ -33,12 +33,7 @@ class MenuBar(NSObject):
                 "mic.fill", "Voice Keyboard",
             )
             if img is not None:
-                try:
-                    img.setTemplate_(True)
-                except Exception:
-                    pass
                 button.setImage_(img)
-                button.setImagePosition_(NSImageLeft)
         except Exception:
             pass
         try:
@@ -63,7 +58,6 @@ class MenuBar(NSObject):
             ("快捷键…", b"openShortcuts:"),
             ("转写历史…", b"openHistory:"),
             ("词典…", b"openDictionary:"),
-            ("输入诊断…", b"openCapture:"),
             ("意图诊断…", b"openIntent:"),
             ("备忘…", b"openMemo:"),
             ("权限自检…", b"openPerms:"),
@@ -103,19 +97,6 @@ class MenuBar(NSObject):
 
     def openDictionary_(self, sender):
         self._app.main_window.show_tab("dictionary")
-
-    def openCapture_(self, sender):
-        try:
-            from agent import typer as _typer
-            from agent.focused_text_capture import format_focused_text_snapshot
-            snapshot = _typer.inspect_focused_text()
-            print(format_focused_text_snapshot(snapshot))
-        except Exception:
-            snapshot = None
-        if hasattr(self._app.main_window, "show_capture_snapshot"):
-            self._app.main_window.show_capture_snapshot(snapshot)
-        else:
-            self._app.main_window.show_tab("capture")
 
     def openIntent_(self, sender):
         self._app.main_window.show_tab("intent")

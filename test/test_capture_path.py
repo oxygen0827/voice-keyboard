@@ -1,20 +1,9 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from agent.audio_monitor import FRAME_BYTES
 from agent.capture_path import UtteranceEvent
 from agent.capture_path_runtime import CapturePathRuntime, CaptureStart, PolishToggle
 from agent.push_to_talk import PushToTalk
-from agent.xiao_ble_audio import (
-    analyze_pcm_16k,
-    normalize_pcm_16k_for_stt,
-    trim_pcm_16k_silence,
-    upsample_pcm_8k_to_16k,
-)
-
-
-def _pcm16(value: int, samples: int) -> bytes:
-    return value.to_bytes(2, "little", signed=True) * samples
 
 
 class CapturePathTests(unittest.TestCase):
@@ -55,6 +44,24 @@ class CapturePathTests(unittest.TestCase):
         self.assertEqual(calls[2].kwargs["target"], on_instruction)
         self.assertEqual(calls[2].kwargs["args"], (b"three",))
 
+    def test_push_to_talk_dispatch_prefers_event_sink(self):
+        on_event = MagicMock()
+        on_dictation = MagicMock()
+        ptt = PushToTalk(on_dictation, on_event=on_event)
+        event = UtteranceEvent.dictation(b"one", polish=True)
+
+        with patch("agent.push_to_talk.threading.Thread") as thread:
+            ptt._dispatch_utterance(event, "dict")
+
+        self.assertEqual(thread.call_args.kwargs["target"], on_event)
+        self.assertEqual(thread.call_args.kwargs["args"], (event,))
+        on_dictation.assert_not_called()
+
+    def test_event_sink_keeps_ai_hotkey_enabled(self):
+        ptt = PushToTalk(on_event=MagicMock(), ptt_key="a", ai_key="b")
+
+        self.assertEqual(len(ptt._ai_keys), 1)
+
     def test_toggle_key_disables_and_reenables_recording(self):
         on_dictation = MagicMock()
         ptt = PushToTalk(on_dictation, ptt_key="a", toggle_key="b")
@@ -85,7 +92,7 @@ class CapturePathTests(unittest.TestCase):
             patch("agent.push_to_talk.sys.platform", "darwin"),
             patch("agent.macos_keyboard_listener.MacOSKeyboardListener") as quartz_listener,
             patch("agent.push_to_talk.kb.Listener") as pynput_listener,
-            patch.object(ptt, "_xiao_source", None),
+            patch("agent.push_to_talk.find_device", return_value=None),
         ):
             quartz_listener.return_value.start.return_value = None
             ptt.start()
@@ -202,169 +209,6 @@ class CapturePathTests(unittest.TestCase):
         status.set_state.assert_called_once_with("recording")
         self.assertIsNone(ptt._recording_status_timer)
 
-    def test_push_to_talk_uses_xiao_ble_source_instead_of_sounddevice_stream(self):
-        on_dictation = MagicMock()
-        ptt = PushToTalk(on_dictation, ptt_key="a", device="xiao_ble")
-        ptt._capture_runtime.press_dictation(ptt._ptt_keys[0], now=10.0)
-        xiao = MagicMock()
-        xiao.connected = True
-        ptt._xiao_source = xiao
-
-        with patch("agent.push_to_talk.sd.RawInputStream") as stream_cls:
-            ptt._start_recording()
-
-        stream_cls.assert_not_called()
-        xiao.start_recording.assert_called_once_with(ptt._record_audio_bytes)
-
-    def test_push_to_talk_skips_stt_when_xiao_ble_audio_is_nearly_silent(self):
-        on_dictation = MagicMock()
-        ptt = PushToTalk(on_dictation, ptt_key="a", device="xiao_ble")
-        ptt._xiao_source = MagicMock()
-        ptt._buf = [b"\x00\x00" * 16000]
-
-        ptt._stop_recording("dictate")
-
-        on_dictation.assert_not_called()
-
-    def test_push_to_talk_normalizes_quiet_xiao_ble_audio_before_stt(self):
-        on_dictation = MagicMock()
-        ptt = PushToTalk(
-            on_dictation,
-            ptt_key="a",
-            device="xiao_ble",
-            xiao_ble_options={"normalize_gain": True},
-        )
-        ptt._xiao_source = MagicMock()
-        quiet_pcm = _pcm16(500, 16000)
-        ptt._buf = [quiet_pcm]
-
-        with patch("agent.push_to_talk.threading.Thread") as thread:
-            ptt._stop_recording("dictate")
-
-        thread.assert_called_once()
-        sent_pcm, polish = thread.call_args.kwargs["args"]
-        self.assertFalse(polish)
-        self.assertGreater(
-            analyze_pcm_16k(sent_pcm).rms,
-            analyze_pcm_16k(quiet_pcm).rms,
-        )
-
-    def test_push_to_talk_normalizes_low_peak_xiao_ble_audio_before_quality_gate(self):
-        on_dictation = MagicMock()
-        ptt = PushToTalk(
-            on_dictation,
-            ptt_key="a",
-            device="xiao_ble",
-            xiao_ble_options={"normalize_gain": True},
-        )
-        ptt._xiao_source = MagicMock()
-        quiet_pcm = _pcm16(82, 16000 * 6)
-        ptt._buf = [quiet_pcm]
-
-        with patch("agent.push_to_talk.threading.Thread") as thread:
-            ptt._stop_recording("dictate")
-
-        thread.assert_called_once()
-        sent_pcm, _ = thread.call_args.kwargs["args"]
-        self.assertGreater(
-            analyze_pcm_16k(sent_pcm).max_amplitude,
-            analyze_pcm_16k(quiet_pcm).max_amplitude,
-        )
-
-    def test_push_to_talk_trims_xiao_ble_edge_silence_before_stt(self):
-        on_dictation = MagicMock()
-        ptt = PushToTalk(
-            on_dictation,
-            ptt_key="a",
-            device="xiao_ble",
-            xiao_ble_options={"trim_silence": True},
-        )
-        ptt._xiao_source = MagicMock()
-        edge_silence_pcm = (
-            _pcm16(0, 16000)
-            + _pcm16(800, 16000)
-            + _pcm16(0, 16000)
-        )
-        ptt._buf = [edge_silence_pcm]
-
-        with patch("agent.push_to_talk.threading.Thread") as thread:
-            ptt._stop_recording("dictate")
-
-        thread.assert_called_once()
-        sent_pcm, _ = thread.call_args.kwargs["args"]
-        self.assertLess(len(sent_pcm), len(edge_silence_pcm))
-        self.assertGreater(analyze_pcm_16k(sent_pcm).duration_sec, 1.0)
-
-    def test_push_to_talk_normalizes_xiao_ble_audio_before_trimming_silence(self):
-        on_dictation = MagicMock()
-        ptt = PushToTalk(on_dictation, ptt_key="a", device="xiao_ble")
-        ptt._xiao_source = MagicMock()
-        quiet_with_silence = (
-            _pcm16(0, 16000)
-            + _pcm16(82, 16000)
-            + _pcm16(0, 16000)
-        )
-        ptt._buf = [quiet_with_silence]
-
-        with patch("agent.push_to_talk.threading.Thread") as thread:
-            ptt._stop_recording("dictate")
-
-        thread.assert_called_once()
-        sent_pcm, _ = thread.call_args.kwargs["args"]
-        self.assertLess(len(sent_pcm), len(quiet_with_silence))
-        self.assertGreater(
-            analyze_pcm_16k(sent_pcm).max_amplitude,
-            analyze_pcm_16k(quiet_with_silence).max_amplitude,
-        )
-
-    def test_push_to_talk_normalizes_xiao_ble_mid_sentence_audio_before_stt(self):
-        on_dictation = MagicMock()
-        ptt = PushToTalk(
-            on_dictation,
-            ptt_key="a",
-            device="xiao_ble",
-            xiao_ble_options={"normalize_gain": True},
-        )
-        ptt._xiao_source = MagicMock()
-        frame_samples = FRAME_BYTES // 2
-        quiet_frame = _pcm16(500, frame_samples)
-        ptt._vad_speech_frames = [quiet_frame] * 4
-
-        with patch("agent.push_to_talk.threading.Thread") as thread:
-            ptt._dispatch_mid_sentence()
-
-        thread.assert_called_once()
-        sent_pcm, _ = thread.call_args.kwargs["args"]
-        self.assertGreater(
-            analyze_pcm_16k(sent_pcm).rms,
-            analyze_pcm_16k(quiet_frame * 4).rms,
-        )
-
-    def test_push_to_talk_preserves_xiao_ble_audio_by_default(self):
-        on_dictation = MagicMock()
-        ptt = PushToTalk(
-            on_dictation,
-            ptt_key="a",
-            device="xiao_ble",
-            xiao_ble_options={"trim_silence": False, "normalize_gain": False},
-        )
-        ptt._xiao_source = MagicMock()
-        raw_pcm = _pcm16(0, 16000) + _pcm16(500, 16000) + _pcm16(0, 16000)
-        ptt._buf = [raw_pcm]
-
-        with patch("agent.push_to_talk.threading.Thread") as thread:
-            ptt._stop_recording("dictate")
-
-        thread.assert_called_once()
-        sent_pcm, _ = thread.call_args.kwargs["args"]
-        self.assertEqual(sent_pcm, raw_pcm)
-
-    def test_push_to_talk_enables_xiao_ble_cleanup_by_default(self):
-        ptt = PushToTalk(MagicMock(), ptt_key="a", device="xiao_ble")
-
-        self.assertTrue(ptt._xiao_trim_silence)
-        self.assertTrue(ptt._xiao_normalize_gain)
-
     def test_push_to_talk_cancels_delayed_recording_status_when_stopped(self):
         on_dictation = MagicMock()
         ptt = PushToTalk(on_dictation, ptt_key="a")
@@ -375,39 +219,6 @@ class CapturePathTests(unittest.TestCase):
 
         timer.cancel.assert_called_once()
         self.assertIsNone(ptt._recording_status_timer)
-
-    def test_xiao_ble_upsamples_pcm_8k_to_16k_by_duplicating_samples(self):
-        pcm8 = b"\x01\x00\x02\x00\xff\xff"
-
-        self.assertEqual(
-            upsample_pcm_8k_to_16k(pcm8),
-            b"\x01\x00\x01\x00\x02\x00\x02\x00\xff\xff\xff\xff",
-        )
-
-    def test_xiao_ble_analyzes_pcm_quality(self):
-        quality = analyze_pcm_16k(b"\x00\x00\xe8\x03\x18\xfc")
-
-        self.assertEqual(quality.max_amplitude, 1000)
-        self.assertGreater(quality.rms, 800)
-
-    def test_xiao_ble_trims_leading_and_trailing_silence_with_padding(self):
-        pcm = _pcm16(0, 16000) + _pcm16(800, 16000) + _pcm16(0, 16000)
-
-        trimmed, leading_sec, trailing_sec = trim_pcm_16k_silence(pcm)
-
-        self.assertLess(len(trimmed), len(pcm))
-        self.assertAlmostEqual(leading_sec, 0.88, places=2)
-        self.assertAlmostEqual(trailing_sec, 0.88, places=2)
-        self.assertAlmostEqual(analyze_pcm_16k(trimmed).duration_sec, 1.24, places=2)
-
-    def test_xiao_ble_normalizes_quiet_pcm_with_limited_gain(self):
-        quiet_pcm = _pcm16(100, 16000)
-
-        normalized, gain, quality = normalize_pcm_16k_for_stt(quiet_pcm)
-
-        self.assertEqual(gain, 9.0)
-        self.assertGreater(quality.rms, analyze_pcm_16k(quiet_pcm).rms)
-        self.assertEqual(analyze_pcm_16k(normalized), quality)
 
 
 if __name__ == "__main__":

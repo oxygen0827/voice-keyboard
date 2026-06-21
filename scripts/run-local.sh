@@ -7,6 +7,7 @@ LOG_DIR="$ROOT/.local/logs"
 RUN_DIR="$ROOT/.local/run"
 PID_FILE="$RUN_DIR/voice-keyboard-local.pid"
 LOG_FILE="$LOG_DIR/voice-keyboard-local.log"
+LAUNCH_AGENT_LABEL="${VOICE_KEYBOARD_LAUNCH_AGENT_LABEL:-com.voicekeyboard.agent}"
 
 KILL_FIRST=1
 KILL_ONLY=0
@@ -109,8 +110,36 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
+process_cwd() {
+  local pid="$1"
+  local cwd=""
+
+  if command -v lsof >/dev/null 2>&1; then
+    cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true)"
+  fi
+
+  if [[ -z "$cwd" && -e "/proc/$pid/cwd" ]]; then
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+  fi
+
+  printf '%s\n' "$cwd"
+}
+
 find_engine_pids() {
-  pgrep -f '[Pp]ython.*(-m[[:space:]]+agent\.main|agent/main\.py)' 2>/dev/null || true
+  local pid cmd cwd
+
+  pgrep -f 'agent\.main|agent/main\.py' 2>/dev/null | while read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [[ "$pid" != "$$" ]] || continue
+
+    cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+    [[ "$cmd" == *"agent.main"* || "$cmd" == *"agent/main.py"* ]] || continue
+
+    cwd="$(process_cwd "$pid")"
+    [[ "$cwd" == "$ROOT" ]] || continue
+
+    printf '%s\n' "$pid"
+  done
 }
 
 pid_file_pid() {
@@ -128,6 +157,22 @@ pid_file_pid() {
 is_pid_running() {
   local pid="$1"
   kill -0 "$pid" 2>/dev/null
+}
+
+launch_agent_pid() {
+  if [[ "$(uname -s)" != "Darwin" ]] || ! command -v launchctl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local output pid
+  output="$(launchctl print "gui/$(id -u)/$LAUNCH_AGENT_LABEL" 2>/dev/null || true)"
+  [[ "$output" == *"state = running"* ]] || return 1
+  [[ "$output" == *"agent.main"* ]] || return 1
+  [[ "$output" == *"working directory = $ROOT"* ]] || return 1
+
+  pid="$(printf '%s\n' "$output" | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\).*$/\1/p' | head -n 1)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$pid"
 }
 
 print_permission_hint() {
@@ -148,6 +193,27 @@ show_status() {
     echo "[run-local] Log: $LOG_FILE"
     return 0
   fi
+
+  local pids
+  pids="$(find_engine_pids | tr '\n' ' ' | xargs || true)"
+  if [[ -n "$pids" ]]; then
+    echo "[run-local] Status: running"
+    echo "[run-local] PID(s): $pids"
+    echo "[run-local] PID file: $PID_FILE"
+    echo "[run-local] Log: $LOG_FILE"
+    return 0
+  fi
+
+  pid="$(launch_agent_pid || true)"
+  if [[ -n "${pid:-}" ]]; then
+    echo "[run-local] Status: running"
+    echo "[run-local] PID: $pid"
+    echo "[run-local] LaunchAgent: $LAUNCH_AGENT_LABEL"
+    echo "[run-local] PID file: $PID_FILE"
+    echo "[run-local] Log: $HOME/Library/Logs/VoiceKeyboard.log"
+    return 0
+  fi
+
   echo "[run-local] Status: not running"
   echo "[run-local] PID file: $PID_FILE"
   echo "[run-local] Log: $LOG_FILE"

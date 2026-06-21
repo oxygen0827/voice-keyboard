@@ -59,10 +59,6 @@ class _ApplicationServicesShim:
     def AXUIElementCopyAttributeValue(_element, _attr, _default):
         return 1, None
 
-    @staticmethod
-    def AXUIElementCreateSystemWide():
-        return None
-
 
 ApplicationServices = _ApplicationServicesShim
 
@@ -141,6 +137,7 @@ if _OS == "Windows":
 _erasing: bool = False
 _simulating: bool = False   # 程序自己发 Cmd+C/V 等按键时置 True，让 PTT 监听忽略
 _use_clipboard_mode: bool = False
+_key_delay_seconds: float = 0.003
 _last_focus_fallback_log: tuple[str, int | None] | None = None
 _BLOCKED_SHORTCUT_NAMES: set[str] = set()
 _BLOCKED_SHORTCUT_KEY_SEQUENCES: set[tuple[str, ...]] = set()
@@ -164,10 +161,17 @@ ApplicationLaunchSpec = app_launcher.ApplicationLaunchSpec
 
 def init(cfg: dict) -> None:
     """由 main.py 在启动时调用，根据 config.yaml 的 typing.method 配置打字方式。"""
-    global _use_clipboard_mode
+    global _use_clipboard_mode, _key_delay_seconds
     _use_clipboard_mode = cfg.get("method", "unicode") == "clip"
+    try:
+        delay_ms = float(cfg.get("key_delay_ms", 3))
+    except (TypeError, ValueError):
+        delay_ms = 3.0
+    _key_delay_seconds = max(0.0, delay_ms) / 1000.0
     if _use_clipboard_mode:
-        print("[typer] 直接打字模式（已禁用焦点检测和剪贴板粘贴）")
+        print("[typer] 剪贴板粘贴模式")
+    else:
+        print(f"[typer] 直接打字模式 key_delay_ms={_key_delay_seconds * 1000:.1f}")
     _load_blocked_shortcuts(cfg)
     _load_custom_shortcuts(cfg.get("shortcuts", {}))
     _APP_SHORTCUTS.clear()
@@ -242,17 +246,15 @@ def type_text(text: str) -> None:
     """在当前焦点输入框打出任意 Unicode 文字（含汉字）"""
     if not text:
         return
-    global _simulating
-    _simulating = True
-    try:
-        if _OS == "Darwin":
-            _type_via_quartz(text)
-        elif _OS == "Windows":
-            _type_via_sendinput(text)
-        else:
-            _type_via_xtest(text)  # Linux
-    finally:
-        _simulating = False
+    if _use_clipboard_mode and _OS != "Windows":
+        paste_text(text)
+        return
+    if _OS == "Darwin":
+        _type_via_quartz(text)
+    elif _OS == "Windows":
+        _type_via_sendinput(text)
+    else:
+        _type_via_xtest(text)  # Linux
 
 
 def has_focused_text_input() -> bool:
@@ -277,37 +279,25 @@ def _ax_settable(element, attr: str) -> bool:
 
 
 def _focused_accessibility_element():
-    element, _source = _focused_accessibility_element_with_source()
-    return element
-
-
-def _focused_accessibility_element_with_source() -> tuple[object | None, str]:
     if _OS != "Darwin":
-        return None, "unsupported_platform"
+        return None
     try:
         app = NSWorkspace.sharedWorkspace().frontmostApplication()
         pid = app.processIdentifier() if app is not None else None
-        if pid:
-            root = ApplicationServices.AXUIElementCreateApplication(pid)
-            err, focused = ApplicationServices.AXUIElementCopyAttributeValue(root, "AXFocusedUIElement", None)
-            if err == 0 and focused is not None:
-                return focused, "app"
+        if not pid:
+            return None
+        root = ApplicationServices.AXUIElementCreateApplication(pid)
+        err, focused = ApplicationServices.AXUIElementCopyAttributeValue(root, "AXFocusedUIElement", None)
+        return focused if err == 0 else None
     except Exception:
-        pass
-    try:
-        root = ApplicationServices.AXUIElementCreateSystemWide()
-        if root is None:
-            return None, "system_wide_unavailable"
-        err, focused = ApplicationServices.AXUIElementCopyAttributeValue(
-            root,
-            "AXFocusedUIElement",
-            None,
-        )
-        if err == 0 and focused is not None:
-            return focused, "system_wide"
-        return None, f"system_wide_err={err}"
-    except Exception:
-        return None, "missing"
+        return None
+
+
+def _focused_accessibility_element_with_source():
+    if _OS != "Darwin":
+        return None, "platform"
+    focused = _focused_accessibility_element()
+    return focused, "frontmost_focused_element" if focused is not None else "missing"
 
 
 def _frontmost_app_identity() -> tuple[str, str, int | None]:
@@ -480,7 +470,30 @@ def confirm_paste_without_focused_input(text: str) -> bool:
 
 
 def paste_text(text: str) -> None:
-    replace_selection(text)
+    if _OS == "Windows":
+        _type_via_clipboard_win(text)
+        return
+    global _simulating
+    _set_clipboard(text)
+    time.sleep(0.03)
+    _simulating = True
+    try:
+        if _OS == "Darwin":
+            _kb.press(Key.cmd)
+            try:
+                _press_key(KeyCode.from_char("v"))
+            finally:
+                _kb.release(Key.cmd)
+        else:
+            _kb.press(Key.ctrl)
+            try:
+                _press_key(KeyCode.from_char("v"))
+            finally:
+                _kb.release(Key.ctrl)
+        time.sleep(0.05)
+    finally:
+        _simulating = False
+    time.sleep(0.03)
 
 
 def copy_to_clipboard(text: str) -> None:
@@ -499,7 +512,7 @@ def _type_via_quartz(text: str) -> None:
             evt = Quartz.CGEventCreateKeyboardEvent(src, 0, key_down)
             Quartz.CGEventKeyboardSetUnicodeString(evt, len(char), char)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, evt)
-        time.sleep(0.012)
+        time.sleep(_key_delay_seconds)
 
 
 def _type_via_sendinput(text: str) -> None:
@@ -522,7 +535,7 @@ def _type_via_sendinput(text: str) -> None:
                     ),
                 )
                 _user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
-        time.sleep(0.012)
+        time.sleep(_key_delay_seconds)
 
 
 def _type_via_clipboard_win(text: str) -> None:
@@ -541,7 +554,7 @@ def _type_via_xtest(text: str) -> None:
     # Linux：pynput 逐字，底层走 X11 XTest，绕过 IME
     for char in text:
         _kb.type(char)
-        time.sleep(0.012)
+        time.sleep(_key_delay_seconds)
 
 
 # ── 退格擦除 ──────────────────────────────────────────────────────
@@ -735,7 +748,11 @@ def inspect_focused_text(max_chars: int = 2000) -> FocusedTextSnapshot:
             probes=(FocusedTextProbe("platform", False, detail=_OS),),
         )
     focused, focus_source = _focused_accessibility_element_with_source()
-    focus_probe = FocusedTextProbe("AXFocusedUIElement", focused is not None, detail=focus_source)
+    focus_probe = FocusedTextProbe(
+        "AXFocusedUIElement",
+        focused is not None,
+        detail=focus_source,
+    )
     window_scan_probe = None
     if focused is None:
         focused, window_source = _fallback_accessibility_text_element()
@@ -805,6 +822,24 @@ def inspect_screen_text(
             pid=app.pid,
             probes=(FocusedTextProbe("ScreenOCR", False, detail=str(e)),),
         )
+
+
+def get_full_focused_text_snapshot(max_chars: int = 2000):
+    from agent.correction_memory import CorrectionTextSnapshot
+
+    snapshot = inspect_focused_text(max_chars=max_chars)
+    detail = f"confidence={snapshot.confidence}"
+    if snapshot.role:
+        detail += f" role={snapshot.role}"
+    return CorrectionTextSnapshot(snapshot.text, source=snapshot.source, detail=detail)
+
+
+def get_screen_text_snapshot(expected_text: str = ""):
+    from agent.correction_memory import CorrectionTextSnapshot
+
+    snapshot = inspect_screen_text(reference_text=expected_text)
+    detail = f"confidence={snapshot.confidence}"
+    return CorrectionTextSnapshot(snapshot.text, source=snapshot.source, detail=detail)
 
 
 def _fallback_accessibility_text_element() -> tuple[object | None, str]:
@@ -1093,6 +1128,12 @@ def _ax_iterable_attribute(element, attr: str) -> tuple:
     return ()
 
 
+def _preview_text(text: str, limit: int = 80) -> str:
+    value = str(text or "").replace("\n", "\\n")
+    suffix = "..." if len(value) > limit else ""
+    return value[:limit] + suffix
+
+
 _SENTENCE_BOUNDARIES = frozenset("。！？!?…\n")
 _PARAGRAPH_BOUNDARIES = frozenset("\n\r")
 
@@ -1133,12 +1174,6 @@ def _limit_window(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].strip()
-
-
-def _preview_text(text: str, limit: int = 120) -> str:
-    value = str(text or "").replace("\n", "\\n")
-    suffix = "..." if len(value) > limit else ""
-    return value[:limit] + suffix
 
 
 def _get_accessibility_selected_range(element):

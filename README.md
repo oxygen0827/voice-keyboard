@@ -1,309 +1,221 @@
 # Voice Keyboard
 
-Voice Keyboard is a local-first voice keyboard engine for turning speech into text input and keyboard-style operations on the current computer.
+Voice Keyboard 是一个本地优先的语音键盘引擎。它的目标不是聊天，而是把语音变成当前电脑里的文字输入或键盘操作：听写、改写选中文字、触发快捷键、打开应用、切换窗口、调用备忘短语等。
 
-It is not a chatbot. The goal is to make common input work faster: dictation, rewriting selected text, triggering shortcuts, switching windows, launching apps, and recalling short reusable text snippets.
+当前你正在使用的稳定方案是：
 
-The project currently focuses on the Windows desktop workflow while keeping macOS and Linux/headless code paths available where supported.
+- 本项目：`/Users/hushaohong/vibe-coding/voice-keyboard`
+- 硬件固件项目：`/Users/hushaohong/vibe-coding/nRF52840-optimization`
+- 固件目录：`/Users/hushaohong/vibe-coding/nRF52840-optimization/firmware/PsyGuardVoiceKeyboard/`
+- 不再使用：`PdmBleAudioOptimized` 实验固件
+- XIAO 稳定配置：`trim_silence: false`、`normalize_gain: false`
 
-## What It Does
+## 现在怎么打开应用
 
-- Dictation mode: hold a hotkey, speak, and insert recognized text into the active input field.
-- Instruction mode: hold a separate hotkey and speak an operation such as rewrite, summarize, delete, continue, press a shortcut, open an app, or recall a memo.
-- Local UI: Windows tray menu, main window, language switching, hotkey settings, history, memo management, and AI intent diagnostics.
-- Memo store: save and recall explicit short text snippets such as addresses, emails, and reusable phrases.
-- Intent feedback loop: collect local intent samples, correct mistakes, sync with a training server, and use local overrides/model data to improve future intent decisions.
-- Headless CLI: record and print recognized speech without touching the active input field.
-
-## Current Status
-
-The Windows client has the main local workflow in place:
-
-- Tray and main-window entry points
-- Dictation and instruction hotkeys
-- Raw dictation and light-polish modes
-- Shortcut, app-launch, window, memo, and text-edit operations
-- AI intent diagnostics and correction workflow
-- Local-only correction mode when no training server is configured
-- Optional training server for sample upload, review, correction, and stats
-- Dictation correction memory on macOS for common editable inputs. After
-  Dictation Mode inserts text, repeated manual corrections can be learned as a
-  local wrong-to-correct dictionary entry and applied to later dictation. The
-  current verified capture paths include TextEdit, Codex input fields, and
-  Google Chrome input fields.
-
-The intent model loop is still evolving. The current implementation combines deterministic rules, local correction overrides, lightweight local intent data, and optional LLM interpretation. A stronger semantic classifier can be trained later from corrected real usage samples.
-
-## Requirements
-
-- Python 3.11 or newer
-- A microphone
-- API access for at least one speech interpretation provider
-- Windows 10/11 for the full tray and desktop UI experience
-
-Platform notes:
-
-- Windows is the best-supported desktop target.
-- macOS requires microphone, Accessibility, and input-monitoring permissions.
-- Linux/headless usage is mainly via `agent.cli`; desktop insertion depends on the local input stack.
-
-## Quick Start
-
-### Windows
-
-```powershell
-git clone https://github.com/wangqioo/voice-keyboard.git
-cd voice-keyboard
-python -m venv .venv
-.\.venv\Scripts\pip install -r requirements.txt
-copy config.yaml.example config.yaml
-copy .env.example .env
-```
-
-Edit `config.yaml` or `.env`, then start the client:
-
-```powershell
-.\.venv\Scripts\python -m agent.main --no-serial
-```
-
-Useful Windows commands:
-
-```powershell
-.\.venv\Scripts\python -m agent.main --list-devices
-.\.venv\Scripts\python -u -m agent.main --no-serial --no-ui
-.\.venv\Scripts\python -m agent.windows_tray
-```
-
-### macOS / Linux
+在终端运行：
 
 ```bash
-git clone https://github.com/wangqioo/voice-keyboard.git
-cd voice-keyboard
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp config.yaml.example config.yaml
-cp .env.example .env
+cd /Users/hushaohong/vibe-coding/voice-keyboard
+scripts/run-local.sh --background --ui
+tail -f .local/logs/voice-keyboard-local.log
 ```
 
-Start the runtime:
+这三行的意思：
+
+- 第一行进入项目目录。
+- 第二行在后台启动 Voice Keyboard，并显示 macOS 右上角菜单栏 `VK` 图标。
+- 第三行实时查看日志，方便确认 BLE、热键和识别状态。
+
+如果只想启动应用、不看日志，运行：
 
 ```bash
-scripts/run-local.sh
-```
-
-Run in the background and write PID/log paths:
-
-```bash
-scripts/run-local.sh --background
-scripts/run-local.sh --status
-```
-
-Background runs use `--no-ui` by default, so the macOS menu bar `VK` icon is
-hidden. To keep the right-side menu bar entry while running in the background:
-
-```bash
+cd /Users/hushaohong/vibe-coding/voice-keyboard
 scripts/run-local.sh --background --ui
 ```
 
-Stop the local runtime:
+停止应用：
 
 ```bash
+cd /Users/hushaohong/vibe-coding/voice-keyboard
 scripts/run-local.sh --kill-only
 ```
 
-List audio devices:
+查看是否正在运行：
 
 ```bash
-.venv/bin/python -m agent.main --list-devices
+cd /Users/hushaohong/vibe-coding/voice-keyboard
+scripts/run-local.sh --status
 ```
 
-On macOS, System Settings grants apply to the launching app. Source runs usually need permissions for Terminal/iTerm/Python; packaged runs need permissions for `Voice Keyboard.app`. Check the current launch identity with:
+查看最近日志：
 
 ```bash
-scripts/run-local.sh --permissions
+cd /Users/hushaohong/vibe-coding/voice-keyboard
+tail -n 80 .local/logs/voice-keyboard-local.log
 ```
 
-## Configuration
-
-The main configuration file is:
+正常启动后，日志里应该能看到：
 
 ```text
-config.yaml
+[ptt] XIAO 音频处理 trim_silence=off normalize_gain=off
+[ui] 菜单栏 + 主窗口已就绪（点击右上角 VK 麦克风图标）
+[xiao] BLE 已连接，等待热键开始录音
 ```
 
-You can also place user-specific configuration at:
+如果日志一直显示：
 
 ```text
-~/.voice-keyboard/config.yaml
+[xiao] 未找到 XIAO/PsyGuard BLE 设备，请确认固件在广播
 ```
 
-If the user-level file exists, it takes priority over the repository-local `config.yaml`.
+先检查 XIAO 板子是否通电、是否已经刷入 `PsyGuardVoiceKeyboard` 固件、是否被 Arduino 串口或上传流程占用。
 
-Common sections:
+## 当前稳定配置
 
-- `stt`: speech-to-text provider for dictation.
-- `ai_stt`: optional separate speech-to-text provider for instruction mode.
-- `polish_stt`: optional speech-to-text provider settings for polished dictation.
-- `llm`: model provider for instruction interpretation, rewriting, polishing, and generated text.
-- `audio`: capture mode, hotkeys, audio device, and VAD settings.
-- `typing`: text insertion and shortcut execution behavior.
-- `correction_memory`: local Dictation Mode correction dictionary and learning
-  settings.
-- `instruction_mode`: local intent rules, memo triggers, overrides, diagnostics, and training sync.
+你的用户配置文件在：
 
-Typical hotkey shape:
+```text
+/Users/hushaohong/.voice-keyboard/config.yaml
+```
+
+当前稳定配置应包含：
 
 ```yaml
 audio:
   mode: ptt
   ptt_key: shift_r
   ai_key: alt_r
-  device: auto
+  toggle_key: f8
+  device: xiao_ble
+  xiao_ble:
+    trim_silence: false
+    normalize_gain: false
 ```
 
-Typical correction-memory shape:
+说明：
 
-```yaml
-correction_memory:
-  enabled: true
-  path: ~/.voice-keyboard/correction_memory.json
-  confirm_threshold: 2
-  observe_window_seconds: 30
-  observe_delays: [0.8, 2, 5, 12]
-  screen_ocr_fallback: true
-  screen_ocr_after_edit_seconds: 0.8
-  debug: false
+- `ptt_key: shift_r`：按住右 Shift 说话，松开后识别并输入。
+- `ai_key: alt_r`：按住右 Option/Alt 说 Instruction Mode 指令。
+- `toggle_key: f8`：临时启停录音。
+- `device: xiao_ble`：使用 XIAO nRF52840 BLE 麦克风。
+- `trim_silence: false`：不自动裁剪首尾，避免短句开头被误切。
+- `normalize_gain: false`：不自动增益，避免放大 BLE 噪声。
+
+## 硬件固件
+
+当前稳定固件只使用：
+
+```text
+/Users/hushaohong/vibe-coding/nRF52840-optimization/firmware/PsyGuardVoiceKeyboard/PsyGuardVoiceKeyboard.ino
 ```
 
-Correction memory is separate from Memo. It learns small Dictation Mode
-corrections such as `王之行 -> 王知行` or `文静 -> 文净` after the user manually
-fixes Voice Keyboard Engine output in the same Tracked Segment. On macOS the
-current robust path combines Accessibility text observation (`AXValue`), global
-keyboard edit tracking, IME commit observation, and a screen OCR fallback. When
-an app does not expose live input text through Accessibility, the engine can
-capture the active window and its lower input region after the user stops editing
-briefly, then only accepts OCR text that overlaps the Tracked Segment and forms a
-plausible before/after correction. This fallback requires macOS Screen Recording
-permission and is deliberately gated to avoid learning unrelated on-screen text.
+Arduino IDE 烧录建议：
 
-Secrets should stay out of git. Use `config.yaml`, `.env`, environment variables, or a local secret manager. The repository tracks only examples such as `config.yaml.example` and `.env.example`.
+1. 打开 `PsyGuardVoiceKeyboard.ino`
+2. Board 按实物选择，例如 `XIAO nRF52840 Plus`
+3. Port 选择 `/dev/cu.usbmodem...`
+4. 点击 Upload
+5. 上传完成后再启动 Voice Keyboard
 
-## Runtime Entry Points
+不要再刷 `PdmBleAudioOptimized`。这个实验固件已经从硬件项目里删除，当前 Voice Keyboard Engine 稳定路径不使用它。
 
-| Command | Purpose |
-| --- | --- |
-| `python -m agent.main` | Desktop/local engine runtime |
-| `python -m agent.main --no-serial` | Desktop runtime without hardware serial receiver |
-| `python -m agent.main --list-devices` | Print available audio devices |
-| `python -m agent.main --no-serial --no-ui` | Runtime without the main window, useful for debugging |
-| `scripts/run-local.sh --background --ui` | Background macOS/Linux local run with the macOS menu bar `VK` entry |
-| `python -m agent.windows_tray` | Windows tray wrapper |
-| `python -m agent.cli` | Headless command-line dictation |
+## 常用命令
+
+列出麦克风设备：
+
+```bash
+cd /Users/hushaohong/vibe-coding/voice-keyboard
+.venv/bin/python -m agent.main --list-devices
+```
+
+前台运行，方便调试：
+
+```bash
+cd /Users/hushaohong/vibe-coding/voice-keyboard
+.venv/bin/python -u -m agent.main --no-serial
+```
+
+无菜单栏运行：
+
+```bash
+cd /Users/hushaohong/vibe-coding/voice-keyboard
+.venv/bin/python -u -m agent.main --no-serial --no-ui
+```
+
+检查 macOS 权限：
+
+```bash
+cd /Users/hushaohong/vibe-coding/voice-keyboard
+scripts/run-local.sh --permissions
+```
+
+macOS 权限说明：从源码运行时，系统设置里的麦克风、辅助功能、输入监控权限通常授予 Terminal/iTerm/Python；打包 App 运行时才授予 `Voice Keyboard.app`。
+
+## 配置文件
+
+仓库里的示例配置：
+
+```text
+config.yaml.example
+```
+
+你的个人配置：
+
+```text
+~/.voice-keyboard/config.yaml
+```
+
+如果个人配置存在，它会优先生效。
+
+常见配置段：
+
+- `stt`：Dictation Mode 的语音识别 provider。
+- `ai_stt`：Instruction Mode 可选的独立语音识别 provider。
+- `polish_stt`：微润色听写可选的独立语音识别 provider。
+- `llm`：Instruction Mode、改写、微润色、生成文字使用的模型 provider。
+- `audio`：录音模式、热键、麦克风设备、XIAO BLE 设置。
+- `typing`：文字插入方式。
+- `correction_memory`：本地听写纠错记忆。
+- `instruction_mode`：指令识别、本地覆盖、备忘触发词、训练同步等。
+
+敏感信息不要提交到 git。API key 放在个人 `config.yaml`、`.env` 或环境变量里。
 
 ## Headless CLI
 
-The CLI records audio and prints recognition results. It does not type into the current input field.
-
-Windows:
-
-```powershell
-.\.venv\Scripts\python -m agent.cli --list-devices
-.\.venv\Scripts\python -m agent.cli --once
-.\.venv\Scripts\python -m agent.cli --once --seconds 5
-.\.venv\Scripts\python -m agent.cli --loop
-```
-
-macOS / Linux:
+只录音并打印识别结果，不往当前输入框打字：
 
 ```bash
-.venv/bin/python -m agent.cli --list-devices
+cd /Users/hushaohong/vibe-coding/voice-keyboard
 .venv/bin/python -m agent.cli --once
 .venv/bin/python -m agent.cli --once --seconds 5
 .venv/bin/python -m agent.cli --loop
 ```
 
-## Intent Training Server
+## 开发与测试
 
-The optional training server receives local intent samples, exposes review APIs, and includes a small web review console at `/review`.
-
-Install server dependencies:
-
-```powershell
-pip install -r requirements-server.txt
-```
-
-Start the server:
-
-```powershell
-$env:INTENT_TRAINING_DATABASE_URL = "sqlite:///./intent_training.db"
-$env:INTENT_TRAINING_UPLOAD_TOKEN = "change-me"
-uvicorn training_server.api:app --host 0.0.0.0 --port 8000
-```
-
-Upload local samples:
-
-```powershell
-python tools/upload_intent_samples.py --server http://SERVER:8000 --token change-me
-```
-
-Dry run without uploading:
-
-```powershell
-python tools/upload_intent_samples.py --dry-run
-```
-
-More details:
-
-- [Intent training overview](docs/intent-training.md)
-- [Intent training server](docs/intent-training-server.md)
-- [Stage development plan](docs/stage-development-plan.md)
-
-## Development
-
-Run the full non-interactive test suite:
-
-```powershell
-python -m unittest discover -s test
-python -m compileall -q agent training_server tools test
-```
-
-macOS / Linux:
+运行本地测试：
 
 ```bash
+cd /Users/hushaohong/vibe-coding/voice-keyboard
 scripts/test-local.sh
+```
+
+常用聚焦测试：
+
+```bash
+cd /Users/hushaohong/vibe-coding/voice-keyboard
+pytest test/test_capture_path.py test/test_runtime_composition.py
+pytest test/test_correction_memory.py test/test_screen_ocr_capture.py
+```
+
+编译检查：
+
+```bash
+cd /Users/hushaohong/vibe-coding/voice-keyboard
 python -m compileall -q agent training_server tools test
 ```
 
-Some behavior depends on OS permissions, a real focused input field, or an available desktop session. For day-to-day development, prefer focused unit tests around the module you changed.
-
-Focused tests for Dictation Mode correction memory:
-
-```bash
-pytest test/test_correction_memory.py test/test_screen_ocr_capture.py test/test_runtime_composition.py
-```
-
-Manual macOS smoke test:
-
-1. Start the runtime with `python -m agent.main --no-serial`.
-2. Open TextEdit, Codex, Chrome, or another editable input field.
-3. Use Dictation Mode to insert a repeated phrase that the provider often gets
-   wrong, such as `王之行，王之行，王之行`.
-4. Manually delete the wrong character or word and type the intended correction,
-   such as `王知行，王知行，王知行`.
-5. Wait for the local dictionary confirmation HUD, then repeat dictation to
-   confirm the learned correction is applied globally.
-
-## Packaging
-
-Packaging resources live under:
-
-- `packaging/windows/`
-- `packaging/macos/`
-- `packaging/linux/`
-
-On managed corporate computers, unsigned executables may be blocked. For real distribution, use a trusted release or code-signing process.
-
-## Project Docs
+## 项目文档
 
 - [Agent guide](AGENTS.md)
 - [Ubiquitous language](UBIQUITOUS_LANGUAGE.md)
@@ -311,16 +223,19 @@ On managed corporate computers, unsigned executables may be blocked. For real di
 - [Intent training](docs/intent-training.md)
 - [Intent training server](docs/intent-training-server.md)
 
-## Roadmap
+## 当前结论
 
-Near-term work:
+当前效果较好的稳定基线是：
 
-1. Continue improving the Windows AI intent correction workflow.
-2. Accumulate corrected real-world intent samples.
-3. Export higher-quality training datasets.
-4. Train and evaluate a stronger local intent model.
-5. Connect the improved model back into the Windows runtime.
-6. Keep polishing tray, main-window, hotkey, history, and memo configuration flows.
+```text
+PsyGuardVoiceKeyboard 固件
+device: xiao_ble
+trim_silence: false
+normalize_gain: false
+scripts/run-local.sh --background --ui
+```
+
+后续如果识别效果变差，优先检查是否偏离了这条基线。
 
 ## License
 

@@ -217,8 +217,13 @@ List, switch, or roll back model versions:
 ```bash
 .venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models list
 .venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models activate baseline
+.venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models pull-published --server http://SERVER:8000 --token change-me
 .venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models rollback
 ```
+
+`pull-published` downloads `/v1/intent-models/published/download`, registers the server model under
+`versions/<version>.json`, activates it as `current.json`, and leaves the previous local version available
+for `rollback`.
 
 Enable it in `config.yaml`:
 

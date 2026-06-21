@@ -32,6 +32,18 @@ _Avoid_: Dangerous command, privileged action
 A **Voice Text Operation** that inserts the user's spoken words as text with minimal cleanup.
 _Avoid_: STT result, transcription
 
+**Dictation Correction Memory**:
+A local learning layer for **Dictation** that stores repeated user-confirmed wrong-to-correct text pairs and applies them before dictated text reaches the **Input Environment**.
+_Avoid_: Memo, AI memory, personal knowledge base
+
+**Correction Dictionary**:
+The confirmed wrong-to-correct entries used by **Dictation Correction Memory**.
+_Avoid_: Memo Library, shortcut override, intent correction
+
+**Correction Candidate**:
+A not-yet-confirmed wrong-to-correct pair observed from repeated manual edits after **Dictation** insertion.
+_Avoid_: confirmed dictionary entry, memo candidate
+
 **Text Insertion**:
 A **Voice Text Operation** that inserts user-provided or already resolved text into the current **Input Environment**.
 _Avoid_: Dictation Mode, AI writing
@@ -131,6 +143,9 @@ _Avoid_: STT provider, LLM provider, model, backend
 - Internal implementation steps do not make a **Voice Keyboard Operation** non-atomic when they serve one user-visible intent.
 - **Dictation** is one kind of **Voice Text Operation**, and every **Voice Text Operation** is a **Voice Keyboard Operation**.
 - **Dictation** produces a **Text Insertion** from recognized speech.
+- **Dictation Correction Memory** may transform **Dictation** text before **Text Insertion**.
+- **Dictation Correction Memory** observes later user edits only to learn local **Correction Dictionary** entries; it does not create or recall **Memo**.
+- A **Correction Candidate** becomes a **Correction Dictionary** entry only after repeated evidence crosses the local confirmation threshold.
 - **Dictation Mode** produces **Dictation**.
 - **Instruction Mode** interprets speech as a request for a **Voice Keyboard Operation**.
 - **Atomic Operation Stack** belongs to **Instruction Mode**; **Dictation Mode** does not participate in stacks.
@@ -180,70 +195,7 @@ _Avoid_: STT provider, LLM provider, model, backend
 - "chat" exists as an auxiliary feedback behavior, but is not a core **Voice Keyboard Operation** unless it changes or drives the **Input Environment**.
 - Older reusable-snippet operation names were ambiguous; resolved: the domain term is **Memo Operation**.
 - "memory" is limited to **Memo**; it does not mean chat memory, user profiling, cross-device knowledge sync, or a personal knowledge base.
+- "correction memory" is not **Memo**; resolved: use **Dictation Correction Memory** for local Dictation wrong-to-correct learning.
 - "shortcut" can sound like power-user hotkey automation; resolved: inside this context, **Shortcut Invocation** means a curated low-conflict keyboard-style action for ordinary repeated work.
 - Provider names such as Xunfei, OpenAI, Aliyun, Volcengine, ZhipuAI, and TypeUp Backend are integration choices, not domain terms.
 - "Agent" names a local process and code package, not a domain concept; resolved: domain language uses **Voice Keyboard Engine**.
-# Development Notes - Memo Library Intent Work
-
-Last updated: 2026-06-10
-
-Current focus: AI key memo library input/query reliability.
-
-User requirements confirmed:
-- Saving a memo must require selected text.
-- The selected text is the memo value.
-- Spoken command text is only used to infer the memo key/name, preferably with LLM extraction rather than hard-coded parsing.
-- Memo library should update live in the main window after saves/deletes.
-- Memo input/query keywords should be visible and editable in the main window Memo Library tab.
-- Edited keywords must sync into intent classification without requiring code changes.
-- Query trigger words such as `查一下`, `查询`, `调出`, `调取`, `读取` should wake memo lookup directly. The user does not want to always say `记忆库` or `备忘录`.
-
-Implemented in this session:
-- Added configurable `MemoTriggerConfig` in `agent/ai_intent.py`.
-- Added `instruction_mode.intent_fallbacks.memo_triggers` support in config.
-- Added memo trigger keyword fields to the main window Memo Library tab:
-  - save words
-  - lookup actions
-  - wake words
-  - delete words
-- Saving those fields writes config and reloads runtime config.
-- Fixed main window crash where generic config loading tried to split non-config UI variable names like `memo_save_words` as `section.key`.
-- Added memo store reload behavior so existing `MemoStore` instances see external file changes.
-- Added main window memo polling/refresh for live memory library updates.
-- Added save fallback in `AIHandler`: if selected text exists and spoken text looks like memo-save, force memo save and use LLM/fallback key extraction.
-- Tightened save behavior: without selected text, memo save commands prompt the user to select text first.
-
-Important latest change:
-- Memo lookup was too strict: it required both a query action and a memory wake word.
-- This made natural commands such as `查一下我的手机号` and `查一下我家地址` classify as chat.
-- The intended fix is now: any configured lookup action should enter memo lookup. The lookup query should be cleaned before fuzzy key matching by removing action words and filler words like `我的`, `我家`, `是什么`, `是多少`.
-
-Potential files touched:
-- `agent/ai_intent.py`
-- `agent/ai_handler.py`
-- `agent/memo_store.py`
-- `agent/windows_main_window.py`
-- `agent/runtime_composition.py`
-- `config.yaml.example`
-- tests under `test/`
-
-Verified follow-up:
-- Re-ran tests after the latest lookup-trigger edit; verification now passes on Windows.
-- Verified specifically:
-  - `查一下我的手机号` recalls memo key `手机号`
-  - `查一下我家地址` recalls memo key `地址`
-  - `调出我的地址` recalls memo key `地址`
-  - plain `我的手机号是多少` remains chat unless configured otherwise
-- Verified commands:
-  - `.\.venv\Scripts\python.exe -m unittest discover -s test -p "test_ai_intent.py"`
-  - `.\.venv\Scripts\python.exe -m unittest discover -s test -p "test_ai_handler_runtime.py"`
-  - `.\.venv\Scripts\python.exe -m unittest discover -s test -p "test_windows_main_window.py"`
-  - `.\.venv\Scripts\python.exe -m unittest discover -s test -p "test_runtime_composition.py"`
-  - `.\.venv\Scripts\python.exe -m compileall -q agent test`
-
-CMD startup command:
-
-```cmd
-cd /d C:\Users\100448405\voice-keyboard
-.\.venv\Scripts\python.exe -m agent.windows_tray
-```

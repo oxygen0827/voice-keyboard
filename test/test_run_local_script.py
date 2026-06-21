@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RunLocalScriptTests(unittest.TestCase):
-    def test_kill_only_matcher_accepts_homebrew_python_app_process(self):
+    def test_kill_only_matcher_searches_agent_main_processes(self):
         script = ROOT / "scripts" / "run-local.sh"
         command = [str(script), "--kill-only"]
         if sys.platform == "win32":
@@ -53,21 +53,99 @@ class RunLocalScriptTests(unittest.TestCase):
             matcher = log_path.read_text(encoding="utf-8")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("[Pp]ython", matcher)
-        self.assertIn("agent\\.main", matcher)
+        self.assertIn("agent\\.main|agent/main\\.py", matcher)
 
     def test_status_reports_not_running_without_pid_file(self):
-        result = subprocess.run(
-            [str(ROOT / "scripts" / "run-local.sh"), "--status"],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            fake_pgrep = bin_dir / "pgrep"
+            fake_pgrep.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+            fake_pgrep.chmod(fake_pgrep.stat().st_mode | stat.S_IXUSR)
+            fake_launchctl = bin_dir / "launchctl"
+            fake_launchctl.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+            fake_launchctl.chmod(fake_launchctl.stat().st_mode | stat.S_IXUSR)
+
+            pid_file = ROOT / ".local" / "run" / "voice-keyboard-local.pid"
+            old_pid_file = pid_file.read_text(encoding="utf-8") if pid_file.exists() else None
+            pid_file.unlink(missing_ok=True)
+            try:
+                env = os.environ.copy()
+                env["PATH"] = f"{bin_dir}:{env['PATH']}"
+                result = subprocess.run(
+                    [str(ROOT / "scripts" / "run-local.sh"), "--status"],
+                    cwd=ROOT,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+            finally:
+                if old_pid_file is not None:
+                    pid_file.parent.mkdir(parents=True, exist_ok=True)
+                    pid_file.write_text(old_pid_file, encoding="utf-8")
 
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("[run-local] Status: not running", result.stdout)
+
+    def test_status_reports_launch_agent_when_pid_file_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            fake_pgrep = bin_dir / "pgrep"
+            fake_pgrep.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+            fake_pgrep.chmod(fake_pgrep.stat().st_mode | stat.S_IXUSR)
+            fake_launchctl = bin_dir / "launchctl"
+            fake_launchctl.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    cat <<'EOF'
+                    gui/501/com.voicekeyboard.agent = {{
+                        state = running
+                        arguments = {{
+                            {ROOT}/.venv/bin/python
+                            -u
+                            -m
+                            agent.main
+                            --no-serial
+                            --headless
+                        }}
+                        working directory = {ROOT}
+                        pid = 12345
+                    }}
+                    EOF
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_launchctl.chmod(fake_launchctl.stat().st_mode | stat.S_IXUSR)
+
+            pid_file = ROOT / ".local" / "run" / "voice-keyboard-local.pid"
+            old_pid_file = pid_file.read_text(encoding="utf-8") if pid_file.exists() else None
+            pid_file.unlink(missing_ok=True)
+            try:
+                env = os.environ.copy()
+                env["PATH"] = f"{bin_dir}:{env['PATH']}"
+                result = subprocess.run(
+                    [str(ROOT / "scripts" / "run-local.sh"), "--status"],
+                    cwd=ROOT,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+            finally:
+                if old_pid_file is not None:
+                    pid_file.parent.mkdir(parents=True, exist_ok=True)
+                    pid_file.write_text(old_pid_file, encoding="utf-8")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[run-local] Status: running", result.stdout)
+        self.assertIn("[run-local] PID: 12345", result.stdout)
+        self.assertIn("[run-local] LaunchAgent: com.voicekeyboard.agent", result.stdout)
 
     def test_background_start_writes_pid_and_log_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

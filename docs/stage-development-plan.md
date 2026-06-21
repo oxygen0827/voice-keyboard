@@ -143,6 +143,7 @@
 
 ```bash
 .venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models list
+.venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models pull-published --server http://SERVER:8000 --token change-me
 .venv/bin/python tools/manage_intent_model.py --registry-dir ~/.voice-keyboard/intent_models rollback
 ```
 
@@ -159,6 +160,7 @@ pip install -r requirements-server.txt
 ```bash
 export INTENT_TRAINING_DATABASE_URL="sqlite:///./intent_training.db"
 export INTENT_TRAINING_UPLOAD_TOKEN="change-me"
+export INTENT_TRAINING_MODEL_DIR="./intent_models"
 uvicorn training_server.api:app --host 0.0.0.0 --port 8000
 ```
 
@@ -242,6 +244,7 @@ http://SERVER:8000/review
 - 新保存的 Memo 会写成 `{value, aliases, value_type, sensitive}` record 形态，并保留已有别名和 metadata。
 - Memo resolver 会优先使用 record 上显式保存的 `value_type`，再回退到 key/value 推断。
 - `ai_intent.memo_records()` 会优先读取 store 的 `records()`，旧 store 仍可通过 `keys/get` 回退。
+- Windows 主窗口 Memo Library 已提供 alias 编辑入口，保存时会写入 aliases 并保留 `value_type/sensitive` metadata。
 - 已新增本地高风险操作策略模块：普通 Shortcut Invocation 直接执行，高风险单操作需要确认，高风险操作在 Atomic Operation Stack 中 fail closed。
 - Instruction Mode executor 现在记录 `operation_risk`、`confirmation_triggered`、`user_cancelled`，训练样本也会写入这些字段。
 - Windows runtime 已接入高风险操作确认 adapter，通过原生确认弹窗执行；无确认 adapter 的运行路径继续 fail closed。
@@ -249,11 +252,10 @@ http://SERVER:8000/review
 ## 仍未完成
 
 - 服务器端尚未真正训练语义分类器或小模型。
-- 服务器端尚未形成模型版本发布机制。
-- 客户端尚未实现从服务器拉取发布模型。
+- 服务器端已形成 `current.json` 发布接口、发布登记 sidecar 和发布历史 JSONL；仍未接入真正的服务端训练作业。
+- 客户端已实现从服务器拉取发布模型；仍需要在真实部署上跑一次端到端拉取和回滚演练。
 - 评测集规模还不足，需要真实样本继续积累。
-- 高风险操作确认策略还需要在真实 Windows 使用中验证，并继续和模型置信度、误触发指标关联。
-- Memo alias metadata 已有存储层，主窗口暂未提供 alias 编辑入口。
+- 高风险操作确认策略还需要在真实 Windows 使用中验证；服务端样本统计已开始结构化记录 `operation_risk`、`confirmation_triggered`、`user_cancelled` 和 `unsafe_should_confirm` 指标。
 
 ## 后续优先级
 
@@ -276,9 +278,10 @@ http://SERVER:8000/review
 ### P2：服务器端模型训练和发布
 
 - 在 4060Ti 服务器上训练真正的语义分类器或小模型。
-- 服务端保存模型版本、训练数据版本和评测报告。
+- 服务端已提供已发布模型的 metadata 和 JSON 下载接口，读取 `INTENT_TRAINING_MODEL_DIR/current.json`。
+- 客户端已提供 `tools/manage_intent_model.py pull-published`，可拉取服务端已发布模型并激活到本地 registry。
+- 服务端仍需保存模型版本、训练数据版本和评测报告。
 - 只发布通过评测 guard 的 candidate。
-- 客户端按版本拉取已发布模型。
 - 客户端保留本地回滚能力。
 
 ### P3：增强网页标注后台
@@ -317,7 +320,9 @@ http://SERVER:8000/review
 
 ### API-Key 安全
 
-仓库不能提交真实 API-Key 或训练服务器 token。后续所有密钥都应通过环境变量、本地配置文件或企业密钥管理系统注入。
+仓库不能提交真实 API-Key 或训练服务器 token。本机 `~/.voice-keyboard/config.yaml`
+已改为 `$GLM_API_KEY` 引用，真实值放在用户目录 `.env`；后续可用
+`tools/check_config_hygiene.py --config ~/.voice-keyboard/config.yaml` 检查 YAML 是否还有明文密钥。
 
 ### 高风险操作
 
@@ -328,15 +333,13 @@ http://SERVER:8000/review
 1. 在 Windows 上继续真实使用，积累至少 50 条已纠正样本。
 2. 用固定评测集比较 baseline 和候选模型。
 3. 在 Windows 上真实验证高风险确认弹窗，确认 `发送/提交/关闭/删除` 类操作不会误触发。
-4. 给 Memo Library 增加 alias 编辑入口。
-5. 在服务器上做第一版语义分类器或小模型训练实验。
-6. 建立服务端模型版本发布接口。
-7. 让客户端拉取服务器发布模型，并保留本地回滚。
-8. 把高风险操作确认策略纳入评测指标。
+4. 在服务器上做第一版语义分类器或小模型训练实验。
+5. 在真实训练服务器上发布一个通过 guard 的模型版本，并确认 `published_history.jsonl`、`current.meta.json` 和客户端 `pull-published` 都可用。
+6. 在诊断页展示高风险误触发指标。
 
 ## 当前仓库状态备注
 
-截至 2026-06-17，模型激活 guard、Memo metadata、本地高风险策略和 Windows 高风险确认 adapter 已提交到本地 `main`，尚未推送远端。
+截至 2026-06-17，模型激活 guard、Memo metadata、本地高风险策略、Windows 高风险确认 adapter、Memo alias 编辑入口、服务端模型发布接口和客户端模型拉取入口已推进到 `main`。
 
 已验证：
 

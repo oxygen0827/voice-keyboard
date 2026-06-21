@@ -9,6 +9,9 @@
 | **Atomic Operation Stack** | A short ordered stack of Voice Keyboard Operations explicitly requested by the user in one spoken instruction. | Agent plan, autonomous workflow, implicit operation sequence |
 | **Voice Text Operation** | A Voice Keyboard Operation that creates, changes, removes, restores, or recalls text. | Voice command, AI command |
 | **High-Risk Operation** | A Voice Keyboard Operation risk label for actions that may submit, send, delete, overwrite broad content, cross application boundaries, or be hard to reverse. | Dangerous command, privileged action |
+| **Dictation Correction Memory** | A local learning layer for Dictation that stores repeated user-confirmed wrong-to-correct text pairs and applies them before dictated text reaches the Input Environment. | Memo, AI memory, personal knowledge base |
+| **Correction Dictionary** | The confirmed wrong-to-correct entries used by Dictation Correction Memory. | Memo Library, shortcut override, intent correction |
+| **Correction Candidate** | A not-yet-confirmed wrong-to-correct pair observed from repeated manual edits after Dictation insertion. | confirmed dictionary entry, memo candidate |
 | **Text Insertion** | A Voice Text Operation that inserts user-provided or already resolved text into the current Input Environment. | Dictation Mode, AI writing |
 | **Shortcut Invocation** | A Voice Keyboard Operation that triggers one named user-visible system or application shortcut action. | Macro, hotkey command, AI action |
 | **Shortcut Catalog** | A local catalog of named user-visible shortcut actions available for the current system or application context. | Provider-generated shortcut list, freeform hotkey map |
@@ -55,6 +58,9 @@
 - **Operation Reversal** restores the most recent reversible atomic effect, not an entire **Atomic Operation Stack**.
 - **Dictation Mode** produces **Dictation**, which is a **Voice Text Operation**.
 - **Dictation** produces a **Text Insertion** from recognized speech.
+- **Dictation Correction Memory** may transform **Dictation** text before **Text Insertion**.
+- **Dictation Correction Memory** observes later user edits only to learn local **Correction Dictionary** entries; it does not create or recall **Memo**.
+- A **Correction Candidate** becomes a **Correction Dictionary** entry only after repeated evidence crosses the local confirmation threshold.
 - **Text Insertion** inserts text that is already provided or resolved; **Text Generation** creates new insertable text from requirements.
 - **Memo Operation** recall may produce a **Text Insertion** after it resolves a saved text snippet.
 - In an **Atomic Operation Stack**, **Text Insertion** should come from explicit user text or resolved **Memo**.
@@ -93,4 +99,5 @@
 - "Voice command" is vague; use **Voice Keyboard Operation** for the general operation and **Shortcut Invocation** for named shortcut execution.
 - "AI key mode" describes an implementation trigger; use **Instruction Mode** for the user intent.
 - "Memory Operation" implies AI memory; use **Memo Operation** for saving, recalling, deleting, and listing memos.
+- "Correction memory" is not **Memo**; use **Dictation Correction Memory** for local Dictation wrong-to-correct learning.
 - "Operation Sequence" makes permission, confirmation, and rollback too broad when it implies autonomous planning; use **Atomic Operation Stack** only for user-explicit ordered operations.
