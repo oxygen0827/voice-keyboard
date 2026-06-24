@@ -334,6 +334,61 @@ class CorrectionMemoryTests(unittest.TestCase):
             self.assertEqual(result.candidates, ())
             self.assertEqual(memory.candidates, ())
 
+    def test_tracker_from_config_disables_screen_ocr_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = {"value": 100.0}
+            ocr_calls = []
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)
+            tracker = CorrectionLearningTracker.from_config(
+                {},
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+                read_screen_text=lambda reference: (
+                    ocr_calls.append(reference)
+                    or CorrectionTextSnapshot("李立夫", source="ocr_window")
+                ),
+            )
+
+            tracker._clock = lambda: now["value"]
+            tracker.remember_inserted("李丽夫")
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            for char in "fu":
+                tracker.record_key_press(SimpleNamespace(char=char))
+            now["value"] += 1.0
+            result = tracker.observe_current_text()
+
+            self.assertEqual(ocr_calls, [])
+            self.assertEqual(result.confirmed, ())
+
+    def test_tracker_from_config_can_enable_screen_ocr_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now = {"value": 100.0}
+            ocr_calls = []
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)
+            tracker = CorrectionLearningTracker.from_config(
+                {"screen_ocr_fallback": True},
+                memory,
+                lambda: CorrectionTextSnapshot("", source="unsupported", detail="AXWindowScan:no"),
+                read_screen_text=lambda reference: (
+                    ocr_calls.append(reference)
+                    or CorrectionTextSnapshot("李立夫", source="ocr_window")
+                ),
+            )
+
+            tracker._clock = lambda: now["value"]
+            tracker.remember_inserted("李丽夫")
+            tracker.record_key_press(SimpleNamespace(name="backspace"))
+            for char in "fu":
+                tracker.record_key_press(SimpleNamespace(char=char))
+            now["value"] += 1.0
+            result = tracker.observe_current_text()
+
+            self.assertEqual(ocr_calls, ["李丽夫"])
+            self.assertEqual(
+                [(item.wrong, item.correct) for item in result.confirmed],
+                [("李丽夫", "李立夫")],
+            )
+
     def test_tracker_waits_for_ime_when_only_shadow_deletion_is_available(self):
         with tempfile.TemporaryDirectory() as tmp:
             memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=1)

@@ -358,7 +358,7 @@ class CorrectionLearningTracker:
         read_screen_text: Callable[[str], str | CorrectionTextSnapshot | None] | None = None,
     ) -> "CorrectionLearningTracker":
         cfg = cfg or {}
-        screen_ocr_enabled = bool(cfg.get("screen_ocr_fallback", True))
+        screen_ocr_enabled = bool(cfg.get("screen_ocr_fallback", False))
         return cls(
             memory,
             read_current_text,
