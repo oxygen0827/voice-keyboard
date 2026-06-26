@@ -261,8 +261,6 @@ class WindowsMainWindow:
         toolbar = ttk.Frame(tab)
         toolbar.pack(fill="x")
         ttk.Button(toolbar, text=self._t("\u5237\u65b0", "Refresh"), command=self._refresh_dictionary).pack(side="left")
-        ttk.Button(toolbar, text=self._t("\u5168\u9009\u5df2\u52a0\u5165", "Select Added"), command=self._select_all_dictionary_entries).pack(side="left", padx=4)
-        ttk.Button(toolbar, text=self._t("\u5168\u9009\u5019\u9009", "Select Candidates"), command=self._select_all_dictionary_candidates).pack(side="left")
         ttk.Button(toolbar, text=self._t("\u6e05\u9664\u52fe\u9009", "Clear Selection"), command=self._clear_dictionary_checks).pack(side="left", padx=4)
         ttk.Button(toolbar, text=self._t("\u5220\u9664\u52fe\u9009", "Delete Checked"), command=self._delete_checked_dictionary_items).pack(side="left")
         ttk.Button(toolbar, text=self._t("\u590d\u5236\u9009\u4e2d", "Copy Selected"), command=self._copy_selected_dictionary_item).pack(side="left", padx=4)
@@ -549,6 +547,7 @@ class WindowsMainWindow:
         for col in cols:
             tree.heading(col, text=headings[col])
             tree.column(col, width=widths[col], anchor="center" if col in ("checked", "count") else "w")
+        tree.heading("checked", command=lambda tree=tree: self._toggle_dictionary_tree_header(tree))
         tree.pack(fill="both", expand=True, pady=(6, 0))
         return tree
 
@@ -611,7 +610,11 @@ class WindowsMainWindow:
 
     def _toggle_dictionary_tree_check(self, event, kind: str) -> None:
         tree = self._dictionary_entries_tree if kind == "entry" else self._dictionary_candidates_tree
-        if tree.identify_region(event.x, event.y) != "cell":
+        region = tree.identify_region(event.x, event.y)
+        if region == "heading" and tree.identify_column(event.x) == "#1":
+            self._toggle_dictionary_tree_header(tree)
+            return "break"
+        if region != "cell":
             return
         if tree.identify_column(event.x) != "#1":
             return
@@ -628,21 +631,29 @@ class WindowsMainWindow:
             self._toggle_set_value(self._checked_dictionary_candidates, (entry.wrong, entry.correct))
             self._populate_correction_tree(tree, self._dictionary_candidates, kind)
 
+    def _toggle_dictionary_tree_header(self, tree: ttk.Treeview) -> None:
+        if tree is self._dictionary_entries_tree:
+            if len(self._checked_dictionary_entries) >= len(self._dictionary_entries):
+                self._checked_dictionary_entries.clear()
+            else:
+                self._checked_dictionary_entries = {entry.wrong for entry in self._dictionary_entries}
+            self._populate_correction_tree(self._dictionary_entries_tree, self._dictionary_entries, "entry")
+            return
+        if tree is self._dictionary_candidates_tree:
+            all_candidates = {
+                (entry.wrong, entry.correct)
+                for entry in self._dictionary_candidates
+            }
+            if len(self._checked_dictionary_candidates) >= len(all_candidates):
+                self._checked_dictionary_candidates.clear()
+            else:
+                self._checked_dictionary_candidates = all_candidates
+            self._populate_correction_tree(self._dictionary_candidates_tree, self._dictionary_candidates, "candidate")
+
     def _sync_dictionary_tree_selection(self, kind: str) -> None:
         other = self._dictionary_candidates_tree if kind == "entry" else self._dictionary_entries_tree
         if hasattr(other, "selection_remove"):
             other.selection_remove(*other.selection())
-
-    def _select_all_dictionary_entries(self) -> None:
-        self._checked_dictionary_entries = {entry.wrong for entry in self._dictionary_entries}
-        self._populate_correction_tree(self._dictionary_entries_tree, self._dictionary_entries, "entry")
-
-    def _select_all_dictionary_candidates(self) -> None:
-        self._checked_dictionary_candidates = {
-            (entry.wrong, entry.correct)
-            for entry in self._dictionary_candidates
-        }
-        self._populate_correction_tree(self._dictionary_candidates_tree, self._dictionary_candidates, "candidate")
 
     def _clear_dictionary_checks(self) -> None:
         self._checked_dictionary_entries.clear()

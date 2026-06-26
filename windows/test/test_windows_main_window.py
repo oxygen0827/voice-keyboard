@@ -99,6 +99,75 @@ class WindowsMainWindowTests(unittest.TestCase):
         self.assertEqual(window._checked_dictionary_entries, set())
         self.assertEqual(window._checked_dictionary_candidates, set())
 
+    def test_dictionary_header_checkbox_toggles_added_entries(self):
+        window = WindowsMainWindow(
+            history=History(),
+            insert_text=MagicMock(),
+            reload_config=MagicMock(),
+            notify=MagicMock(),
+        )
+        tree = MagicMock()
+        window._dictionary_entries_tree = tree
+        window._dictionary_candidates_tree = MagicMock()
+        window._dictionary_entries = [
+            CorrectionEntry("林之昂", "林知昂", 3, updated_at=2.0),
+            CorrectionEntry("王之行", "王知行", 3, updated_at=1.0),
+        ]
+
+        with patch.object(window, "_populate_correction_tree") as populate:
+            window._toggle_dictionary_tree_header(tree)
+            self.assertEqual(window._checked_dictionary_entries, {"林之昂", "王之行"})
+            populate.assert_called_with(tree, window._dictionary_entries, "entry")
+
+            window._toggle_dictionary_tree_header(tree)
+            self.assertEqual(window._checked_dictionary_entries, set())
+
+    def test_dictionary_header_checkbox_toggles_candidates(self):
+        window = WindowsMainWindow(
+            history=History(),
+            insert_text=MagicMock(),
+            reload_config=MagicMock(),
+            notify=MagicMock(),
+        )
+        tree = MagicMock()
+        window._dictionary_entries_tree = MagicMock()
+        window._dictionary_candidates_tree = tree
+        window._dictionary_candidates = [
+            CorrectionEntry("林之昂", "林知昂", 1, updated_at=2.0),
+            CorrectionEntry("王之行", "王知行", 1, updated_at=1.0),
+        ]
+
+        with patch.object(window, "_populate_correction_tree") as populate:
+            window._toggle_dictionary_tree_header(tree)
+            self.assertEqual(
+                window._checked_dictionary_candidates,
+                {("林之昂", "林知昂"), ("王之行", "王知行")},
+            )
+            populate.assert_called_with(tree, window._dictionary_candidates, "candidate")
+
+            window._toggle_dictionary_tree_header(tree)
+            self.assertEqual(window._checked_dictionary_candidates, set())
+
+    def test_dictionary_header_click_breaks_row_toggle(self):
+        window = WindowsMainWindow(
+            history=History(),
+            insert_text=MagicMock(),
+            reload_config=MagicMock(),
+            notify=MagicMock(),
+        )
+        tree = MagicMock()
+        tree.identify_region.return_value = "heading"
+        tree.identify_column.return_value = "#1"
+        window._dictionary_entries_tree = tree
+        window._dictionary_candidates_tree = MagicMock()
+        event = MagicMock(x=10, y=2)
+
+        with patch.object(window, "_toggle_dictionary_tree_header") as toggle:
+            result = window._toggle_dictionary_tree_check(event, "entry")
+
+        self.assertEqual(result, "break")
+        toggle.assert_called_once_with(tree)
+
 
 if __name__ == "__main__":
     unittest.main()
