@@ -1562,7 +1562,10 @@ def _run_system_action(action: str) -> bool:
             subprocess.Popen(["open", "-b", "com.apple.systempreferences"])
             return True
         if _OS == "Windows":
-            subprocess.Popen(["start", "ms-settings:"], shell=True)
+            if hasattr(os, "startfile"):
+                os.startfile("ms-settings:")
+            else:
+                subprocess.Popen(["explorer.exe", "ms-settings:"])
             return True
         subprocess.Popen(["sh", "-lc", "gnome-control-center || systemsettings5 || true"])
         return True

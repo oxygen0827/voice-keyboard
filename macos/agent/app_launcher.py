@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import os
 import plistlib
 from pathlib import Path
+import shlex
 import subprocess
 import time
 if os.name == "nt":
@@ -173,7 +174,7 @@ def launch_application(spec: ApplicationLaunchSpec, os_name: str) -> bool:
         return False
     target = spec.linux or spec.app_name
     if target:
-        subprocess.Popen(target, shell=True)
+        subprocess.Popen(shlex.split(target))
         return True
     return False
 

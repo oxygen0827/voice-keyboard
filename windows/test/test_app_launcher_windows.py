@@ -118,6 +118,14 @@ class WindowsAppLauncherTests(unittest.TestCase):
 
         popen.assert_not_called()
 
+    def test_linux_launch_splits_command_without_shell(self):
+        spec = app_launcher.ApplicationLaunchSpec(linux='xdg-open "file name.txt"')
+
+        with patch.object(app_launcher.subprocess, "Popen") as popen:
+            self.assertTrue(app_launcher.launch_application(spec, "Linux"))
+
+        popen.assert_called_once_with(["xdg-open", "file name.txt"])
+
     def test_windows_app_path_returns_empty_without_winreg(self):
         with patch.object(app_launcher, "winreg", None):
             self.assertEqual(app_launcher.windows_app_path("chrome.exe"), "")

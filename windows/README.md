@@ -167,7 +167,7 @@ Windows:
 
 ```powershell
 git clone https://github.com/oxygen0827/voice-keyboard.git
-cd voice-keyboard
+cd voice-keyboard\windows
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 copy config.yaml.example config.yaml
@@ -177,7 +177,7 @@ macOS or Linux:
 
 ```bash
 git clone https://github.com/oxygen0827/voice-keyboard.git
-cd voice-keyboard
+cd voice-keyboard/windows
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp config.yaml.example config.yaml
@@ -198,6 +198,8 @@ Windows tray app:
 ```powershell
 .\.venv\Scripts\python.exe -u -m agent.windows.tray
 ```
+
+In a split checkout, the helper batch files also accept the repository root virtual environment as a fallback. For example, `start_tray_windows.bat` first looks for `windows\.venv`, then for `..\.venv`.
 
 Windows desktop runtime:
 
