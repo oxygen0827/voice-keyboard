@@ -82,6 +82,12 @@ class IntentTrainingRecorder:
         intent_result: dict | None = None,
         status: str = "",
         detail: str = "",
+        target_source: str = "",
+        output_policy: str = "",
+        risk_reason: str = "",
+        confirmed: bool = False,
+        cancelled: bool = False,
+        undone: bool = False,
     ) -> None:
         if not self._config.enabled:
             return
@@ -106,6 +112,12 @@ class IntentTrainingRecorder:
             "intent_cache_hit": bool(result.get("_intent_cache_hit")),
             "status": status,
             "detail": _sanitize_text(detail, 240),
+            "target_source": str(target_source or ""),
+            "output_policy": str(output_policy or ""),
+            "risk_reason": _sanitize_text(risk_reason, 160),
+            "confirmed": bool(confirmed),
+            "cancelled": bool(cancelled),
+            "undone": bool(undone),
             "review_label": "",
             "review_note": "",
         }
@@ -159,6 +171,7 @@ def update_sample_review(
     *,
     label: str,
     note: str = "",
+    corrected_intent: dict | None = None,
 ) -> dict:
     path = Path(source).expanduser()
     rows = _load_samples(path)
@@ -169,6 +182,8 @@ def update_sample_review(
         raise ValueError(f"unsupported review label: {normalized_label}")
     rows[index]["review_label"] = normalized_label
     rows[index]["review_note"] = _sanitize_text(note, 240)
+    if corrected_intent is not None:
+        rows[index]["corrected_intent"] = corrected_intent
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for row in rows:

@@ -150,6 +150,29 @@ class CapturePathTests(unittest.TestCase):
         ptt._stop_recording("dictate")
 
         timer.cancel.assert_called_once()
+
+    def test_push_to_talk_keyboard_listener_is_passive_for_windows_observation(self):
+        on_dictation = MagicMock()
+        ptt = PushToTalk(
+            on_dictation,
+            ptt_key="a",
+            on_key_press=MagicMock(),
+            on_key_release=MagicMock(),
+        )
+        listener = MagicMock()
+
+        with (
+            patch("agent.push_to_talk.sys.platform", "win32"),
+            patch("agent.push_to_talk.is_xiao_ble_device_hint", return_value=False),
+            patch("agent.push_to_talk.find_device", return_value=None),
+            patch("agent.push_to_talk.kb.Listener", return_value=listener) as listener_cls,
+        ):
+            ptt.start()
+
+        listener_cls.assert_called_once()
+        self.assertNotIn("suppress", listener_cls.call_args.kwargs)
+        listener.start.assert_called_once()
+        ptt.stop()
         self.assertIsNone(ptt._recording_status_timer)
 
 

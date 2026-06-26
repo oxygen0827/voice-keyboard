@@ -6,7 +6,15 @@ import re
 from dataclasses import dataclass
 from typing import Protocol
 
+from agent.correction_memory import (
+    CorrectionLearningTracker,
+    CorrectionMemory,
+    CorrectionObservationScheduler,
+    LearnedCorrection,
+)
+from agent.correction_observation import CorrectionObservationHooks
 from agent.input_environment import TyperInputEnvironment
+from agent.performance_observer import LoggingPerformanceObserver, PerformanceObserver
 from agent.punctuation import normalize_spoken_punctuation
 from agent.text_buffer import TextBuffer
 
@@ -121,6 +129,18 @@ class DictationMode:
     text_polisher: TextPolisher | None = None
     status_window: object | None = None
     history: object | None = None
+    correction_memory: CorrectionMemory | None = None
+    correction_tracker: CorrectionLearningTracker | None = None
+    correction_scheduler: CorrectionObservationScheduler | None = None
+    performance: PerformanceObserver | None = None
+    learning: object | None = None
+
+    @property
+    def correction_observation_hooks(self) -> CorrectionObservationHooks:
+        return CorrectionObservationHooks(
+            tracker=self.correction_tracker,
+            scheduler=self.correction_scheduler,
+        )
 
     def handle_utterance(
         self,
@@ -130,14 +150,31 @@ class DictationMode:
         progress_status: bool = True,
     ) -> None:
         mode = "polish" if polish else "dictate"
+        total_span = self._performance().span("dictation.total")
+        observe_span = self._performance().span("dictation.observe_previous")
+        self._observe_previous_manual_correction()
+        self._performance().finish(observe_span)
         try:
+            stt_span = self._performance().span("dictation.stt")
             text = self._transcribe(pcm, polish)
+            self._performance().finish(
+                stt_span,
+                audio_seconds=f"{len(pcm) / 16000 / 2:.2f}",
+                bytes=len(pcm),
+            )
         except Exception as e:
+            self._performance().finish(
+                stt_span,
+                audio_seconds=f"{len(pcm) / 16000 / 2:.2f}",
+                bytes=len(pcm),
+                error=type(e).__name__,
+            )
             print(f"[stt] 请求失败: {e}")
             self._append_history(mode, "", "error", f"STT: {e}")
             self._show_error_message(e)
             if progress_status:
                 self._set_status("error_stt")
+            self._performance().finish(total_span, status="error_stt")
             return
 
         text = normalize_dictation_punctuation(clean_generated_text(text))
@@ -146,40 +183,61 @@ class DictationMode:
             self._append_history(mode, "", "empty")
             if progress_status:
                 self._set_status("empty_stt")
+            self._performance().finish(total_span, status="empty")
             return
 
         print(f"[stt] {text!r}")
         if polish and self.text_polisher is not None:
             if progress_status:
                 self._set_status("polishing")
+            polish_span = self._performance().span("dictation.polish")
             text = self._polish_text(text)
+            self._performance().finish(polish_span, chars=len(text))
+
+        correction_span = self._performance().span("dictation.correction")
+        text = self._apply_correction_memory(text)
+        self._performance().finish(correction_span, chars=len(text))
 
         try:
+            typing_span = self._performance().span("dictation.typing")
             result = self.input_environment.insert_output_text(text)
             if not result.ok:
                 if result.failure == "copied_to_clipboard":
+                    self._performance().finish(typing_span, chars=len(text))
                     self._append_history(mode, text, "copied", "no_focused_input")
                     self._show_copied_message(result.copied_text or text)
+                    self._performance().finish(total_span, status="copied")
                     return
                 raise RuntimeError(result.failure or "insert_failed")
+            self._performance().finish(typing_span, chars=len(text))
         except Exception as e:
+            self._performance().finish(
+                typing_span,
+                chars=len(text),
+                error=type(e).__name__,
+            )
             if str(e) == "no_focused_input":
                 self._append_history(mode, text, "cancelled", "no_focused_input")
                 self._show("未点击到输入框，已取消输出")
                 if progress_status:
                     self._set_status("idle")
+                self._performance().finish(total_span, status="cancelled")
                 return
             print(f"[stt] 打字失败: {e}")
             if progress_status:
                 self._set_status("error_typing")
             self._append_history(mode, text, "error", f"typing: {e}")
+            self._performance().finish(total_span, status="error_typing")
             return
 
+        self._remember_inserted_text_for_correction_learning(text)
+        self._remember_output(text, mode=mode)
         self._append_history(mode, text, "ok")
         if clear_status:
             self._set_status("idle")
         if clear_status:
             print("[typeup] 输入完成")
+        self._performance().finish(total_span, status="ok", chars=len(text))
 
     def _transcribe(self, pcm: bytes, polish: bool) -> str:
         if polish and hasattr(self.transcriber, "transcribe_polished"):
@@ -195,6 +253,45 @@ class DictationMode:
         except Exception as e:
             print(f"[stt] 润色失败，回退原文: {e}")
         return text
+
+    def _apply_correction_memory(self, text: str) -> str:
+        if self.correction_memory is None:
+            return text
+        corrected = self.correction_memory.apply(text)
+        if corrected != text:
+            print(f"[correction] 词典修正: {text!r} -> {corrected!r}")
+        return corrected
+
+    def _observe_previous_manual_correction(self) -> None:
+        if self.correction_tracker is None:
+            return
+        result = self.correction_tracker.observe_current_text()
+        for correction in result.confirmed:
+            self._show_confirmed_correction(correction)
+
+    def _remember_inserted_text_for_correction_learning(self, text: str) -> None:
+        if self.correction_tracker is not None:
+            self.correction_tracker.remember_inserted(text)
+        if self.correction_scheduler is not None:
+            self.correction_scheduler.schedule()
+
+    def _remember_output(self, text: str, *, mode: str) -> None:
+        if self.learning is not None and hasattr(self.learning, "remember_output"):
+            try:
+                self.learning.remember_output(
+                    text,
+                    mode=mode,
+                    operation_kind="dictation",
+                )
+            except Exception as e:
+                print(f"[learning] remember output failed: {e}")
+
+    def _show_confirmed_correction(self, correction: LearnedCorrection) -> None:
+        print(
+            "[correction] 已加入词典 "
+            f"{correction.wrong!r} -> {correction.correct!r}"
+        )
+        self._show(f"已将「{correction.correct}」加入词典")
 
     def _set_status(self, state: str) -> None:
         if self.status_window is not None:
@@ -221,6 +318,11 @@ class DictationMode:
         if self.history is not None:
             self.history.append(mode, text, status, detail)
 
+    def _performance(self) -> PerformanceObserver:
+        if self.performance is None:
+            self.performance = LoggingPerformanceObserver()
+        return self.performance
+
     def _show_error_message(self, error: Exception) -> None:
         msg = str(error)
         if "敏感" in msg or "不安全" in msg or "unsafe" in msg.lower():
@@ -238,13 +340,61 @@ def make_utterance_handler(
     status_window=None,
     history=None,
     input_environment=None,
+    correction_memory=None,
+    correction_tracker=None,
+    correction_scheduler=None,
+    correction_config=None,
+    learning=None,
+    return_mode: bool = False,
 ):
     env = input_environment or TyperInputEnvironment(buf)
+    memory = correction_memory
+    tracker = correction_tracker
+    if memory is None:
+        memory = CorrectionMemory.from_config(correction_config)
+    if tracker is None and memory is not None:
+        tracker = CorrectionLearningTracker.from_config(
+            correction_config,
+            memory,
+            (
+                env.current_text_snapshot_for_correction_learning
+                if hasattr(env, "current_text_snapshot_for_correction_learning")
+                else env.current_text_for_correction_learning
+            ),
+            (
+                env.screen_text_snapshot_for_correction_learning
+                if hasattr(env, "screen_text_snapshot_for_correction_learning")
+                else None
+            ),
+            (
+                env.clipboard_text_snapshot_for_correction_learning
+                if hasattr(env, "clipboard_text_snapshot_for_correction_learning")
+                else None
+            ),
+        )
+    scheduler = correction_scheduler
+    mode = None
+    if scheduler is None and tracker is not None:
+        def on_confirmed(correction: LearnedCorrection) -> None:
+            if mode is not None:
+                mode._show_confirmed_correction(correction)
+
+        scheduler = CorrectionObservationScheduler.from_config(
+            correction_config,
+            tracker,
+            on_confirmed,
+        )
     mode = DictationMode(
         stt_client,
         env,
         text_polisher=editor,
         status_window=status_window,
         history=history,
+        correction_memory=memory,
+        correction_tracker=tracker,
+        correction_scheduler=scheduler,
+        learning=learning,
     )
+    if return_mode:
+        return mode
     return mode.handle_utterance

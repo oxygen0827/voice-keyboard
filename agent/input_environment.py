@@ -7,6 +7,7 @@ platform typing details.
 from dataclasses import dataclass
 from typing import Literal
 
+from agent.correction_memory import CorrectionTextSnapshot
 from agent.text_buffer import TextBuffer
 from agent.text_io import ShortcutPolicyDecision, TextIO, TyperTextIO
 
@@ -117,6 +118,61 @@ class TyperInputEnvironment:
             prefer_tracked_segment=prefer_tracked_segment
         )
 
+    def operation_window_for_text_revision(
+        self,
+        target: TextTarget | None = None,
+        *,
+        whole_scope: bool = False,
+    ) -> OperationWindowLookupResult:
+        if target is not None:
+            if target.selected:
+                return OperationWindowLookupResult.found(
+                    OperationWindow(
+                        text=target.selected,
+                        target=target,
+                        source="explicit_selection",
+                    )
+                )
+            if target.tracked_segment and not whole_scope:
+                return OperationWindowLookupResult.found(
+                    OperationWindow(
+                        text=target.tracked_segment,
+                        target=target,
+                        source="tracked_segment",
+                    )
+                )
+        lookup = self._operation_window_for_text_change(
+            prefer_tracked_segment=not whole_scope
+        )
+        if not lookup.ok or lookup.window is None:
+            return lookup
+        window = lookup.window
+        if (
+            window.source == "caret"
+            and window.target.tracked_segment
+            and not whole_scope
+        ):
+            return OperationWindowLookupResult.found(
+                OperationWindow(
+                    text=window.target.tracked_segment,
+                    target=window.target,
+                    source="tracked_segment",
+                )
+            )
+        return lookup
+
+    def operation_window_for_text_removal(
+        self,
+        *,
+        whole_scope: bool = False,
+    ) -> OperationWindowLookupResult:
+        return self._operation_window_for_text_change(
+            prefer_tracked_segment=not whole_scope
+        )
+
+    def operation_window_for_whole_scope(self) -> OperationWindowLookupResult:
+        return self._operation_window_for_text_change(prefer_tracked_segment=False)
+
     def insert_text(self, text: str) -> None:
         self._text_io.type_text(text)
         self._buf.push(text)
@@ -173,7 +229,10 @@ class TyperInputEnvironment:
                 plan.replacement_text,
                 1,
             )
-            self.replace_selection(window.text, replacement)
+            if replacement:
+                self.replace_selection(window.text, replacement)
+            else:
+                self.delete_selection(window.text)
             return TargetChangeResult.changed(window.text, replacement)
 
         if window.source in {"caret", "tracked_segment"}:
@@ -226,6 +285,81 @@ class TyperInputEnvironment:
 
     def active_application(self) -> str:
         return self._text_io.current_application_label()
+
+    def current_text_for_correction_learning(self) -> str:
+        return self.current_text_snapshot_for_correction_learning().text
+
+    def current_text_snapshot_for_correction_learning(self) -> CorrectionTextSnapshot:
+        attempted_snapshot: CorrectionTextSnapshot | None = None
+        if hasattr(self._text_io, "inspect_focused_text"):
+            snapshot = self._text_io.inspect_focused_text()
+            if getattr(snapshot, "has_real_text", False):
+                return CorrectionTextSnapshot(
+                    snapshot.text,
+                    source=snapshot.source,
+                    detail=(
+                        f"confidence={snapshot.confidence};"
+                        f"app={snapshot.app_label};"
+                        f"role={snapshot.role};"
+                        f"range={snapshot.selected_range}"
+                    ),
+                )
+            attempted_snapshot = CorrectionTextSnapshot(
+                getattr(snapshot, "text", ""),
+                source=getattr(snapshot, "source", "unsupported"),
+                detail=(
+                    f"confidence={getattr(snapshot, 'confidence', '')};"
+                    f"app={getattr(snapshot, 'app_label', '')};"
+                    f"role={getattr(snapshot, 'role', '')};"
+                    f"range={getattr(snapshot, 'selected_range', None)}"
+                ),
+            )
+        if hasattr(self._text_io, "get_focused_text_value"):
+            value = self._text_io.get_focused_text_value()
+            if value:
+                return CorrectionTextSnapshot(value, source="AXValue")
+        if hasattr(self._text_io, "get_full_focused_text_snapshot"):
+            snapshot = self._text_io.get_full_focused_text_snapshot()
+            if snapshot.text:
+                return snapshot
+            attempted_snapshot = snapshot
+        caret_window = self._text_io.get_caret_text_window()
+        if caret_window is not None and caret_window.text:
+            return CorrectionTextSnapshot(
+                caret_window.text,
+                source=f"caret:{caret_window.source}",
+            )
+        if self._buf.last:
+            detail = ""
+            if attempted_snapshot is not None:
+                detail = (
+                    f"fallback_after={attempted_snapshot.source};"
+                    f"{attempted_snapshot.detail}"
+                )
+            return CorrectionTextSnapshot(
+                self._buf.last,
+                source="tracked_segment",
+                detail=detail,
+            )
+        if attempted_snapshot is not None:
+            return attempted_snapshot
+        return CorrectionTextSnapshot("", source="unavailable")
+
+    def screen_text_snapshot_for_correction_learning(
+        self,
+        expected_text: str = "",
+    ) -> CorrectionTextSnapshot:
+        if hasattr(self._text_io, "get_screen_text_snapshot"):
+            return self._text_io.get_screen_text_snapshot(expected_text)
+        return CorrectionTextSnapshot("", source="unsupported")
+
+    def clipboard_text_snapshot_for_correction_learning(
+        self,
+        expected_text: str = "",
+    ) -> CorrectionTextSnapshot:
+        if hasattr(self._text_io, "probe_full_text_via_clipboard"):
+            return self._text_io.probe_full_text_via_clipboard(expected_text)
+        return CorrectionTextSnapshot("", source="unsupported")
 
     def _operation_window_for_text_change(
         self,

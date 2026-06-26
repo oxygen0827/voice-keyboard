@@ -1,6 +1,8 @@
 import unittest
 import plistlib
+import sys
 import tempfile
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +11,7 @@ from pynput.keyboard import Key
 from agent import app_launcher
 from agent import macos_window_actions
 from agent import typer
-from agent import windows_window_actions
+from agent.windows import window_actions as windows_window_actions
 
 
 class TyperShortcutTests(unittest.TestCase):
@@ -1099,17 +1101,17 @@ class TyperShortcutTests(unittest.TestCase):
         self.assertNotIn("新标签", names)
         self.assertNotIn("关闭标签", names)
 
-    def test_macos_clip_method_still_types_directly(self):
+    def test_macos_clip_method_pastes_text(self):
         with (
             patch.object(typer, "_OS", "Darwin"),
             patch.object(typer, "_use_clipboard_mode", True),
-            patch.object(typer, "replace_selection") as replace_selection,
+            patch.object(typer, "paste_text") as paste_text,
             patch.object(typer, "_type_via_quartz") as type_via_quartz,
         ):
             typer.type_text("hello")
 
-        type_via_quartz.assert_called_once_with("hello")
-        replace_selection.assert_not_called()
+        paste_text.assert_called_once_with("hello")
+        type_via_quartz.assert_not_called()
 
     def test_windows_clip_method_still_types_directly(self):
         with (
@@ -1122,6 +1124,50 @@ class TyperShortcutTests(unittest.TestCase):
 
         type_via_sendinput.assert_called_once_with("hello")
         type_via_clipboard_win.assert_not_called()
+
+    def test_windows_type_text_marks_sendinput_as_simulated(self):
+        states = []
+
+        def sendinput(_text):
+            states.append(typer.is_simulating())
+
+        with (
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "_remember_focused_text_target_windows"),
+            patch.object(typer, "_type_via_sendinput", side_effect=sendinput),
+            patch.object(typer.time, "sleep"),
+        ):
+            typer.type_text("文静")
+
+        self.assertEqual(states, [True])
+        self.assertFalse(typer.is_simulating())
+
+    def test_windows_clipboard_typing_marks_paste_as_simulated(self):
+        states = []
+        pressed = []
+
+        class Keyboard:
+            def press(self, key):
+                pressed.append(("press", key, typer.is_simulating()))
+
+            def release(self, key):
+                pressed.append(("release", key, typer.is_simulating()))
+
+        def press_key(_key):
+            states.append(typer.is_simulating())
+
+        with (
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "_set_clipboard_win"),
+            patch.object(typer, "_kb", Keyboard()),
+            patch.object(typer, "_press_key", side_effect=press_key),
+            patch.object(typer.time, "sleep"),
+        ):
+            typer._type_via_clipboard_win("文静")
+
+        self.assertEqual(states, [True])
+        self.assertEqual([item[2] for item in pressed], [True, True])
+        self.assertFalse(typer.is_simulating())
 
     def test_focus_probe_is_disabled_before_typing(self):
         with (
@@ -1403,6 +1449,391 @@ class TyperShortcutTests(unittest.TestCase):
 
         set_range.assert_called_once_with(focused, 6, 5)
         set_clipboard.assert_called_once_with("earth")
+
+    def test_windows_inspect_focused_text_reads_focused_control_without_typing(self):
+        text = "\u6587\u51c0\uff0c\u6587\u51c0\uff0c\u6587\u51c0"
+        app = typer.ActiveApplication("Notepad", "", 4242)
+        with (
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "_focused_text_window_handle_windows", return_value=1001, create=True),
+            patch.object(typer, "_read_window_text_windows", return_value=text, create=True),
+            patch.object(typer, "_window_class_name_windows", return_value="Edit", create=True),
+            patch.object(typer, "_type_via_sendinput") as sendinput,
+            patch.object(typer, "_type_via_clipboard_win") as clipboard_type,
+            patch.object(typer, "_set_clipboard_win") as set_clipboard,
+        ):
+            snapshot = typer.inspect_focused_text(max_chars=2000)
+
+        self.assertEqual(snapshot.text, text)
+        self.assertEqual(snapshot.source, "Win32:WM_GETTEXT")
+        self.assertEqual(snapshot.confidence, "medium")
+        self.assertEqual(snapshot.role, "Edit")
+        sendinput.assert_not_called()
+        clipboard_type.assert_not_called()
+        set_clipboard.assert_not_called()
+
+    def test_windows_inspect_focused_text_prefers_uiautomation_when_available(self):
+        text = "\u6587\u51c0\uff0c\u6587\u51c0\uff0c\u6587\u51c0"
+        app = typer.ActiveApplication("WeChat", "", 4242)
+        pattern = types.SimpleNamespace(Value=text)
+        control = types.SimpleNamespace(
+            ControlTypeName="EditControl",
+            Name="message",
+            ClassName="Edit",
+            GetValuePattern=lambda: pattern,
+        )
+        fake_uia = types.SimpleNamespace(
+            GetFocusedControl=lambda: control,
+            WalkControl=lambda control, includeTop=False, maxDepth=5: iter(()),
+        )
+
+        with (
+            patch.dict(sys.modules, {"uiautomation": fake_uia}),
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "_focused_text_window_handle_windows", return_value=1001, create=True) as hwnd,
+            patch.object(typer, "_read_window_text_windows", return_value="", create=True) as win32_read,
+            patch.object(typer, "_type_via_sendinput") as sendinput,
+            patch.object(typer, "_set_clipboard_win") as set_clipboard,
+        ):
+            snapshot = typer.inspect_focused_text(max_chars=2000)
+
+        self.assertEqual(snapshot.text, text)
+        self.assertEqual(snapshot.source, "UIAutomation:ValuePattern")
+        self.assertEqual(snapshot.confidence, "medium")
+        self.assertEqual(snapshot.role, "EditControl")
+        hwnd.assert_not_called()
+        win32_read.assert_not_called()
+        sendinput.assert_not_called()
+        set_clipboard.assert_not_called()
+
+    def test_windows_inspect_focused_text_finds_uia_child_edit_control(self):
+        text = "\u6587\u51c0\uff0c\u6587\u51c0\uff0c\u6587\u51c0"
+        app = typer.ActiveApplication("WeChat", "", 4242)
+        pattern = types.SimpleNamespace(Value=text)
+        outer = types.SimpleNamespace(
+            ControlTypeName="PaneControl",
+            Name="\u5fae\u4fe1",
+            ClassName="Qt51514QWindowIcon",
+        )
+        edit = types.SimpleNamespace(
+            ControlTypeName="EditControl",
+            Name="message",
+            ClassName="Edit",
+            GetValuePattern=lambda: pattern,
+        )
+        fake_uia = types.SimpleNamespace(
+            GetFocusedControl=lambda: outer,
+            WalkControl=lambda control, includeTop=False, maxDepth=5: iter(((edit, 1),)),
+        )
+
+        with (
+            patch.dict(sys.modules, {"uiautomation": fake_uia}),
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "_focused_text_window_handle_windows", return_value=1001, create=True) as hwnd,
+            patch.object(typer, "_read_window_text_windows", return_value="\u5fae\u4fe1", create=True) as win32_read,
+            patch.object(typer, "_type_via_sendinput") as sendinput,
+            patch.object(typer, "_set_clipboard_win") as set_clipboard,
+        ):
+            snapshot = typer.inspect_focused_text(max_chars=2000)
+
+        self.assertEqual(snapshot.text, text)
+        self.assertEqual(snapshot.source, "UIAutomation:ValuePattern")
+        self.assertEqual(snapshot.role, "EditControl")
+        hwnd.assert_not_called()
+        win32_read.assert_not_called()
+        sendinput.assert_not_called()
+        set_clipboard.assert_not_called()
+
+    def test_windows_inspect_focused_text_skips_document_url_and_uses_child_edit(self):
+        text = "\u738b\u77e5\u884c\uff0c\u738b\u77e5\u884c\uff0c\u738b\u77e5\u884c"
+        app = typer.ActiveApplication("Codex", "", 4242)
+        document_pattern = types.SimpleNamespace(Value="app://-/index.html")
+        edit_pattern = types.SimpleNamespace(Value=text)
+        document = types.SimpleNamespace(
+            ControlTypeName="DocumentControl",
+            Name="Codex",
+            ClassName="Chrome_WidgetWin_1",
+            GetValuePattern=lambda: document_pattern,
+        )
+        edit = types.SimpleNamespace(
+            ControlTypeName="EditControl",
+            Name="message",
+            ClassName="",
+            GetValuePattern=lambda: edit_pattern,
+        )
+        fake_uia = types.SimpleNamespace(
+            GetFocusedControl=lambda: document,
+            WalkControl=lambda control, includeTop=False, maxDepth=5: iter(((edit, 1),)),
+        )
+
+        with (
+            patch.dict(sys.modules, {"uiautomation": fake_uia}),
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "_focused_text_window_handle_windows", return_value=1001, create=True) as hwnd,
+            patch.object(typer, "_read_window_text_windows", return_value="", create=True) as win32_read,
+            patch.object(typer, "_type_via_sendinput") as sendinput,
+            patch.object(typer, "_set_clipboard_win") as set_clipboard,
+        ):
+            snapshot = typer.inspect_focused_text(max_chars=2000)
+
+        self.assertEqual(snapshot.text, text)
+        self.assertEqual(snapshot.source, "UIAutomation:ValuePattern")
+        self.assertEqual(snapshot.role, "EditControl")
+        hwnd.assert_not_called()
+        win32_read.assert_not_called()
+        sendinput.assert_not_called()
+        set_clipboard.assert_not_called()
+
+    def test_windows_inspect_focused_text_reads_prosemirror_child_text(self):
+        text = "\u738b\u77e5\u884c\uff0c\u738b\u77e5\u884c\uff0c\u738b\u77e5\u884c"
+        app = typer.ActiveApplication("Codex", "", 4242)
+        editor = types.SimpleNamespace(
+            ControlTypeName="GroupControl",
+            Name="",
+            ClassName="ProseMirror ProseMirror-focused",
+            GetTextPattern=lambda: types.SimpleNamespace(
+                DocumentRange=types.SimpleNamespace(GetText=lambda max_chars: "\n\u8981\u6c42\u540e\u7eed\u53d8\u66f4"),
+                GetSelection=lambda: [],
+            ),
+        )
+        trailing_break = types.SimpleNamespace(
+            ControlTypeName="TextControl",
+            Name="\n",
+            ClassName="ProseMirror-trailingBreak",
+        )
+        paragraph = types.SimpleNamespace(
+            ControlTypeName="TextControl",
+            Name=text,
+            ClassName="",
+        )
+
+        def walk(control, includeTop=False, maxDepth=5):
+            if control is editor:
+                return iter(((trailing_break, 1), (paragraph, 2)))
+            return iter(())
+
+        fake_uia = types.SimpleNamespace(
+            GetFocusedControl=lambda: editor,
+            WalkControl=walk,
+        )
+
+        with (
+            patch.dict(sys.modules, {"uiautomation": fake_uia}),
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "_focused_text_window_handle_windows", return_value=1001, create=True) as hwnd,
+            patch.object(typer, "_read_window_text_windows", return_value="", create=True) as win32_read,
+            patch.object(typer, "_type_via_sendinput") as sendinput,
+            patch.object(typer, "_set_clipboard_win") as set_clipboard,
+        ):
+            snapshot = typer.inspect_focused_text(max_chars=2000)
+
+        self.assertEqual(snapshot.text, text)
+        self.assertEqual(snapshot.source, "UIAutomation:DescendantText")
+        self.assertEqual(snapshot.role, "GroupControl")
+        hwnd.assert_not_called()
+        win32_read.assert_not_called()
+        sendinput.assert_not_called()
+        set_clipboard.assert_not_called()
+
+    def test_windows_inspect_focused_text_skips_prosemirror_placeholder_and_page_dump(self):
+        app = typer.ActiveApplication("Codex", "", 4242)
+        editor = types.SimpleNamespace(
+            ControlTypeName="GroupControl",
+            Name="",
+            ClassName="ProseMirror ProseMirror-focused",
+            GetTextPattern=lambda: types.SimpleNamespace(
+                DocumentRange=types.SimpleNamespace(GetText=lambda max_chars: "\n\u8981\u6c42\u540e\u7eed\u53d8\u66f4"),
+                GetSelection=lambda: [],
+            ),
+        )
+        placeholder = types.SimpleNamespace(
+            ControlTypeName="TextControl",
+            Name="\u8981\u6c42\u540e\u7eed\u53d8\u66f4",
+            ClassName="placeholder",
+        )
+        page_text = "\ufffc\n\u66f4\u65b0\n\u6587\u4ef6\n\u7f16\u8f91\n\u89c6\u56fe\n\u5e2e\u52a9\n\ufffc\nvoice-keyboard\n\ufffc\n"
+        document = types.SimpleNamespace(
+            ControlTypeName="DocumentControl",
+            Name="Codex",
+            ClassName="Chrome_WidgetWin_1",
+            GetTextPattern=lambda: types.SimpleNamespace(
+                DocumentRange=types.SimpleNamespace(GetText=lambda max_chars: page_text),
+                GetSelection=lambda: [],
+            ),
+        )
+
+        def walk(control, includeTop=False, maxDepth=5):
+            if control is editor:
+                return iter(((placeholder, 1),))
+            return iter(())
+
+        fake_uia = types.SimpleNamespace(
+            GetFocusedControl=lambda: editor,
+            ControlFromHandle=lambda hwnd: document,
+            GetForegroundControl=lambda: document,
+            WalkControl=walk,
+        )
+
+        with (
+            patch.dict(sys.modules, {"uiautomation": fake_uia}),
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "_focused_text_window_handle_windows", return_value=1001, create=True),
+            patch.object(typer, "_read_window_text_windows", return_value="", create=True),
+            patch.object(typer, "_window_class_name_windows", return_value="Chrome_WidgetWin_1", create=True),
+        ):
+            snapshot = typer.inspect_focused_text(max_chars=2000)
+
+        self.assertEqual(snapshot.text, "")
+        self.assertEqual(snapshot.source, "unsupported")
+
+    def test_windows_inspect_focused_text_skips_document_page_navigation_dump(self):
+        app = typer.ActiveApplication("Steam", "", 4242)
+        page_text = (
+            "Steam 查看 好友 游戏 帮助 oxygen 商店 库 社区 OXYGEN 主页 "
+            "游戏 库筛选条件 游戏模式 单人 多人 合作 本地多人 游戏状态 "
+            "准备就绪 已本地安装 已玩过 未玩过 私密 硬件支持 手柄支持 "
+            "Steam Deck 支持 建议使用控制器 完全支持控制器 VR 非 VR 游戏 "
+            "特色 集换式卡牌 创意工坊 成就 远程同乐 家庭共享 语言 任意语言 "
+            "类型 动作 冒险 休闲 独立 大型多人在线 竞速 角色扮演 模拟 体育 策略"
+        )
+        document = types.SimpleNamespace(
+            ControlTypeName="DocumentControl",
+            Name="Steam",
+            ClassName="Chrome_RenderWidgetHostHWND",
+            GetTextPattern=lambda: types.SimpleNamespace(
+                DocumentRange=types.SimpleNamespace(GetText=lambda max_chars: page_text),
+                GetSelection=lambda: [],
+            ),
+        )
+        fake_uia = types.SimpleNamespace(
+            GetFocusedControl=lambda: document,
+            WalkControl=lambda control, includeTop=False, maxDepth=5: iter(()),
+        )
+
+        with (
+            patch.dict(sys.modules, {"uiautomation": fake_uia}),
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "_focused_text_window_handle_windows", return_value=0, create=True),
+        ):
+            snapshot = typer.inspect_focused_text(max_chars=2000)
+
+        self.assertEqual(snapshot.text, "")
+        self.assertEqual(snapshot.source, "unsupported")
+
+    def test_windows_type_text_remembers_uia_target_for_later_correction_capture(self):
+        text = "\u6587\u51c0\uff0c\u6587\u51c0\uff0c\u6587\u51c0"
+        app = typer.ActiveApplication("WeChat", "", 4242)
+        pattern = types.SimpleNamespace(Value="")
+        edit = types.SimpleNamespace(
+            ControlTypeName="EditControl",
+            Name="message",
+            ClassName="Edit",
+            GetValuePattern=lambda: pattern,
+        )
+        outer = types.SimpleNamespace(
+            ControlTypeName="PaneControl",
+            Name="\u5fae\u4fe1",
+            ClassName="Qt51514QWindowIcon",
+        )
+        focused = {"control": edit}
+        fake_uia = types.SimpleNamespace(
+            GetFocusedControl=lambda: focused["control"],
+            WalkControl=lambda control, includeTop=False, maxDepth=5: iter(()),
+        )
+
+        with (
+            patch.dict(sys.modules, {"uiautomation": fake_uia}),
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "_focused_text_window_handle_windows", return_value=0, create=True),
+            patch.object(typer, "_type_via_sendinput") as sendinput,
+        ):
+            self.assertTrue(typer.type_text("x") is None)
+            pattern.Value = text
+            focused["control"] = outer
+            snapshot = typer.inspect_focused_text(max_chars=2000)
+
+        sendinput.assert_called_once_with("x")
+        self.assertEqual(snapshot.text, text)
+        self.assertEqual(snapshot.source, "UIAutomation:ValuePattern")
+        self.assertEqual(snapshot.role, "EditControl")
+        self.assertTrue(
+            any(probe.name == "UIAutomationRememberedTarget" and probe.ok for probe in snapshot.probes)
+        )
+
+    def test_windows_inspect_focused_text_skips_non_edit_window_title(self):
+        app = typer.ActiveApplication("WeChat", "", 4242)
+        with (
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "current_application", return_value=app),
+            patch.object(typer, "_inspect_focused_text_uia_windows", return_value=None),
+            patch.object(typer, "_focused_text_window_handle_windows", return_value=1001, create=True),
+            patch.object(typer, "_read_window_text_windows", return_value="\u5fae\u4fe1", create=True),
+            patch.object(typer, "_window_class_name_windows", return_value="Qt51514QWindowIcon", create=True),
+            patch.object(typer, "_type_via_sendinput") as sendinput,
+            patch.object(typer, "_set_clipboard_win") as set_clipboard,
+        ):
+            snapshot = typer.inspect_focused_text(max_chars=2000)
+
+        self.assertEqual(snapshot.text, "")
+        self.assertEqual(snapshot.source, "unsupported")
+        self.assertEqual(snapshot.confidence, "unsupported")
+        self.assertEqual(snapshot.role, "Qt51514QWindowIcon")
+        sendinput.assert_not_called()
+        set_clipboard.assert_not_called()
+
+    def test_windows_clipboard_probe_reads_full_text_and_restores_clipboard(self):
+        clipboard = {"value": "old"}
+        calls = []
+
+        def set_clip(text):
+            calls.append(("set", text))
+            clipboard["value"] = text
+
+        def get_clip():
+            calls.append(("get", clipboard["value"]))
+            return clipboard["value"]
+
+        def copy_selection():
+            calls.append(("copy",))
+            clipboard["value"] = "胡任远，王知行，王知行王知行"
+
+        with (
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "_foreground_window_is_console", return_value=False),
+            patch.object(typer, "_get_clipboard", side_effect=get_clip),
+            patch.object(typer, "_set_clipboard", side_effect=set_clip),
+            patch.object(typer, "_press_select_all") as select_all,
+            patch.object(typer, "_copy_selection", side_effect=copy_selection),
+            patch.object(typer, "_collapse_selection_to_end") as collapse,
+            patch.object(typer.time, "sleep"),
+        ):
+            snapshot = typer.probe_full_text_via_clipboard()
+
+        self.assertEqual(snapshot.text, "胡任远，王知行，王知行王知行")
+        self.assertEqual(snapshot.source, "clipboard_probe")
+        select_all.assert_called_once()
+        collapse.assert_called_once()
+        self.assertEqual(calls[-1], ("set", "old"))
+
+    def test_windows_clipboard_probe_skips_console(self):
+        with (
+            patch.object(typer, "_OS", "Windows"),
+            patch.object(typer, "_foreground_window_is_console", return_value=True),
+            patch.object(typer, "_get_clipboard") as get_clip,
+        ):
+            snapshot = typer.probe_full_text_via_clipboard()
+
+        self.assertEqual(snapshot.text, "")
+        self.assertEqual(snapshot.source, "clipboard_probe_skipped")
+        get_clip.assert_not_called()
 
 
 if __name__ == "__main__":

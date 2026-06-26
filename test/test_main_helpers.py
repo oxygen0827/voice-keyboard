@@ -1,5 +1,6 @@
 import unittest
 import os
+import sys
 from unittest.mock import MagicMock, patch
 
 
@@ -39,7 +40,7 @@ class MainHelperTests(unittest.TestCase):
         typer.list_shortcuts.return_value = []
         with (
             patch.dict("sys.modules", {"sounddevice": MagicMock(), "agent.typer": typer}),
-            patch.dict(os.environ, {}, clear=True),
+            patch.dict(os.environ, {"USERPROFILE": os.path.dirname(__file__)}, clear=True),
         ):
             from agent.main import _configure_ssl_cert_file
 
@@ -55,6 +56,7 @@ class MainHelperTests(unittest.TestCase):
         with (
             patch.dict("sys.modules", {"sounddevice": MagicMock(), "agent.typer": typer}),
             patch.dict(os.environ, {
+                "USERPROFILE": os.path.dirname(__file__),
                 "SSL_CERT_FILE": existing,
                 "REQUESTS_CA_BUNDLE": existing,
             }, clear=True),
@@ -65,6 +67,66 @@ class MainHelperTests(unittest.TestCase):
 
             self.assertEqual(os.environ["SSL_CERT_FILE"], existing)
             self.assertEqual(os.environ["REQUESTS_CA_BUNDLE"], existing)
+
+    def test_windows_default_ui_routes_to_tray_without_starting_backend(self):
+        typer = MagicMock()
+        typer.list_shortcuts.return_value = []
+        with patch.dict("sys.modules", {"sounddevice": MagicMock(), "agent.typer": typer}):
+            import agent.main as main_mod
+
+        with (
+            patch.object(sys, "argv", ["agent.main"]),
+            patch("sys.platform", "win32"),
+            patch.object(main_mod, "_acquire_runtime_lock", return_value=True),
+            patch("agent.config.ensure_user_config"),
+            patch("agent.windows.tray.WindowsTrayApp") as tray_cls,
+            patch.object(main_mod, "build_backend") as build_backend,
+        ):
+            main_mod.main()
+
+        build_backend.assert_not_called()
+        tray_cls.return_value.run.assert_called_once_with()
+
+    def test_windows_no_ui_requires_explicit_backend_enable(self):
+        typer = MagicMock()
+        typer.list_shortcuts.return_value = []
+        with patch.dict("sys.modules", {"sounddevice": MagicMock(), "agent.typer": typer}):
+            import agent.main as main_mod
+
+        with (
+            patch.object(sys, "argv", ["agent.main", "--no-ui", "--headless", "--no-serial"]),
+            patch("sys.platform", "win32"),
+            patch.object(main_mod, "_acquire_runtime_lock", return_value=True),
+            patch("agent.config.ensure_user_config"),
+            patch.object(main_mod, "build_backend") as build_backend,
+        ):
+            main_mod.main()
+
+        build_backend.assert_not_called()
+
+    def test_windows_no_ui_enable_backend_keeps_explicit_debug_path(self):
+        typer = MagicMock()
+        typer.list_shortcuts.return_value = []
+        backend = MagicMock()
+        with patch.dict("sys.modules", {"sounddevice": MagicMock(), "agent.typer": typer}):
+            import agent.main as main_mod
+
+        with (
+            patch.object(sys, "argv", ["agent.main", "--no-ui", "--headless", "--no-serial", "--enable-backend"]),
+            patch("sys.platform", "win32"),
+            patch.object(main_mod, "_acquire_runtime_lock", return_value=True),
+            patch("agent.config.ensure_user_config"),
+            patch("agent.permissions.summary_log", return_value="ok"),
+            patch.object(main_mod, "TextBuffer"),
+            patch.object(main_mod, "History") as history_cls,
+            patch.object(main_mod, "build_backend", return_value=backend) as build_backend,
+            patch.object(main_mod.time, "sleep", side_effect=KeyboardInterrupt),
+        ):
+            history_cls.return_value.compact = MagicMock()
+            with self.assertRaises(KeyboardInterrupt):
+                main_mod.main()
+
+        build_backend.assert_called_once()
 
 
 if __name__ == "__main__":

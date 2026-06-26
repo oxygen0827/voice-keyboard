@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Protocol
 
+from agent.correction_memory import CorrectionTextSnapshot
+from agent.focused_text_capture import FocusedTextCapture, TyperFocusedTextCapture
 from agent import typer
 
 
@@ -59,6 +61,15 @@ class TextIO(Protocol):
     def get_caret_text_window(self) -> CaretTextWindow | None:
         ...
 
+    def get_full_focused_text_snapshot(self) -> CorrectionTextSnapshot:
+        ...
+
+    def get_screen_text_snapshot(self, expected_text: str = "") -> CorrectionTextSnapshot:
+        ...
+
+    def probe_full_text_via_clipboard(self, expected_text: str = "") -> CorrectionTextSnapshot:
+        ...
+
     def type_text(self, text: str) -> None:
         ...
 
@@ -98,9 +109,11 @@ class TextIO(Protocol):
         ...
 
 
-@dataclass(frozen=True)
 class TyperTextIO:
     """Adapter that keeps platform typing details out of Input Environment rules."""
+
+    def __init__(self, focused_text_capture: FocusedTextCapture | None = None):
+        self._focused_text_capture = focused_text_capture or TyperFocusedTextCapture()
 
     def can_insert_text(self) -> bool:
         return typer.has_focused_text_input()
@@ -115,10 +128,19 @@ class TyperTextIO:
         return typer.get_selection()
 
     def get_caret_text_window(self) -> CaretTextWindow | None:
-        window = typer.get_caret_text_window()
+        window = self._focused_text_capture.caret_window()
         if window is None:
             return None
         return CaretTextWindow(text=window.text, source=window.source)
+
+    def get_full_focused_text_snapshot(self) -> CorrectionTextSnapshot:
+        return self._focused_text_capture.full_focused_snapshot()
+
+    def get_screen_text_snapshot(self, expected_text: str = "") -> CorrectionTextSnapshot:
+        return self._focused_text_capture.screen_snapshot(expected_text)
+
+    def probe_full_text_via_clipboard(self, expected_text: str = "") -> CorrectionTextSnapshot:
+        return self._focused_text_capture.clipboard_probe_snapshot(expected_text)
 
     def type_text(self, text: str) -> None:
         typer.type_text(text)

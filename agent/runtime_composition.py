@@ -24,10 +24,13 @@ class RuntimeBackend:
         self.cfg = None
         self.reader = None
         self.audio = None
+        self.ime_monitor = None
+        self.correction_observation = None
         self.input_environment = None
+        self.hotkeys = {}
 
     def stop(self):
-        for attr in ("audio", "reader"):
+        for attr in ("audio", "ime_monitor", "correction_observation", "reader"):
             comp = getattr(self, attr, None)
             if comp is None:
                 continue
@@ -58,7 +61,7 @@ def build_runtime_backend(
     bk.input_environment = TyperInputEnvironment(buf)
 
     if not options.no_serial:
-        from agent.main import make_serial_handlers
+        from agent.runtime_handlers import make_serial_handlers
         on_text, on_cmd = make_serial_handlers(
             buf,
             history=history,
@@ -76,6 +79,13 @@ def build_runtime_backend(
         history=history,
         input_environment=bk.input_environment,
     )
+    bk.ime_monitor = getattr(bk.audio, "_correction_ime_monitor", None)
+    bk.correction_observation = getattr(bk.audio, "_correction_observation", None)
+    audio_cfg = bk.cfg.get("audio", {})
+    bk.hotkeys = {
+        "ptt_key": audio_cfg.get("ptt_key", "right_alt"),
+        "ai_key": audio_cfg.get("ai_key", default_ai_key()),
+    }
     return bk
 
 
@@ -96,6 +106,8 @@ def build_audio_runtime(
     providers = SpeechInterpretationProviderFactory().create_provider_set(cfg)
     if providers is None:
         return None
+    from agent.local_learning import LocalLearningRecorder
+    learning = LocalLearningRecorder()
     ai_handler = None
     if providers.text_operation_editor is not None and providers.instruction_stt is not None:
         try:
@@ -103,6 +115,7 @@ def build_audio_runtime(
             from agent.ai_intent import IntentFallbackOptions
             from agent.intent_training import IntentTrainingConfig, IntentTrainingRecorder
             from agent.memo_store import MemoStore
+            from agent.operation_confirmation import make_operation_confirmation
             memo_store = MemoStore()
             instruction_cfg = cfg.get("instruction_mode", {})
             ai_handler = AIHandler(
@@ -119,6 +132,10 @@ def build_audio_runtime(
                 intent_training=IntentTrainingRecorder(
                     IntentTrainingConfig.from_config(instruction_cfg)
                 ),
+                confirm_operation=make_operation_confirmation(
+                    status_window=status_window,
+                ),
+                learning=learning,
             )
             ai_key_name = audio_cfg.get("ai_key", default_ai_key())
             existing = memo_store.keys()
@@ -128,35 +145,89 @@ def build_audio_runtime(
         except Exception as e:
             print(f"[agent] AIHandler 初始化失败: {e}")
 
-    from agent.main import make_utterance_handler
-    on_utterance = make_utterance_handler(
+    from agent.runtime_handlers import make_utterance_handler
+    utterance_handler_or_mode = make_utterance_handler(
         providers.utterance_stt,
         buf,
         editor=providers.text_operation_editor,
         status_window=status_window,
         history=history,
         input_environment=input_environment,
+        correction_config=cfg.get("correction_memory", {}),
+        learning=learning,
+        return_mode=True,
     )
+    if hasattr(utterance_handler_or_mode, "handle_utterance"):
+        on_utterance = utterance_handler_or_mode.handle_utterance
+        correction_observation = getattr(
+            utterance_handler_or_mode,
+            "correction_observation_hooks",
+            None,
+        )
+    else:
+        on_utterance = utterance_handler_or_mode
+        correction_observation = None
 
     if mode == "ptt":
         try:
+            from agent.capture_path import UtteranceEvent
             from agent.push_to_talk import PushToTalk
         except ImportError as e:
             print(f"[agent] PTT 依赖缺失（{e}）")
             return None
 
         on_ai = ai_handler.handle if ai_handler else None
+        def on_capture_event(event: UtteranceEvent) -> None:
+            if event.mode == "dictation":
+                on_utterance(event.pcm, event.polish)
+            elif event.mode == "instruction" and on_ai is not None:
+                on_ai(event.pcm)
+
+        def on_manual_key_press(key) -> None:
+            if correction_observation is not None:
+                correction_observation.record_key_press(key)
+
+        def on_manual_key_release(key) -> None:
+            if correction_observation is not None:
+                correction_observation.record_key_release(key)
+
+        def on_committed_text(text: str) -> None:
+            preview = str(text or "").replace("\n", "\\n")[:40]
+            accepted = False
+            if correction_observation is not None:
+                accepted = correction_observation.record_committed_text(text)
+            print(f"[ime] committed text captured={preview!r} accepted={accepted}")
 
         ptt = PushToTalk(
-            on_utterance=on_utterance,
-            on_ai_utterance=on_ai,
+            on_event=on_capture_event,
             ptt_key=audio_cfg.get("ptt_key", "right_alt"),
             ai_key=audio_cfg.get("ai_key", default_ai_key()),
             toggle_key=audio_cfg.get("toggle_key"),
             device=device,
+            xiao_ble_options=audio_cfg.get("xiao_ble", {}),
+            on_key_press=(
+                on_manual_key_press
+                if correction_observation is not None and correction_observation.enabled
+                else None
+            ),
+            on_key_release=(
+                on_manual_key_release
+                if correction_observation is not None and correction_observation.enabled
+                else None
+            ),
             status_window=status_window,
         )
         ptt.start()
+        if correction_observation is not None and correction_observation.enabled:
+            ptt._correction_observation = correction_observation
+            try:
+                from agent.ime_commit_monitor import ImeCommitMonitor
+
+                ime_monitor = ImeCommitMonitor(on_committed_text)
+                ime_monitor.start()
+                ptt._correction_ime_monitor = ime_monitor
+            except Exception as e:
+                print(f"[ime] monitor init failed: {e}")
         return ptt
 
     try:

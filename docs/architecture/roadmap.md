@@ -120,5 +120,5 @@ Initial implementation:
 
 - `agent/runtime_composition.py`
 - `agent/dictation_mode.py`
-- Desktop `agent.main` and `agent.windows_tray` now use the Runtime Composition module for backend lifecycle construction.
+- Desktop `agent.main` and the Windows tray runtime use the Runtime Composition module for backend lifecycle construction. `agent.windows_tray` remains a compatibility wrapper around `agent.windows.tray`.
 - Dictation Mode interpretation, cleanup, status, history, and insertion now live behind a dedicated module while `agent.main` preserves the older callback factory.

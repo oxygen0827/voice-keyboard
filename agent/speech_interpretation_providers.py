@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Callable
 
+from agent.personal_dictionary import PersonalDictionaryStore
 from agent.typeup_backend_auth import is_typeup_backend_configured
 
 
@@ -44,10 +45,12 @@ class SpeechInterpretationProviderFactory:
         *,
         stt_client_cls=None,
         llm_editor_cls=None,
+        dictionary_store=None,
         log: Callable[[str], None] = print,
     ):
         self._stt_client_cls = stt_client_cls
         self._llm_editor_cls = llm_editor_cls
+        self._dictionary_store = dictionary_store
         self._log = log
 
     def dictation_readiness(self, stt_cfg: dict) -> ProviderReadiness:
@@ -154,7 +157,7 @@ class SpeechInterpretationProviderFactory:
             from agent.stt import STTClient
 
             self._stt_client_cls = STTClient
-        return self._stt_client_cls(cfg)
+        return self._stt_client_cls(self._with_personal_dictionary(cfg))
 
     def _llm_editor(self, cfg: dict):
         if self._llm_editor_cls is None:
@@ -168,3 +171,51 @@ class SpeechInterpretationProviderFactory:
             self._log(readiness.reason)
         if readiness.hint:
             self._log(readiness.hint)
+
+    def _with_personal_dictionary(self, cfg: dict) -> dict:
+        enriched = dict(cfg or {})
+        try:
+            store = self._dictionary_store or PersonalDictionaryStore()
+            hotwords = store.hotwords()
+            prompt_hint = store.prompt_hint()
+        except Exception as e:
+            self._log(f"[dictionary] load failed: {e}")
+            return enriched
+        if hotwords and _personal_dictionary_hotwords_enabled(enriched):
+            enriched["hotwords"] = _merge_hotwords(enriched.get("hotwords"), hotwords)
+        if prompt_hint:
+            existing_prompt = str(enriched.get("prompt") or "").strip()
+            enriched["prompt"] = "\n".join(
+                part for part in (existing_prompt, prompt_hint) if part
+            )
+        return enriched
+
+
+def _merge_hotwords(configured, dictionary_words: list[str], limit: int = 100) -> list[str]:
+    words = []
+    if isinstance(configured, str):
+        configured_words = [word.strip() for word in configured.split(",")]
+    elif isinstance(configured, list):
+        configured_words = configured
+    else:
+        configured_words = []
+    for raw in [*configured_words, *dictionary_words]:
+        word = str(raw or "").strip()
+        if word and word not in words:
+            words.append(word)
+        if len(words) >= limit:
+            break
+    return words
+
+
+def _personal_dictionary_hotwords_enabled(cfg: dict) -> bool:
+    value = cfg.get("personal_dictionary_hotwords")
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        value = cfg.get("dictionary_hotwords")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False

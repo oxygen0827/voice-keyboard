@@ -160,7 +160,7 @@ def make_serial_handlers(buf: TextBuffer, history: History | None = None, input_
 
 def make_utterance_handler(stt_client, buf: TextBuffer, editor=None,
                            status_window=None, history: History | None = None,
-                           input_environment=None):
+                           input_environment=None, learning=None):
     return _make_dictation_utterance_handler(
         stt_client,
         buf,
@@ -168,6 +168,7 @@ def make_utterance_handler(stt_client, buf: TextBuffer, editor=None,
         status_window=status_window,
         history=history,
         input_environment=input_environment,
+        learning=learning,
     )
 
 
@@ -209,6 +210,7 @@ def main():
     parser.add_argument("--install",      action="store_true", help="注册开机自启动")
     parser.add_argument("--uninstall",    action="store_true", help="移除开机自启动")
     parser.add_argument("--no-ui",        action="store_true", help="不启动菜单栏/主窗口（纯命令行）")
+    parser.add_argument("--enable-backend", action="store_true", help="Windows 调试：允许无 UI 直接启动后端")
     parser.add_argument("--headless",     action="store_true", help="不启动悬浮状态窗（供桌面端托管）")
     parser.add_argument("--debug-keys",   action="store_true", help="print pynput key events and exit")
     args = parser.parse_args()
@@ -272,6 +274,16 @@ def main():
     from agent.config import ensure_user_config
     ensure_user_config()
 
+    if sys.platform == "win32" and not args.no_ui:
+        # Windows tray owns backend startup. Launch it before constructing the
+        # runtime backend so startup stays in standby and does not hook keys.
+        from agent.windows.tray import WindowsTrayApp
+        WindowsTrayApp().run()
+        return
+    if sys.platform == "win32" and args.no_ui and not args.enable_backend:
+        print("[agent] Windows no-ui backend startup is disabled by default; pass --enable-backend to run it.")
+        return
+
     # 启动权限自检（仅 macOS）
     try:
         from agent import permissions as _perm
@@ -288,7 +300,7 @@ def main():
     if not args.headless:
         try:
             if sys.platform == "win32":
-                from agent.status_window_win import StatusWindow
+                from agent.windows.status_window import StatusWindow
             else:
                 from agent.status_window import StatusWindow
             status_window = StatusWindow()

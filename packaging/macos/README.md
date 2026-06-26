@@ -1,4 +1,6 @@
-# macOS 打包
+# macOS Packaging
+
+Current status: macOS runtime code is kept in the repository, but current desktop validation is focused on Windows. Treat this packaging path as maintained guidance that still needs platform-specific verification before distribution.
 
 使用 [py2app](https://py2app.readthedocs.io/) 把 `agent/` 打成原生 `.app`。
 

@@ -1,6 +1,6 @@
-# Linux 打包（待实现）
+# Linux Packaging
 
-当前状态：**未实现**。源码可在 Linux（X11 会话）上以 `.venv/bin/python -m agent.main --no-serial` 直接运行，但尚未打包成可分发产物。
+Current status: distributable Linux packaging is not implemented. Source execution can work in an X11 desktop session with `.venv/bin/python -m agent.main --no-serial`, but the current desktop validation focus is Windows.
 
 ## 计划工具栈
 

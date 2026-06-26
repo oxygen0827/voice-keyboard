@@ -19,6 +19,7 @@
 #   api_key: "..."                       # 智谱 AI API Key
 #   model: glm-4-voice                   # 默认值，可省略
 #   language: zh                         # zh（中文）/ en（英文）
+#   personal_dictionary_hotwords: false  # 默认仅把个人词典作为候选提示，避免含糊音被短热词抢答
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 方案二：阿里云 NLS（中文最优，支持方言）
@@ -94,11 +95,16 @@ audio:
 
   device: auto              # auto = 自动查找 ESP32 UAC 麦克风，找不到用系统默认
                             # 其他示例：
+                            #   device: xiao_ble        # XIAO nRF52840 Sense（PsyGuard BLE 固件）
+                            #   device: xiao_ble:PsyGuard # 指定 BLE 名称/地址片段
                             #   device: "MacBook"        # 内置麦克风
                             #   device: "Insta360"       # Insta360 麦克风
                             #   device: "DJI"            # 大疆麦克风
                             #   device: "Yeti"           # Blue Yeti USB 麦克风
                             #   device: 2                # 直接填序号（用 --list-devices 查）
+  xiao_ble:
+    trim_silence: false     # 当前 XIAO 稳定基线：不裁剪，避免误切短句开头
+    normalize_gain: false   # 当前 XIAO 稳定基线：不自动增益，避免放大 BLE 噪声
   vad_aggressiveness: 2     # VAD 灵敏度 0~3（仅 mode: vad 时生效）
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -160,6 +166,28 @@ llm:
 #   model: glm-4-flash
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Dictation Mode 个人词典 / 纠错记忆
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+correction_memory:
+  enabled: true
+  path: ~/.voice-keyboard/correction_memory.json
+  # 同一类“错词 -> 正词”至少观察到几个被修正的出现次数，才自动加入词典。
+  # 默认 3 表示“超过两次”：只改一处算 1 次；一次把三处都改对算 3 次。
+  confirm_threshold: 3
+  # 只在语音输入后短时间内观察用户手动修改，避免学习无关输入。
+  observe_window_seconds: 30
+  # Windows 高风险兜底：Chrome/Electron 等输入框读不到完整文本时，
+  # 会临时全选复制一次用于学习 before/after。默认关闭，避免真实输入框
+  # 留在全选状态导致下一次输入覆盖全部内容。
+  clipboard_probe_fallback: false
+  # 高开销兜底：AX/IME 都读不到真实输入框时，尝试 macOS 屏幕 OCR。
+  # 默认关闭，避免普通语音输入时加载 macOS Vision/OCR 导致 CPU/内存峰值。
+  # 只有确实需要从不支持 Accessibility 的输入框里学习词典时再手动打开。
+  # 需要给运行 Voice Keyboard Engine 的终端/Python 授予 Screen Recording 权限。
+  screen_ocr_fallback: false
+  screen_ocr_after_edit_seconds: 0.8
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Instruction Mode
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 instruction_mode:
@@ -169,8 +197,21 @@ instruction_mode:
     # 目标明确兜底：已有 Explicit Selection 且语音明显是翻译/润色/改写时，
     # 即使模型误判成写作/聊天，也按编辑当前选区处理。
     selected_edit_override: true
-    # 便利类兜底：仅在“我的 X 是什么 / 插入 X”等查询或插入句式下模糊匹配备忘。
+    # 备忘录触发词：保存必须先选中文本；查询必须包含查询动作词 + 记忆唤醒词。
     memo_fuzzy_recall: true
+    memo_triggers:
+      save_words: ["记住", "记一下", "记下", "备忘"]
+      lookup_actions: ["查一下", "查询", "查找", "找一下", "调出", "调取", "读取", "打开", "打出", "输入", "填入", "贴出"]
+      wake_words: ["记忆", "记忆库", "备忘", "备忘录", "我记住的", "我记下的", "之前记的", "上次记的", "保存过的", "存过的"]
+      delete_words: ["忘记", "忘掉", "删除备忘", "删掉备忘", "删除记忆", "删掉记忆", "不要记"]
+    # 本地修正覆盖：意图诊断里保存的“修正”会先于模型生效。
+    intent_overrides: true
+    intent_overrides_path: ~/.voice-keyboard/intent_overrides.jsonl
+    # 本地轻量意图模型：由 corrected_intent 样本训练出来，在 LLM 之前做精确文本命中。
+    intent_model: false
+    intent_model_path: ~/.voice-keyboard/intent_models/current.json
+    # 相似命中阈值。1.0 = 只精确命中；0.8 = 允许轻微前后缀/口语变体。
+    intent_model_min_similarity: 1.0
 
   # Intent training sample collection. Default is off and local-only.
   # It stores sanitized instruction metadata for later rule tuning or model training.
@@ -179,6 +220,8 @@ instruction_mode:
     path: ~/.voice-keyboard/intent_samples.jsonl
     capture_text: true
     max_text_length: 240
+    server: http://127.0.0.1:8000
+    token: ""
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 打字与自定义快捷键

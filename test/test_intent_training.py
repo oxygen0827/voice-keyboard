@@ -44,6 +44,9 @@ class IntentTrainingTests(unittest.TestCase):
                 },
                 status="ok",
                 detail="done",
+                target_source="explicit_selection",
+                output_policy="auto",
+                risk_reason="",
             )
 
             row = json.loads(path.read_text(encoding="utf-8").strip())
@@ -54,6 +57,9 @@ class IntentTrainingTests(unittest.TestCase):
             self.assertEqual(row["intent_type"], "shortcut")
             self.assertEqual(row["intent_source"], "local")
             self.assertEqual(row["shortcut_count"], 2)
+            self.assertEqual(row["target_source"], "explicit_selection")
+            self.assertEqual(row["output_policy"], "auto")
+            self.assertFalse(row["confirmed"])
             self.assertEqual(row["review_label"], "")
             self.assertEqual(row["review_note"], "")
 

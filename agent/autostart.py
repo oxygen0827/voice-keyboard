@@ -23,7 +23,7 @@ def _launch_command() -> list[str]:
             return ["/usr/bin/open", "-W", str(app_bundle)]
         return [sys.executable]
     if _OS == "Windows":
-        return [sys.executable, "-m", "agent.windows_tray"]
+        return [sys.executable, "-m", "agent.windows.tray"]
     return [sys.executable, "-m", "agent.main"]
 
 def _quote_arg(value: str) -> str:
@@ -39,7 +39,7 @@ def _windows_launch_command() -> str:
     return (
         'cmd.exe /c start "" /min '
         f'/d {_quote_arg(str(root))} {_quote_arg(str(exe))} '
-        "-m agent.windows_tray"
+        "-m agent.windows.tray"
     )
 
 

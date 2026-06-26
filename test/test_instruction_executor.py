@@ -12,12 +12,45 @@ from agent.input_environment import (
     TyperInputEnvironment,
 )
 from agent.input_environment import TextTarget
+from agent.ai_command_plan import command_plan_from_operation
 from agent.instruction_executor import InstructionModeExecutor, _forced_punctuation_break
 from agent.text_buffer import TextBuffer
 from agent.voice_text_operation import VoiceTextOperation
 
 
 class InstructionModeExecutorTests(unittest.TestCase):
+    def test_confirm_plan_does_not_mutate_before_confirmation(self):
+        env = MagicMock()
+        env.operation_window_for_instruction.return_value = OperationWindowLookupResult.found(
+            OperationWindow("hello", TextTarget(), "caret")
+        )
+        executor = InstructionModeExecutor(MagicMock(), env)
+        plan = command_plan_from_operation(VoiceTextOperation("delete")).with_policy(
+            "confirm",
+            "delete_requires_confirmation",
+        )
+
+        executor.execute_plan(plan, "delete", "", confirmed=False)
+
+        env.apply_replacement_plan.assert_not_called()
+        self.assertEqual(executor.last_status, ("pending_confirmation", "delete_requires_confirmation"))
+
+    def test_confirm_plan_executes_after_confirmation(self):
+        env = MagicMock()
+        env.operation_window_for_instruction.return_value = OperationWindowLookupResult.found(
+            OperationWindow("hello", TextTarget(), "caret")
+        )
+        env.apply_replacement_plan.return_value = TargetChangeResult.changed("hello", "")
+        executor = InstructionModeExecutor(MagicMock(), env)
+        plan = command_plan_from_operation(VoiceTextOperation("delete")).with_policy(
+            "confirm",
+            "delete_requires_confirmation",
+        )
+
+        executor.execute_plan(plan, "\u5220\u9664", "", confirmed=True)
+
+        env.apply_replacement_plan.assert_called_once()
+
     def test_shortcut_invocation_requires_local_catalog_policy(self):
         env = MagicMock()
         env.shortcut_policy_for_invocation.return_value = ShortcutPolicyDecision.missing(
@@ -32,7 +65,7 @@ class InstructionModeExecutorTests(unittest.TestCase):
         env.send_shortcut.assert_not_called()
         self.assertEqual(messages, ["没有找到快捷键：provider invented"])
 
-    def test_single_high_risk_shortcut_invocation_is_marked_but_not_blocked(self):
+    def test_single_high_risk_shortcut_invocation_requires_confirmation_before_execution(self):
         env = MagicMock()
         env.shortcut_policy_for_invocation.return_value = ShortcutPolicyDecision(
             name="发送",
@@ -44,13 +77,52 @@ class InstructionModeExecutorTests(unittest.TestCase):
         )
         env.send_shortcut.return_value = True
         messages = []
-        executor = InstructionModeExecutor(MagicMock(), env, show=messages.append)
+        confirmed = []
+        executor = InstructionModeExecutor(
+            MagicMock(),
+            env,
+            show=messages.append,
+            confirm_operation=lambda name, reason: confirmed.append((name, reason)) or True,
+        )
 
         executor.execute(VoiceTextOperation("shortcut", name="发送"), "", "")
 
         env.shortcut_policy_for_invocation.assert_called_once_with("发送")
         env.send_shortcut.assert_called_once_with("发送")
+        self.assertEqual(confirmed, [("发送", "high_risk_requires_confirmation")])
         self.assertEqual(messages, [])
+        self.assertEqual(executor.last_status, ("ok", "shortcut_confirmed:发送"))
+        self.assertEqual(executor.last_operation_risk, "high")
+        self.assertTrue(executor.last_confirmation_triggered)
+        self.assertFalse(executor.last_user_cancelled)
+
+    def test_single_high_risk_shortcut_cancel_does_not_execute(self):
+        env = MagicMock()
+        env.shortcut_policy_for_invocation.return_value = ShortcutPolicyDecision(
+            name="发送",
+            found=True,
+            allowed=True,
+            risk="high",
+            source="application",
+            application="Codex (com.openai.codex)",
+        )
+        messages = []
+        executor = InstructionModeExecutor(
+            MagicMock(),
+            env,
+            show=messages.append,
+            confirm_operation=lambda name, reason: False,
+        )
+
+        keep_status = executor.execute(VoiceTextOperation("shortcut", name="发送"), "", "")
+
+        self.assertTrue(keep_status)
+        env.send_shortcut.assert_not_called()
+        self.assertEqual(messages, ["快捷键已取消：发送"])
+        self.assertEqual(executor.last_status, ("error", "shortcut_cancelled:发送"))
+        self.assertEqual(executor.last_operation_risk, "high")
+        self.assertTrue(executor.last_confirmation_triggered)
+        self.assertTrue(executor.last_user_cancelled)
 
     def test_shortcut_execution_failure_keeps_feedback_visible(self):
         env = MagicMock()
@@ -306,11 +378,11 @@ class InstructionModeExecutorTests(unittest.TestCase):
 
         with (
             patch("agent.typer.get_selection", return_value="world"),
-            patch("agent.typer.replace_selection") as replace_selection,
+            patch("agent.typer.delete_selection") as delete_selection,
         ):
             executor.execute(VoiceTextOperation("delete"), "删掉", "world")
 
-        replace_selection.assert_called_once_with("", original="world")
+        delete_selection.assert_called_once_with(original="world")
         self.assertEqual(buf.current_segment, "hello ")
 
     def test_delete_uses_structured_replacement_plan_for_subtarget(self):

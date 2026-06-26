@@ -31,6 +31,7 @@ import requests
 from agent.typeup_backend_auth import TypeUpBackendAuth
 
 SAMPLE_RATE = 16000
+BYTES_PER_SECOND = SAMPLE_RATE * 2
 
 
 def _pcm_to_wav(pcm: bytes) -> bytes:
@@ -41,6 +42,31 @@ def _pcm_to_wav(pcm: bytes) -> bytes:
         w.setframerate(SAMPLE_RATE)
         w.writeframes(pcm)
     return buf.getvalue()
+
+
+def _iter_pcm_chunks(pcm: bytes, chunk_seconds: float):
+    chunk_bytes = max(2, int(chunk_seconds * BYTES_PER_SECOND))
+    chunk_bytes -= chunk_bytes % 2
+    for start in range(0, len(pcm), chunk_bytes):
+        chunk = pcm[start:start + chunk_bytes]
+        if chunk:
+            yield chunk
+
+
+def _join_transcription_chunks(parts) -> str:
+    text = ""
+    for part in parts:
+        part = str(part or "").strip()
+        if not part:
+            continue
+        if text and _needs_join_space(text[-1], part[0]):
+            text += " "
+        text += part
+    return text.strip()
+
+
+def _needs_join_space(left: str, right: str) -> bool:
+    return left.isascii() and right.isascii() and left.isalnum() and right.isalnum()
 
 
 # ── OpenAI Whisper ────────────────────────────────────────────────
@@ -54,14 +80,18 @@ class _OpenAISTT:
         self._client   = OpenAI(**kwargs)
         self._model    = cfg.get("model", "whisper-1")
         self._language = cfg.get("language", "zh")
+        self._prompt   = str(cfg.get("prompt") or "").strip()
 
     def transcribe(self, pcm: bytes) -> str:
         wav  = _pcm_to_wav(pcm)
-        resp = self._client.audio.transcriptions.create(
-            model=self._model,
-            file=("audio.wav", wav, "audio/wav"),
-            language=self._language,
-        )
+        kwargs = {
+            "model": self._model,
+            "file": ("audio.wav", wav, "audio/wav"),
+            "language": self._language,
+        }
+        if self._prompt:
+            kwargs["prompt"] = self._prompt
+        resp = self._client.audio.transcriptions.create(**kwargs)
         return resp.text.strip()
 
 
@@ -277,12 +307,17 @@ class _ZhipuSTT:
         self._client   = ZhipuAI(api_key=cfg["api_key"])
         self._model    = cfg.get("model", "glm-4-voice")
         self._language = cfg.get("language", "zh")
+        self._prompt_hint = str(cfg.get("prompt") or "").strip()
+        hotwords = cfg.get("hotwords", [])
+        if isinstance(hotwords, str):
+            hotwords = [w.strip() for w in hotwords.split(",") if w.strip()]
+        self._hotwords = hotwords[:100] if isinstance(hotwords, list) else []
 
     def transcribe(self, pcm: bytes) -> str:
         wav      = _pcm_to_wav(pcm)
         audio_b64 = base64.b64encode(wav).decode()
 
-        prompt = self._PROMPT_ZH if self._language.startswith("zh") else self._PROMPT_EN
+        prompt = self._build_prompt()
 
         resp = self._client.chat.completions.create(
             model=self._model,
@@ -306,6 +341,20 @@ class _ZhipuSTT:
         result = resp.choices[0].message.content.strip()
         result = _strip_glm_preamble(result)
         return result
+
+    def _build_prompt(self) -> str:
+        prompt = self._PROMPT_ZH if self._language.startswith("zh") else self._PROMPT_EN
+        hints = []
+        if self._prompt_hint:
+            hints.append(self._prompt_hint)
+        if self._hotwords:
+            hints.append(
+                "Hotwords / personal dictionary: "
+                + "、".join(str(word) for word in self._hotwords)
+            )
+        if hints:
+            prompt = prompt + "\n\n" + "\n".join(hints)
+        return prompt
 
 
 # ── TypeUp 后端代理 ───────────────────────────────────────────────
@@ -363,6 +412,8 @@ class _GLMASR2512STT:
     """
 
     _URL = "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions"
+    _DEFAULT_CHUNK_SECONDS = 25.0
+    _MAX_CHUNK_SECONDS = 29.0
 
     def __init__(self, cfg: dict):
         self._api_key = cfg["api_key"]
@@ -372,10 +423,32 @@ class _GLMASR2512STT:
         if isinstance(hotwords, str):
             hotwords = [w.strip() for w in hotwords.split(",") if w.strip()]
         self._hotwords = hotwords[:100] if isinstance(hotwords, list) else []
+        try:
+            configured_chunk_seconds = float(
+                cfg.get("chunk_seconds", self._DEFAULT_CHUNK_SECONDS)
+            )
+        except (TypeError, ValueError):
+            configured_chunk_seconds = self._DEFAULT_CHUNK_SECONDS
+        self._chunk_seconds = min(
+            self._MAX_CHUNK_SECONDS,
+            max(1.0, configured_chunk_seconds),
+        )
 
     def transcribe(self, pcm: bytes) -> str:
-        wav = _pcm_to_wav(pcm)
-        return self.transcribe_wav(wav)
+        duration = len(pcm) / BYTES_PER_SECOND if pcm else 0.0
+        if duration <= self._chunk_seconds:
+            return self.transcribe_wav(_pcm_to_wav(pcm))
+
+        chunks = list(_iter_pcm_chunks(pcm, self._chunk_seconds))
+        print(
+            "[stt] GLM-ASR-2512 长录音分段识别 "
+            f"duration={duration:.2f}s chunks={len(chunks)} "
+            f"chunk_seconds={self._chunk_seconds:.1f}"
+        )
+        return _join_transcription_chunks(
+            self.transcribe_wav(_pcm_to_wav(chunk))
+            for chunk in chunks
+        )
 
     def transcribe_wav(self, wav: bytes) -> str:
         data = {

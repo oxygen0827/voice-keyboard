@@ -28,3 +28,4 @@ websocket-client
 pystray; sys_platform == "win32"
 pillow; sys_platform == "win32"
 pyinstaller; sys_platform == "win32"
+uiautomation; sys_platform == "win32"

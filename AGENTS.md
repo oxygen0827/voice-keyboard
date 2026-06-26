@@ -29,7 +29,8 @@ Implementation terms such as `agent`, `TextBuffer`, STT provider names, LLM prov
 | `python -m agent.main` | Desktop/local engine runtime |
 | `python -m agent.main --no-serial` | Software Capture Path without hardware serial receiver |
 | `python -m agent.cli` | Headless command-line dictation |
-| `python -m agent.windows_tray` | Windows tray wrapper |
+| `python -m agent.windows.tray` | Preferred Windows tray runtime |
+| `python -m agent.windows_tray` | Compatibility wrapper for the Windows tray runtime |
 
 Useful commands:
 

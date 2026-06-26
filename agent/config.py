@@ -99,7 +99,25 @@ def _yaml_config() -> dict:
     if not cfg_path.exists():
         return {}
     with open(cfg_path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        return _resolve_env_refs(yaml.safe_load(f) or {})
+
+
+def _resolve_env_refs(value):
+    if isinstance(value, dict):
+        return {key: _resolve_env_refs(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_refs(child) for child in value]
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    env_name = ""
+    if text.startswith("${") and text.endswith("}"):
+        env_name = text[2:-1].strip()
+    elif text.startswith("$") and len(text) > 1:
+        env_name = text[1:].strip()
+    if not env_name:
+        return value
+    return os.getenv(env_name, "")
 
 
 def _env_stt() -> dict | None:
@@ -108,10 +126,10 @@ def _env_stt() -> dict | None:
     api_key  = os.getenv("STT_API_KEY", "").strip()
     glm_key  = os.getenv("GLM_API_KEY", "").strip()  # 兼容 transmission_assistant 命名
 
-    # zhipuai provider：GLM_API_KEY 优先
+    # zhipuai / glm_asr_2512 等智谱系 provider：GLM_API_KEY 优先
     if not provider and glm_key:
         provider = "zhipuai"
-    if not api_key and provider == "zhipuai" and glm_key:
+    if not api_key and provider in ("zhipuai", "glm_asr_2512", "glm-asr-2512") and glm_key:
         api_key = glm_key
 
     if not provider and not api_key:

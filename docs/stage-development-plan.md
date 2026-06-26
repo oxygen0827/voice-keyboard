@@ -1,75 +1,116 @@
-# Voice Keyboard 阶段性开发文档
+# Voice Keyboard Stage Development Plan
 
-更新时间：2026-06-08
+Updated: 2026-06-25
 
-本文档用于记录 Voice Keyboard 当前阶段已经完成的工作、现在的使用方式、训练闭环的状态，以及后续继续开发的路线。
+This document summarizes the current development stage of Voice Keyboard Engine, the usable runtime surfaces, and the next implementation priorities. Domain language comes from [CONTEXT.md](../CONTEXT.md).
 
-## 当前阶段结论
+## Current Stage Summary
 
-当前版本已经完成了 Windows 客户端核心体验、托盘配置入口、主窗口配置入口、AI 意图诊断反馈，以及意图训练服务的基础框架。
+The current repository has a usable Windows desktop runtime and a growing local engine architecture behind it.
 
-需要明确的是：现在已经搭好了“数据采集 -> 上传 -> 标注 -> 后续训练”的闭环基础设施，但还没有训练出新的专用模型。后续真正提升 AI 意图识别速度和准确性的关键，是持续采集真实使用样本，并对样本做人工标注。
+The Windows client now covers the main local workflow:
 
-## 已完成的主要能力
+- Safe-standby tray runtime.
+- Main window for status, history, intent diagnostics, personal dictionary, memo library, hotkeys, config, and checks.
+- Compact capsule HUD for feedback.
+- Dictation Mode and micro-polish.
+- Instruction Mode for text operations and keyboard-style operations.
+- Local shortcut catalog and application/window operation seams.
+- Personal dictionary hints for provider adapters.
+- Memo operations.
+- Intent diagnostics, local learning hooks, and sample collection.
 
-### Windows 客户端
+The intent training loop infrastructure exists, but a production local model is not the current source of truth. The useful loop is still:
 
-- 支持语音转文字。
-- 支持原文模式和微润色模式。
-- 支持 AI 指令模式。
-- 支持托盘菜单。
-- 支持中文/英文界面切换。
-- 支持托盘菜单语言随界面语言切换。
-- 支持主窗口配置。
-- 支持历史记录、记忆库、快捷键等配置入口。
-- 支持开机自启动注册和取消。
-- 支持托盘提示框反馈操作结果。
-- 支持语音转文字热键和 AI 功能热键配置。
+1. Collect sanitized real usage samples.
+2. Upload/export samples.
+3. Review and label samples.
+4. Mine rules and aliases.
+5. Train/evaluate a lightweight classifier only after enough reviewed samples exist.
+6. Feed improvements back into the client behind local safety policy.
 
-### AI 意图识别和反馈
+## Completed Capabilities
 
-- AI 指令会先经过本地快速判断。
-- 对明确的本地快捷键、文本操作、记忆库操作等，优先走本地逻辑。
-- 本地无法确定时，再进入 LLM 判断。
-- AI 处理过程中会显示更细的状态，而不是只显示“AI 处理中”。
-- 已加入意图诊断信息，便于后续分析判断是否正确。
-- 已加入本地意图样本收集，为后续训练做准备。
+### Windows Client
 
-### 训练闭环基础设施
+- Tray entry point: `python -m agent.windows.tray`.
+- `agent.main` and `agent.main --no-serial` route into the safe-standby tray experience on Windows.
+- Manual enable/disable of the backend from the tray menu.
+- Chinese/English tray labels.
+- Runtime config reload.
+- Dictation and Instruction hotkey configuration.
+- History and memo insertion while the backend is enabled.
+- Start-on-login registration and removal.
+- Capsule HUD feedback with no drawn outer border and an antialiased state dot.
+- Main window tabs for overview, history, intent diagnostics, dictionary, memo, hotkeys, config, and runtime checks.
 
-- 新增 `training_server/` 服务端模块。
-- 新增 FastAPI API。
-- 新增 SQLite 存储，适合开发阶段和小规模部署。
-- 支持 JSONL 样本批量上传。
-- 支持样本列表查询。
-- 支持样本人工标注。
-- 支持基础统计。
-- 支持 token 鉴权。
-- 新增 `tools/upload_intent_samples.py` 上传工具。
-- 新增 `docs/intent-training-server.md` 服务端使用说明。
-- 新增相关单元测试。
+### Dictation Mode
 
-## 当前如何使用
+- Software Capture Path through the computer microphone.
+- Push-to-talk utterance capture.
+- Raw Dictation Mode.
+- Micro-polish flow.
+- Text insertion through the current input environment.
+- Clipboard insertion fallback for applications that reject Unicode key injection.
 
-### 本地客户端
+### Instruction Mode
 
-在企业电脑上，不建议直接运行未授信的 EXE。当前更合适的方式是继续使用源码方式启动。
+- Local deterministic handling before provider fallback where possible.
+- Structured operation execution seam for text-side effects.
+- Text revision and removal through replacement plans.
+- Memo save, recall, delete, and list.
+- Shortcut invocation from local catalogs.
+- Application launch and system window action seams.
+- Local high-risk operation policy.
+- Action card/feedback hooks for operation confirmation and feedback.
 
-后续如果要在企业电脑稳定使用，需要考虑：
+### Data And Learning
 
-- 让 IT 对构建产物做授信。
-- 或者继续使用源码启动方式。
-- 或者在可信环境构建，再走企业软件发布流程。
+- Intent diagnostics for later analysis.
+- Local intent sample collection.
+- Local learning and override modules under active development.
+- Personal dictionary file and UI.
+- Correction memory and observation modules under active development.
+- Training server for upload, listing, review labels, and stats.
 
-### 训练服务
+### Training Server
 
-安装服务端依赖：
+- FastAPI API.
+- SQLite storage for development and small deployments.
+- Token-protected JSONL batch ingestion.
+- Sample listing and filtering.
+- Review label updates.
+- Basic stats.
+- Client upload CLI.
+- Review page module under development.
+
+## Current Runtime Commands
+
+Windows tray:
 
 ```powershell
-pip install -r requirements-server.txt
+.\.venv\Scripts\python.exe -u -m agent.windows.tray
 ```
 
-启动服务：
+Windows desktop runtime:
+
+```powershell
+.\.venv\Scripts\python.exe -m agent.main --no-serial
+```
+
+Headless backend debugging:
+
+```powershell
+.\.venv\Scripts\python.exe -u -m agent.main --no-serial --no-ui --headless --enable-backend
+```
+
+Headless dictation CLI:
+
+```powershell
+.\.venv\Scripts\python.exe -m agent.cli --once --seconds 5
+```
+
+Training server:
 
 ```powershell
 $env:INTENT_TRAINING_DATABASE_URL = "sqlite:///./intent_training.db"
@@ -77,148 +118,88 @@ $env:INTENT_TRAINING_UPLOAD_TOKEN = "change-me"
 uvicorn training_server.api:app --host 0.0.0.0 --port 8000
 ```
 
-上传本地样本：
+## Verification
+
+Routine fast checks:
 
 ```powershell
-python tools/upload_intent_samples.py --server http://SERVER:8000 --token change-me
+.\.venv\Scripts\python.exe -m unittest discover -s test
+.\.venv\Scripts\python.exe -m compileall -q agent training_server tools test
 ```
 
-只检查本地样本数量，不上传：
+Focused Windows checks:
 
 ```powershell
-python tools/upload_intent_samples.py --dry-run
+.\.venv\Scripts\python.exe -m unittest discover -s test -p test_windows_status_window.py
+.\.venv\Scripts\python.exe -m unittest discover -s test -p test_windows_tray.py
+.\.venv\Scripts\python.exe -m unittest discover -s test -p test_windows_main_window.py
 ```
 
-## 数据训练闭环
+Some global hotkey, typing, tray, and desktop-permission behavior still requires manual verification in a real desktop session.
 
-当前设计的训练闭环是：
+## Priorities
 
-1. 用户正常使用客户端。
-2. 客户端记录意图判断样本。
-3. 上传工具把样本上传到训练服务器。
-4. 训练服务器保存样本。
-5. 用户或开发者对样本做人工标注。
-6. 使用已标注样本训练本地分类器或小模型。
-7. 将训练结果接回客户端。
-8. 客户端优先使用更快的本地模型判断意图。
-9. 低置信度或复杂任务再交给 LLM。
+### P0: Stabilize Windows Runtime
 
-## 后续优先级
+- Keep tray safe standby reliable.
+- Keep backend lifecycle idempotent when enabling, disabling, reloading config, or quitting.
+- Keep HUD feedback visually clean and non-intrusive.
+- Continue testing history, memo, dictionary, hotkey, and config tabs.
+- Avoid requiring unsigned exe usage on enterprise machines during development.
 
-### P0：稳定当前客户端
+### P1: Harden Input Environment Behavior
 
-- 持续验证语音转文字热键和 AI 热键不会串功能。
-- 持续验证托盘菜单所有入口都能真实生效。
-- 持续验证中文/英文切换在主窗口和托盘里一致。
-- 持续验证开机自启动在不同 Windows 权限环境下可用。
-- 避免在企业电脑上直接运行未授信 EXE。
+- Broaden focused text capture where platform adapters allow it.
+- Preserve the rule that Explicit Selection takes precedence.
+- Preserve fail-closed behavior for local partial removal when no safe target exists.
+- Keep platform text IO behind adapters so headless use stays clean.
 
-### P1：补齐样本标注后台
+### P2: Improve Instruction Mode Reliability
 
-当前服务端已有 API，但还没有专门的网页标注后台。下一步建议做一个简单页面：
+- Continue moving behavior from raw classifier dictionaries into structured operation objects.
+- Keep local shortcut names catalog-driven.
+- Keep Speech Interpretation Providers from inventing arbitrary key sequences.
+- Expand high-risk confirmation coverage for submit, send, broad delete, cross-application, and hard-to-reverse operations.
 
-- 查看最近上传样本。
-- 按意图类型筛选。
-- 按是否已标注筛选。
-- 标注“正确”。
-- 标注“意图错误”。
-- 标注“目标错误”。
-- 标注“应该二次确认”。
-- 标注“缺少快捷键”。
-- 填写备注。
-- 查看统计数据。
+### P3: Complete Review And Training Loop
 
-这个后台会直接决定后续训练数据质量，是下一阶段最重要的工作。
+- Finish the review page workflow.
+- Add export/evaluation scripts where useful.
+- Use reviewed samples to improve local rules and aliases first.
+- Train a lightweight local classifier only after reviewed samples are large enough to evaluate honestly.
+- Keep model outputs behind local risk policy.
 
-### P2：建立训练环境
+### P4: Packaging And Distribution
 
-训练环境建议先独立于客户端部署，可以放在服务器上。
+- Continue source-first development for enterprise-restricted machines.
+- Use PyInstaller onedir packaging for Windows.
+- Add code signing and allowlist workflow for formal enterprise distribution.
+- Keep package docs current with runtime entry points and security behavior.
 
-推荐准备：
+## Key Risks
 
-- Python 运行环境。
-- 可长期保存数据的数据库。
-- 样本导出脚本。
-- 训练脚本。
-- 评估脚本。
-- 模型版本目录。
-- 每次训练的评估报告。
+### Enterprise Security
 
-当前代码内置 SQLite，适合开发阶段。数据量变大后，可以迁移到 PostgreSQL，但客户端上传 API 不需要变。
+Unsigned background tray apps with hotkey and input APIs are often blocked. This is expected for PyInstaller development builds. Formal distribution should use code signing and enterprise allowlisting.
 
-### P3：训练本地意图模型
+### API Key Safety
 
-第一版训练目标不建议追求复杂大模型，建议先做轻量分类：
+Real provider credentials must not be committed. Use local config, environment variables, or organization secret management.
 
-- 输入：用户语音识别后的文本、当前应用、是否有选中文本、历史上下文摘要。
-- 输出：意图类型、目标对象、动作参数、置信度。
-- 目标：减少 LLM 调用次数，提高常见指令的响应速度。
+### Sample Quality
 
-第一版可以优先覆盖：
+Training data without review labels is weak. The most valuable next step is reviewed real usage samples, not immediate model complexity.
 
-- 纯语音转文字。
-- 微润色。
-- 常用快捷键。
-- 文本替换。
-- 文本删除。
-- 文本续写。
-- 记忆库读取。
-- 记忆库保存。
-- 和 AI 聊天。
+### High-Risk Operations
 
-### P4：把训练结果接回客户端
+Faster local interpretation must not bypass safety policy. Send, submit, delete, broad overwrite, close-window, and cross-application actions need confirmation or conservative handling.
 
-客户端接入方式建议是分层判断：
+## Recommended Next Order
 
-1. 本地硬规则命中，直接执行。
-2. 本地训练模型高置信度命中，直接执行或低风险执行。
-3. 本地训练模型低置信度，进入 LLM。
-4. 高风险操作需要确认。
-5. 失败或用户纠正时继续记录样本。
-
-这样可以同时兼顾速度、准确性和安全性。
-
-## 关键风险
-
-### 样本质量
-
-如果没有人工标注，只靠自动采集，很难训练出可靠模型。后续必须有标注流程。
-
-### 企业电脑限制
-
-当前电脑无法运行未授信 EXE，因此后续测试和发布要区分：
-
-- 源码启动。
-- 本地开发构建。
-- 企业可信发布。
-- GitHub 发布产物。
-
-### API-Key 安全
-
-仓库不能提交真实 API-Key。后续所有密钥都应该通过环境变量、本地配置文件或企业密钥管理系统注入。
-
-### 高风险操作
-
-发送、删除、关闭窗口、提交表单等操作需要持续保留风险策略。不能因为本地模型判断更快，就直接跳过确认。
-
-## 后续开发建议顺序
-
-建议下一阶段按这个顺序做：
-
-1. 完成网页标注后台。
-2. 增加样本导出和训练数据集生成。
-3. 增加训练脚本和离线评估脚本。
-4. 使用真实样本训练第一版本地意图模型。
-5. 客户端接入本地模型。
-6. 建立模型版本和回滚机制。
-7. 再优化托盘和主窗口中的高级配置。
-
-## 当前仓库状态
-
-当前最新提交已经推送到 GitHub `main` 分支。
-
-最近关键提交：
-
-- `183f398 Add intent training server`
-
-这个提交完成了训练服务基础框架，为后续“采集真实数据、人工标注、训练模型、接回客户端”打基础。
+1. Keep Windows runtime and HUD stable.
+2. Finish review page and label workflow.
+3. Expand sample export and evaluation tooling.
+4. Mine reviewed samples for local aliases and missing shortcut catalog entries.
+5. Train and evaluate a first lightweight local intent classifier.
+6. Connect the classifier as an optional local layer behind risk policy.
+7. Prepare signed Windows distribution only after runtime behavior is stable.

@@ -1,6 +1,16 @@
 import unittest
+import threading
+import tempfile
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+from pathlib import Path
 
+from agent.correction_memory import (
+    CorrectionLearningTracker,
+    CorrectionMemory,
+    CorrectionObservationScheduler,
+    CorrectionTextSnapshot,
+)
 from agent.dictation_mode import (
     DictationMode,
     clean_generated_text,
@@ -38,6 +48,19 @@ class DictationModeModuleTests(unittest.TestCase):
         history.append.assert_called_once_with("dictate", "hello", "ok", "")
         status.show_typing_message.assert_not_called()
         status.set_state.assert_called_once_with("idle")
+
+    def test_normal_dictation_remembers_output_for_local_learning(self):
+        module, _stt, _env, _status, _history = self.make_module("hello")
+        learning = MagicMock()
+        module.learning = learning
+
+        module.handle_utterance(b"pcm")
+
+        learning.remember_output.assert_called_once_with(
+            "hello",
+            mode="dictate",
+            operation_kind="dictation",
+        )
 
     def test_normal_dictation_outputs_without_status_preview(self):
         stt = MagicMock(spec=["transcribe"])
@@ -180,6 +203,66 @@ class DictationModeModuleTests(unittest.TestCase):
         history.append.assert_called_once_with("dictate", "hello", "copied", "no_focused_input")
         status.show_message.assert_called_once_with("已复制：hello", 5.0)
         status.set_state.assert_not_called()
+
+    def test_runtime_correction_learning_hud_after_repeated_name_ime_commit(self):
+        stt = MagicMock(spec=["transcribe"])
+        stt.transcribe.return_value = "\u6587\u9759\uff0c\u6587\u9759\uff0c\u6587\u9759"
+        env = MagicMock()
+        env.insert_output_text.return_value = TextInsertionResult(
+            inserted_text="\u6587\u9759\uff0c\u6587\u9759\uff0c\u6587\u9759"
+        )
+        status = MagicMock()
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = CorrectionMemory(Path(tmp) / "correction.json", confirm_threshold=3)
+            tracker = CorrectionLearningTracker(
+                memory,
+                lambda: CorrectionTextSnapshot(
+                    "",
+                    source="unsupported",
+                    detail="UIAutomation:empty",
+                ),
+            )
+            module = None
+            done = threading.Event()
+
+            def on_confirmed(correction):
+                module._show_confirmed_correction(correction)
+                done.set()
+
+            scheduler = CorrectionObservationScheduler(
+                tracker,
+                on_confirmed,
+                delays=(30.0,),
+                edit_delays=(0.01,),
+            )
+            module = DictationMode(
+                stt,
+                env,
+                status_window=status,
+                correction_memory=memory,
+                correction_tracker=tracker,
+                correction_scheduler=scheduler,
+            )
+
+            try:
+                for index in range(3):
+                    module.handle_utterance(b"pcm")
+                    tracker.record_key_press(SimpleNamespace(name="backspace"))
+                    for char in "jing":
+                        tracker.record_key_press(SimpleNamespace(char=char))
+                    tracker.record_committed_text("\u51c0")
+                    scheduler.schedule_after_edit()
+                    if index < 2:
+                        self.assertFalse(done.wait(0.05))
+
+                self.assertTrue(done.wait(1.0))
+                self.assertEqual(memory.apply("\u6587\u9759"), "\u6587\u51c0")
+                status.show_message.assert_called_with(
+                    "\u5df2\u5c06\u300c\u6587\u51c0\u300d\u52a0\u5165\u8bcd\u5178",
+                    5.0,
+                )
+            finally:
+                scheduler.stop()
 
     def test_status_flags_preserve_segment_behavior(self):
         module, _stt, env, status, _history = self.make_module("hello")

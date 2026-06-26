@@ -26,6 +26,14 @@ class FakeLLM:
         FakeLLM.instances.append(self)
 
 
+class FakeDictionary:
+    def hotwords(self):
+        return ["小汪", "Voice Keyboard"]
+
+    def prompt_hint(self):
+        return "个人词典热词，优先准确转写：小汪（客户联系人）、Voice Keyboard"
+
+
 class SpeechInterpretationProviderFactoryTests(unittest.TestCase):
     def setUp(self):
         FakeSTT.instances = []
@@ -71,6 +79,42 @@ class SpeechInterpretationProviderFactoryTests(unittest.TestCase):
         self.assertIsInstance(stt, FakeSTT)
         self.assertEqual(stt.cfg["api_key"], "test-api-key")
 
+    def test_dictation_provider_uses_personal_dictionary_as_prompt_hint_by_default(self):
+        factory = SpeechInterpretationProviderFactory(
+            stt_client_cls=FakeSTT,
+            llm_editor_cls=FakeLLM,
+            dictionary_store=FakeDictionary(),
+            log=self.messages.append,
+        )
+
+        stt = factory.create_dictation_stt({
+            "provider": "glm_asr_2512",
+            "api_key": "test-api-key",
+            "hotwords": ["原有词"],
+            "prompt": "原始提示",
+        })
+
+        self.assertEqual(stt.cfg["hotwords"], ["原有词"])
+        self.assertIn("原始提示", stt.cfg["prompt"])
+        self.assertIn("个人词典", stt.cfg["prompt"])
+
+    def test_dictation_provider_can_enable_personal_dictionary_hotwords_explicitly(self):
+        factory = SpeechInterpretationProviderFactory(
+            stt_client_cls=FakeSTT,
+            llm_editor_cls=FakeLLM,
+            dictionary_store=FakeDictionary(),
+            log=self.messages.append,
+        )
+
+        stt = factory.create_dictation_stt({
+            "provider": "glm_asr_2512",
+            "api_key": "test-api-key",
+            "hotwords": ["原有词"],
+            "personal_dictionary_hotwords": True,
+        })
+
+        self.assertEqual(stt.cfg["hotwords"], ["原有词", "小汪", "Voice Keyboard"])
+
     def test_text_operation_editor_uses_existing_readiness_rules(self):
         self.assertIsNone(self.factory.create_text_operation_editor({}))
 
@@ -105,6 +149,23 @@ class SpeechInterpretationProviderFactoryTests(unittest.TestCase):
             ["[agent] AI 键 STT 使用独立 provider: glm_asr_2512"],
         )
 
+    def test_separate_instruction_provider_receives_personal_dictionary(self):
+        factory = SpeechInterpretationProviderFactory(
+            stt_client_cls=FakeSTT,
+            llm_editor_cls=FakeLLM,
+            dictionary_store=FakeDictionary(),
+            log=self.messages.append,
+        )
+        dictation_stt = FakeSTT({"name": "dictation"})
+
+        instruction_stt = factory.create_instruction_stt(
+            {"provider": "glm_asr_2512", "api_key": "test-ai-key"},
+            dictation_stt,
+        )
+
+        self.assertNotIn("hotwords", instruction_stt.cfg)
+        self.assertIn("个人词典", instruction_stt.cfg["prompt"])
+
     def test_micro_polish_wraps_dictation_provider_without_changing_base_transcribe(self):
         dictation_stt = FakeSTT({"name": "dictation"})
 
@@ -120,6 +181,24 @@ class SpeechInterpretationProviderFactoryTests(unittest.TestCase):
             self.messages,
             ["[agent] 微润色 STT 使用独立 provider: glm_asr_2512"],
         )
+
+    def test_micro_polish_provider_receives_personal_dictionary(self):
+        factory = SpeechInterpretationProviderFactory(
+            stt_client_cls=FakeSTT,
+            llm_editor_cls=FakeLLM,
+            dictionary_store=FakeDictionary(),
+            log=self.messages.append,
+        )
+        dictation_stt = FakeSTT({"name": "dictation"})
+
+        factory.create_utterance_stt(
+            dictation_stt,
+            {"provider": "glm_asr_2512", "api_key": "test-polish-key"},
+            {},
+        )
+
+        self.assertNotIn("hotwords", FakeSTT.instances[-1].cfg)
+        self.assertIn("个人词典", FakeSTT.instances[-1].cfg["prompt"])
 
     def test_micro_polish_does_not_infer_provider_from_llm_config(self):
         dictation_stt = FakeSTT({"name": "dictation"})

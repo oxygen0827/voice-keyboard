@@ -6,8 +6,13 @@ from pynput.keyboard import Controller, Key, KeyCode
 
 from agent import app_launcher
 from agent import macos_window_actions
-from agent import windows_window_actions
+from agent.windows import window_actions as windows_window_actions
 from agent.app_shortcut_presets import MACOS_APP_SHORTCUT_PRESETS
+from agent.focused_text_capture import (
+    FocusedTextProbe,
+    FocusedTextSnapshot,
+    classify_text_capture,
+)
 from agent.local_operation_catalog import (
     LocalOperationCandidate,
     ShortcutCatalogEntry,
@@ -69,6 +74,10 @@ if _OS == "Windows":
     _KEYEVENTF_UNICODE = 0x0004
     _KEYEVENTF_KEYUP   = 0x0002
     _INPUT_KEYBOARD    = 1
+    _WM_GETTEXT        = 0x000D
+    _WM_GETTEXTLENGTH  = 0x000E
+    _SMTO_ABORTIFHUNG  = 0x0002
+    _TEXT_READ_TIMEOUT_MS = 120
 
     _ULONG_PTR = ctypes.POINTER(ctypes.c_ulong)
 
@@ -111,6 +120,19 @@ if _OS == "Windows":
             ("union", _INPUT_UNION),
         ]
 
+    class _GUITHREADINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", ctypes.wintypes.DWORD),
+            ("flags", ctypes.wintypes.DWORD),
+            ("hwndActive", ctypes.wintypes.HWND),
+            ("hwndFocus", ctypes.wintypes.HWND),
+            ("hwndCapture", ctypes.wintypes.HWND),
+            ("hwndMenuOwner", ctypes.wintypes.HWND),
+            ("hwndMoveSize", ctypes.wintypes.HWND),
+            ("hwndCaret", ctypes.wintypes.HWND),
+            ("rcCaret", ctypes.wintypes.RECT),
+        ]
+
     _user32   = ctypes.windll.user32
     _kernel32 = ctypes.windll.kernel32
     _kernel32.GlobalAlloc.restype    = ctypes.c_void_p
@@ -123,6 +145,21 @@ if _OS == "Windows":
     _user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
     _user32.GetClipboardData.restype  = ctypes.c_void_p
     _user32.GetClipboardData.argtypes = [ctypes.c_uint]
+    _user32.GetGUIThreadInfo.restype = ctypes.wintypes.BOOL
+    _user32.GetGUIThreadInfo.argtypes = [
+        ctypes.wintypes.DWORD,
+        ctypes.POINTER(_GUITHREADINFO),
+    ]
+    _user32.SendMessageTimeoutW.restype = ctypes.c_size_t
+    _user32.SendMessageTimeoutW.argtypes = [
+        ctypes.wintypes.HWND,
+        ctypes.wintypes.UINT,
+        ctypes.wintypes.WPARAM,
+        ctypes.wintypes.LPARAM,
+        ctypes.wintypes.UINT,
+        ctypes.wintypes.UINT,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
 
 # ── erase_last 的「正在擦除」标志 ─────────────────────────────────
 # keyboard_monitor 通过 is_erasing() 判断当前退格是否由我们发出，
@@ -132,7 +169,12 @@ if _OS == "Windows":
 _erasing: bool = False
 _simulating: bool = False   # 程序自己发 Cmd+C/V 等按键时置 True，让 PTT 监听忽略
 _use_clipboard_mode: bool = False
+_key_delay_seconds: float = 0.003
 _last_focus_fallback_log: tuple[str, int | None] | None = None
+_last_windows_text_target = None
+_last_windows_text_target_at: float = 0.0
+_last_windows_text_target_detail: str = ""
+_WINDOWS_TEXT_TARGET_TTL_SECONDS: float = 180.0
 _BLOCKED_SHORTCUT_NAMES: set[str] = set()
 _BLOCKED_SHORTCUT_KEY_SEQUENCES: set[tuple[str, ...]] = set()
 
@@ -155,10 +197,17 @@ ApplicationLaunchSpec = app_launcher.ApplicationLaunchSpec
 
 def init(cfg: dict) -> None:
     """由 main.py 在启动时调用，根据 config.yaml 的 typing.method 配置打字方式。"""
-    global _use_clipboard_mode
+    global _use_clipboard_mode, _key_delay_seconds
     _use_clipboard_mode = cfg.get("method", "unicode") == "clip"
+    try:
+        delay_ms = float(cfg.get("key_delay_ms", 3))
+    except (TypeError, ValueError):
+        delay_ms = 3.0
+    _key_delay_seconds = max(0.0, delay_ms) / 1000.0
     if _use_clipboard_mode:
-        print("[typer] 直接打字模式（已禁用焦点检测和剪贴板粘贴）")
+        print("[typer] 剪贴板粘贴模式")
+    else:
+        print(f"[typer] 直接打字模式 key_delay_ms={_key_delay_seconds * 1000:.1f}")
     _load_blocked_shortcuts(cfg)
     _load_custom_shortcuts(cfg.get("shortcuts", {}))
     _APP_SHORTCUTS.clear()
@@ -233,10 +282,20 @@ def type_text(text: str) -> None:
     """在当前焦点输入框打出任意 Unicode 文字（含汉字）"""
     if not text:
         return
+    if _use_clipboard_mode and _OS != "Windows":
+        paste_text(text)
+        return
+    global _simulating
     if _OS == "Darwin":
         _type_via_quartz(text)
     elif _OS == "Windows":
-        _type_via_sendinput(text)
+        _remember_focused_text_target_windows()
+        _simulating = True
+        try:
+            _type_via_sendinput(text)
+            time.sleep(0.05)
+        finally:
+            _simulating = False
     else:
         _type_via_xtest(text)  # Linux
 
@@ -277,6 +336,13 @@ def _focused_accessibility_element():
         return None
 
 
+def _focused_accessibility_element_with_source():
+    if _OS != "Darwin":
+        return None, "platform"
+    focused = _focused_accessibility_element()
+    return focused, "frontmost_focused_element" if focused is not None else "missing"
+
+
 def _frontmost_app_identity() -> tuple[str, str, int | None]:
     if _OS == "Windows":
         return _frontmost_app_identity_windows()
@@ -308,6 +374,662 @@ def _frontmost_app_identity_windows() -> tuple[str, str, int | None]:
         return str(buffer.value or "Windows foreground window"), "", int(pid.value) or None
     except Exception:
         return "", "", None
+
+
+def _focused_text_window_handle_windows() -> int:
+    if _OS != "Windows":
+        return 0
+    try:
+        hwnd = _user32.GetForegroundWindow()
+        if not hwnd:
+            return 0
+        thread_id = _user32.GetWindowThreadProcessId(hwnd, None)
+        info = _GUITHREADINFO()
+        info.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        if _user32.GetGUIThreadInfo(thread_id, ctypes.byref(info)) and info.hwndFocus:
+            return int(info.hwndFocus)
+        return 0
+    except Exception:
+        return 0
+
+
+def _window_class_name_windows(hwnd: int, max_chars: int = 256) -> str:
+    if _OS != "Windows" or not hwnd:
+        return ""
+    try:
+        buffer = ctypes.create_unicode_buffer(max(2, int(max_chars)))
+        _user32.GetClassNameW(hwnd, buffer, len(buffer))
+        return str(buffer.value or "")
+    except Exception:
+        return ""
+
+
+def _send_message_timeout_windows(hwnd: int, message: int, wparam: int, lparam) -> int | None:
+    if _OS != "Windows" or not hwnd:
+        return None
+    try:
+        result = ctypes.c_size_t()
+        ok = _user32.SendMessageTimeoutW(
+            hwnd,
+            message,
+            wparam,
+            lparam,
+            _SMTO_ABORTIFHUNG,
+            _TEXT_READ_TIMEOUT_MS,
+            ctypes.byref(result),
+        )
+        if not ok:
+            return None
+        return int(result.value)
+    except Exception:
+        return None
+
+
+def _read_window_text_windows(hwnd: int, max_chars: int = 2000) -> str:
+    if _OS != "Windows" or not hwnd:
+        return ""
+    try:
+        limit = max(1, int(max_chars))
+    except (TypeError, ValueError):
+        limit = 2000
+    length = _send_message_timeout_windows(hwnd, _WM_GETTEXTLENGTH, 0, 0)
+    if length is None:
+        return ""
+    length = max(0, min(int(length), limit))
+    if length <= 0:
+        return ""
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    copied = _send_message_timeout_windows(hwnd, _WM_GETTEXT, length + 1, ctypes.addressof(buffer))
+    if copied is None:
+        return ""
+    return str(buffer.value or "")[:limit]
+
+
+def _window_text_class_is_editable_windows(class_name: str) -> bool:
+    value = str(class_name or "").lower()
+    if not value:
+        return False
+    markers = (
+        "edit",
+        "richedit",
+        "textbox",
+        "textinput",
+        "scintilla",
+    )
+    return any(marker in value for marker in markers)
+
+
+def _inspect_focused_text_uia_windows(max_chars: int = 2000) -> FocusedTextSnapshot | None:
+    if _OS != "Windows":
+        return None
+    app = current_application()
+    probes: list[FocusedTextProbe] = []
+    try:
+        import uiautomation as uia
+    except Exception as e:
+        return FocusedTextSnapshot(
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            probes=(FocusedTextProbe("UIAutomation", False, detail=f"unavailable:{e}"),),
+        )
+    try:
+        control = uia.GetFocusedControl()
+    except Exception as e:
+        return FocusedTextSnapshot(
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            probes=(FocusedTextProbe("UIAutomation", False, detail=str(e)),),
+        )
+    if control is None:
+        probes.append(FocusedTextProbe("UIAutomation", False, detail="no_focused_control"))
+    else:
+        probes.append(FocusedTextProbe("UIAutomation", True, detail=_uia_control_detail(control)))
+        found = _find_uia_text_control_windows(control, uia, max_chars=max_chars)
+        if found is not None:
+            text, source, role, detail, read_probe = found
+            return FocusedTextSnapshot(
+                text=text,
+                source=source,
+                confidence=classify_text_capture(source=source, text=text),
+                app_name=app.name,
+                bundle_id=app.bundle_id,
+                pid=app.pid,
+                role=role,
+                probes=tuple(probes) + read_probe,
+            )
+    hwnd = _focused_text_window_handle_windows()
+    if hwnd:
+        try:
+            handle_control = uia.ControlFromHandle(hwnd)
+        except Exception as e:
+            handle_control = None
+            probes.append(
+                FocusedTextProbe("UIAutomationHandle", False, value=str(hwnd), detail=str(e))
+            )
+        if handle_control is not None:
+            probes.append(
+                FocusedTextProbe(
+                    "UIAutomationHandle",
+                    True,
+                    value=str(hwnd),
+                    detail=_uia_control_detail(handle_control),
+                )
+            )
+            found = _find_uia_text_control_windows(handle_control, uia, max_chars=max_chars)
+            if found is not None:
+                text, source, role, detail, read_probe = found
+                return FocusedTextSnapshot(
+                    text=text,
+                    source=source,
+                    confidence=classify_text_capture(source=source, text=text),
+                    app_name=app.name,
+                    bundle_id=app.bundle_id,
+                    pid=app.pid,
+                    role=role,
+                    probes=tuple(probes) + read_probe,
+                )
+    try:
+        foreground_control = uia.GetForegroundControl()
+    except Exception as e:
+        foreground_control = None
+        probes.append(FocusedTextProbe("UIAutomationForeground", False, detail=str(e)))
+    if foreground_control is not None:
+        probes.append(
+            FocusedTextProbe(
+                "UIAutomationForeground",
+                True,
+                detail=_uia_control_detail(foreground_control),
+            )
+        )
+        found = _find_uia_text_control_windows(foreground_control, uia, max_chars=max_chars)
+        if found is not None:
+            text, source, role, detail, read_probe = found
+            return FocusedTextSnapshot(
+                text=text,
+                source=source,
+                confidence=classify_text_capture(source=source, text=text),
+                app_name=app.name,
+                bundle_id=app.bundle_id,
+                pid=app.pid,
+                role=role,
+                probes=tuple(probes) + read_probe,
+            )
+    return FocusedTextSnapshot(
+        app_name=app.name,
+        bundle_id=app.bundle_id,
+        pid=app.pid,
+        role=_uia_control_role(control) if control is not None else "",
+        probes=tuple(probes) + (
+            FocusedTextProbe("ValuePattern", False, detail="empty"),
+            FocusedTextProbe("TextPattern", False, detail="empty"),
+        ),
+    )
+
+
+def _remember_focused_text_target_windows() -> bool:
+    if _OS != "Windows":
+        return False
+    try:
+        import uiautomation as uia
+    except Exception:
+        return False
+    candidates = []
+    try:
+        candidates.append(uia.GetFocusedControl())
+    except Exception:
+        pass
+    hwnd = _focused_text_window_handle_windows()
+    if hwnd:
+        try:
+            candidates.append(uia.ControlFromHandle(hwnd))
+        except Exception:
+            pass
+    for control in candidates:
+        target = _find_uia_text_target_windows(control, uia)
+        if target is None:
+            continue
+        _store_windows_text_target(*target)
+        return True
+    return False
+
+
+def _find_uia_text_target_windows(control, uia):
+    for candidate, depth in _iter_uia_text_candidates_windows(control, uia):
+        detail = f"depth={depth};{_uia_control_detail(candidate)}"
+        return candidate, detail
+    return None
+
+
+def _store_windows_text_target(control, detail: str = "") -> None:
+    global _last_windows_text_target, _last_windows_text_target_at, _last_windows_text_target_detail
+    _last_windows_text_target = control
+    _last_windows_text_target_at = time.monotonic()
+    _last_windows_text_target_detail = str(detail or "")
+
+
+def _inspect_remembered_text_target_windows(max_chars: int = 2000) -> FocusedTextSnapshot | None:
+    if _OS != "Windows" or _last_windows_text_target is None:
+        return None
+    age = time.monotonic() - _last_windows_text_target_at
+    if age > _WINDOWS_TEXT_TARGET_TTL_SECONDS:
+        return None
+    app = current_application()
+    try:
+        import uiautomation as uia
+    except Exception as e:
+        return FocusedTextSnapshot(
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            probes=(
+                FocusedTextProbe(
+                    "UIAutomationRememberedTarget",
+                    False,
+                    detail=f"unavailable:{e}",
+                ),
+            ),
+        )
+    found = _find_uia_text_control_windows(
+        _last_windows_text_target,
+        uia,
+        max_chars=max_chars,
+    )
+    if found is None:
+        return FocusedTextSnapshot(
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            role=_uia_control_role(_last_windows_text_target),
+            probes=(
+                FocusedTextProbe(
+                    "UIAutomationRememberedTarget",
+                    False,
+                    detail=f"empty;age={age:.1f};{_last_windows_text_target_detail}",
+                ),
+            ),
+        )
+    text, source, role, detail, read_probe = found
+    detail = f"{detail};remembered_age={age:.1f};{_last_windows_text_target_detail}"
+    return FocusedTextSnapshot(
+        text=text,
+        source=source,
+        confidence=classify_text_capture(source=source, text=text),
+        app_name=app.name,
+        bundle_id=app.bundle_id,
+        pid=app.pid,
+        role=role,
+        probes=(
+            FocusedTextProbe(
+                "UIAutomationRememberedTarget",
+                True,
+                detail=_last_windows_text_target_detail,
+            ),
+            *read_probe,
+            FocusedTextProbe("RememberedTargetRead", True, detail=detail),
+        ),
+    )
+
+
+def _find_uia_text_control_windows(control, uia, max_chars: int = 2000):
+    for candidate, depth in _iter_uia_text_candidates_windows(control, uia):
+        role = _uia_control_role(candidate)
+        readers = (
+            (("UIAutomation:DescendantText", _uia_descendant_text),)
+            if _uia_control_is_rich_text_editor(candidate)
+            else (
+                ("UIAutomation:ValuePattern", _uia_value_pattern_text),
+                ("UIAutomation:TextPattern", _uia_text_pattern_text),
+            )
+        )
+        for source, reader in readers:
+            text, detail = reader(candidate, max_chars=max_chars)
+            if text:
+                if _uia_text_is_navigation_document_value(role, text):
+                    continue
+                if _uia_text_is_page_dump_value(role, text):
+                    continue
+                probe_detail = f"{detail};depth={depth};{_uia_control_detail(candidate)}"
+                return (
+                    text,
+                    source,
+                    role,
+                    probe_detail,
+                    (
+                        FocusedTextProbe("UIAutomationTextControl", True, detail=_uia_control_detail(candidate)),
+                        FocusedTextProbe(source.removeprefix("UIAutomation:"), True, detail=probe_detail),
+                    ),
+                )
+    return None
+
+
+def _iter_uia_text_candidates_windows(control, uia, *, max_depth: int = 8, max_controls: int = 300):
+    seen: set[int] = set()
+    yielded = 0
+
+    def visit(candidate, depth: int):
+        nonlocal yielded
+        if candidate is None or yielded >= max_controls:
+            return None
+        identity = id(candidate)
+        if identity in seen:
+            return None
+        seen.add(identity)
+        yielded += 1
+        if _uia_control_may_hold_edit_text(candidate):
+            return candidate, depth
+        return None
+
+    first = visit(control, 0)
+    if first is not None:
+        yield first
+    try:
+        walker = uia.WalkControl(control, includeTop=False, maxDepth=max_depth)
+        for child, depth in walker:
+            item = visit(child, int(depth))
+            if item is not None:
+                yield item
+            if yielded >= max_controls:
+                return
+        return
+    except Exception:
+        pass
+    stack = []
+    try:
+        stack.extend((child, 1) for child in (control.GetChildren() or []))
+    except Exception:
+        return
+    while stack and yielded < max_controls:
+        child, depth = stack.pop(0)
+        item = visit(child, depth)
+        if item is not None:
+            yield item
+        if depth >= max_depth:
+            continue
+        try:
+            stack.extend((grandchild, depth + 1) for grandchild in (child.GetChildren() or []))
+        except Exception:
+            continue
+
+
+def _uia_control_role(control) -> str:
+    if control is None:
+        return ""
+    return str(getattr(control, "ControlTypeName", "") or "")
+
+
+def _uia_control_detail(control) -> str:
+    if control is None:
+        return ""
+    parts = []
+    role = _uia_control_role(control)
+    if role:
+        parts.append(f"role={role}")
+    class_name = str(getattr(control, "ClassName", "") or "")
+    if class_name:
+        parts.append(f"class={class_name}")
+    name = str(getattr(control, "Name", "") or "")
+    if name:
+        parts.append(f"name={name[:60]}")
+    return ";".join(parts)
+
+
+def _uia_control_may_hold_edit_text(control) -> bool:
+    if _uia_control_is_rich_text_editor(control):
+        return True
+    role = _uia_control_role(control).lower()
+    if "edit" in role or "document" in role:
+        return True
+    class_name = str(getattr(control, "ClassName", "") or "").lower()
+    return _window_text_class_is_editable_windows(class_name)
+
+
+def _uia_control_is_rich_text_editor(control) -> bool:
+    class_name = str(getattr(control, "ClassName", "") or "").lower()
+    rich_editor_markers = (
+        "prosemirror",
+        "ql-editor",
+        "cm-content",
+        "monaco-editor",
+    )
+    return any(marker in class_name for marker in rich_editor_markers)
+
+
+def _uia_text_is_navigation_document_value(role: str, text: str) -> bool:
+    if "document" not in (role or "").lower():
+        return False
+    value = (text or "").strip().lower()
+    if not value or "\n" in value or len(value) > 500:
+        return False
+    url_prefixes = (
+        "http://",
+        "https://",
+        "app://",
+        "chrome://",
+        "edge://",
+        "about:",
+        "file://",
+    )
+    return value.startswith(url_prefixes) or "://" in value
+
+
+def _uia_text_is_page_dump_value(role: str, text: str) -> bool:
+    if "document" not in (role or "").lower():
+        return False
+    value = text or ""
+    compact = " ".join(value.split())
+    if len(compact) > 800:
+        return True
+    object_replacement_count = value.count("\ufffc")
+    line_count = value.count("\n") + 1
+    if object_replacement_count >= 3 and line_count >= 6:
+        return True
+    navigation_markers = (
+        "文件",
+        "编辑",
+        "视图",
+        "查看",
+        "帮助",
+        "商店",
+        "库",
+        "社区",
+        "store",
+        "library",
+        "community",
+        "view",
+        "help",
+    )
+    lower = compact.lower()
+    return len(compact) > 80 and sum(marker in lower for marker in navigation_markers) >= 3
+
+
+def _uia_descendant_text(control, max_chars: int = 2000) -> tuple[str, str]:
+    if not _uia_control_is_rich_text_editor(control):
+        return "", ""
+    try:
+        import uiautomation as uia
+    except Exception as e:
+        return "", f"uia_unavailable:{e}"
+    chunks: list[str] = []
+    scanned = 0
+    try:
+        walker = uia.WalkControl(control, includeTop=False, maxDepth=6)
+        for child, _depth in walker:
+            scanned += 1
+            if scanned > 200:
+                break
+            remaining = max_chars - sum(len(chunk) for chunk in chunks)
+            if remaining <= 0:
+                break
+            piece = _uia_descendant_text_piece(child, max_chars=remaining)
+            if not piece or _uia_descendant_text_piece_is_noise(child, piece):
+                continue
+            chunks.append(piece)
+    except Exception as e:
+        return "", f"descendant_error:{e}"
+    text = _join_uia_descendant_text_chunks(chunks)
+    if not text:
+        return "", f"descendant_text_controls=0;scanned={scanned}"
+    return text[:max_chars], f"descendant_text_controls={len(chunks)};scanned={scanned}"
+
+
+def _uia_descendant_text_piece(control, max_chars: int = 2000) -> str:
+    role = _uia_control_role(control).lower()
+    if "text" not in role and "edit" not in role:
+        return ""
+    text, _detail = _uia_text_pattern_text(control, max_chars=max_chars)
+    if text and text.strip():
+        return text[:max_chars]
+    name = str(getattr(control, "Name", "") or "")
+    if name and name.strip():
+        return name[:max_chars]
+    return ""
+
+
+def _uia_descendant_text_piece_is_noise(control, text: str) -> bool:
+    class_name = str(getattr(control, "ClassName", "") or "").lower()
+    if "trailingbreak" in class_name or "placeholder" in class_name:
+        return True
+    value = (text or "").strip()
+    return not value or value == "\ufffc"
+
+
+def _join_uia_descendant_text_chunks(chunks: list[str]) -> str:
+    clean = [chunk.strip("\r") for chunk in chunks if chunk and chunk.strip()]
+    if not clean:
+        return ""
+    if len(clean) == 1:
+        return clean[0]
+    return "\n".join(clean)
+
+
+def _uia_value_pattern_text(control, max_chars: int = 2000) -> tuple[str, str]:
+    for method_name in ("GetValuePattern",):
+        try:
+            pattern = getattr(control, method_name)()
+        except Exception:
+            continue
+        text = _uia_pattern_value(pattern, max_chars=max_chars)
+        if text:
+            return text, method_name
+    try:
+        import uiautomation as uia
+
+        pattern = control.GetPattern(uia.PatternId.ValuePattern)
+    except Exception:
+        pattern = None
+    text = _uia_pattern_value(pattern, max_chars=max_chars)
+    if text:
+        return text, "GetPattern(ValuePattern)"
+    return "", ""
+
+
+def _uia_pattern_value(pattern, max_chars: int = 2000) -> str:
+    if pattern is None:
+        return ""
+    for attr in ("Value", "value"):
+        value = getattr(pattern, attr, None)
+        if isinstance(value, str) and value:
+            return value[:max_chars]
+    for method in ("GetValue", "GetValuePattern"):
+        try:
+            value = getattr(pattern, method)()
+        except Exception:
+            continue
+        if isinstance(value, str) and value:
+            return value[:max_chars]
+    return ""
+
+
+def _uia_text_pattern_text(control, max_chars: int = 2000) -> tuple[str, str]:
+    try:
+        pattern = control.GetTextPattern()
+    except Exception:
+        try:
+            import uiautomation as uia
+
+            pattern = control.GetPattern(uia.PatternId.TextPattern)
+        except Exception:
+            return "", ""
+    if pattern is None:
+        return "", ""
+    ranges = []
+    document_range = getattr(pattern, "DocumentRange", None)
+    if document_range is not None:
+        ranges.append(document_range)
+    try:
+        ranges.extend(pattern.GetSelection() or [])
+    except Exception:
+        pass
+    for text_range in ranges:
+        try:
+            text = text_range.GetText(max_chars)
+        except Exception:
+            continue
+        if isinstance(text, str) and text:
+            return text[:max_chars], "GetText"
+    return "", ""
+
+
+def _inspect_focused_text_windows(max_chars: int = 2000) -> FocusedTextSnapshot:
+    app = current_application()
+    uia_snapshot = _inspect_focused_text_uia_windows(max_chars=max_chars)
+    uia_probes = tuple(uia_snapshot.probes) if uia_snapshot is not None else ()
+    if uia_snapshot is not None and uia_snapshot.text:
+        return uia_snapshot
+    remembered_snapshot = _inspect_remembered_text_target_windows(max_chars=max_chars)
+    remembered_probes = tuple(remembered_snapshot.probes) if remembered_snapshot is not None else ()
+    if remembered_snapshot is not None and remembered_snapshot.text:
+        return remembered_snapshot
+    hwnd = _focused_text_window_handle_windows()
+    hwnd_probe = FocusedTextProbe(
+        "GetGUIThreadInfo",
+        bool(hwnd),
+        value=str(hwnd or ""),
+    )
+    class_name = _window_class_name_windows(hwnd) if hwnd else ""
+    if not hwnd:
+        return FocusedTextSnapshot(
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            probes=uia_probes + (hwnd_probe,),
+        )
+    text = _read_window_text_windows(hwnd, max_chars=max_chars)
+    if text and not _window_text_class_is_editable_windows(class_name):
+        text_probe = FocusedTextProbe(
+            "WM_GETTEXT",
+            False,
+            detail=f"class={class_name or '-'};skipped=non_edit_text_class;text={text[:80]}",
+        )
+        return FocusedTextSnapshot(
+            source="unsupported",
+            confidence="unsupported",
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            role=class_name,
+            probes=uia_probes + remembered_probes + (hwnd_probe, text_probe),
+        )
+    text_probe = FocusedTextProbe(
+        "WM_GETTEXT",
+        bool(text),
+        detail=f"class={class_name or '-'}",
+    )
+    return FocusedTextSnapshot(
+        text=text,
+        source="Win32:WM_GETTEXT" if text else "unsupported",
+        confidence=classify_text_capture(
+            source="Win32:WM_GETTEXT" if text else "unsupported",
+            text=text,
+        ),
+        app_name=app.name,
+        bundle_id=app.bundle_id,
+        pid=app.pid,
+        role=class_name,
+        probes=uia_probes + remembered_probes + (hwnd_probe, text_probe),
+    )
 
 
 
@@ -447,7 +1169,30 @@ def confirm_paste_without_focused_input(text: str) -> bool:
 
 
 def paste_text(text: str) -> None:
-    replace_selection(text)
+    if _OS == "Windows":
+        _type_via_clipboard_win(text)
+        return
+    global _simulating
+    _set_clipboard(text)
+    time.sleep(0.03)
+    _simulating = True
+    try:
+        if _OS == "Darwin":
+            _kb.press(Key.cmd)
+            try:
+                _press_key(KeyCode.from_char("v"))
+            finally:
+                _kb.release(Key.cmd)
+        else:
+            _kb.press(Key.ctrl)
+            try:
+                _press_key(KeyCode.from_char("v"))
+            finally:
+                _kb.release(Key.ctrl)
+        time.sleep(0.05)
+    finally:
+        _simulating = False
+    time.sleep(0.03)
 
 
 def copy_to_clipboard(text: str) -> None:
@@ -466,7 +1211,7 @@ def _type_via_quartz(text: str) -> None:
             evt = Quartz.CGEventCreateKeyboardEvent(src, 0, key_down)
             Quartz.CGEventKeyboardSetUnicodeString(evt, len(char), char)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, evt)
-        time.sleep(0.012)
+        time.sleep(_key_delay_seconds)
 
 
 def _type_via_sendinput(text: str) -> None:
@@ -489,18 +1234,24 @@ def _type_via_sendinput(text: str) -> None:
                     ),
                 )
                 _user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
-        time.sleep(0.012)
+        time.sleep(_key_delay_seconds)
 
 
 def _type_via_clipboard_win(text: str) -> None:
     # Windows 剪贴板粘贴模式：适合微信等拦截 SendInput 的应用
+    global _simulating
     _set_clipboard_win(text)
     time.sleep(0.03)
-    _kb.press(Key.ctrl)
+    _simulating = True
     try:
-        _press_key(KeyCode.from_char("v"))
+        _kb.press(Key.ctrl)
+        try:
+            _press_key(KeyCode.from_char("v"))
+        finally:
+            _kb.release(Key.ctrl)
+        time.sleep(0.05)
     finally:
-        _kb.release(Key.ctrl)
+        _simulating = False
     time.sleep(0.03)
 
 
@@ -508,7 +1259,7 @@ def _type_via_xtest(text: str) -> None:
     # Linux：pynput 逐字，底层走 X11 XTest，绕过 IME
     for char in text:
         _kb.type(char)
-        time.sleep(0.012)
+        time.sleep(_key_delay_seconds)
 
 
 # ── 退格擦除 ──────────────────────────────────────────────────────
@@ -677,6 +1428,465 @@ def get_caret_text_window(max_chars: int = 600) -> CaretTextWindow | None:
     except Exception as e:
         print(f"[typer] get_caret_text_window 失败: {e}")
         return None
+
+
+def get_focused_text_value(max_chars: int = 2000) -> str:
+    """Return the focused editable text without slicing around the caret."""
+    try:
+        text = inspect_focused_text(max_chars=max_chars).text
+        if len(text) > max_chars:
+            return text[-max_chars:]
+        return text
+    except Exception as e:
+        print(f"[typer] get_focused_text_value 失败: {e}")
+        return ""
+
+
+def inspect_focused_text(max_chars: int = 2000) -> FocusedTextSnapshot:
+    """Return focused text plus capture diagnostics for UI and learning gates."""
+    app = current_application()
+    if _OS == "Windows":
+        return _inspect_focused_text_windows(max_chars=max_chars)
+    if _OS != "Darwin":
+        return FocusedTextSnapshot(
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            probes=(FocusedTextProbe("platform", False, detail=_OS),),
+        )
+    focused, focus_source = _focused_accessibility_element_with_source()
+    focus_probe = FocusedTextProbe(
+        "AXFocusedUIElement",
+        focused is not None,
+        detail=focus_source,
+    )
+    window_scan_probe = None
+    if focused is None:
+        focused, window_source = _fallback_accessibility_text_element()
+        window_scan_probe = FocusedTextProbe(
+            "AXWindowScan",
+            focused is not None,
+            detail=window_source,
+        )
+        if focused is None:
+            return FocusedTextSnapshot(
+                app_name=app.name,
+                bundle_id=app.bundle_id,
+                pid=app.pid,
+                probes=(focus_probe, window_scan_probe),
+            )
+    try:
+        result = _inspect_accessibility_text(focused, max_chars=max_chars)
+        probes = [focus_probe]
+        if window_scan_probe is not None:
+            probes.append(window_scan_probe)
+        probes.extend(result["probes"])
+        return FocusedTextSnapshot(
+            text=result["text"],
+            source=result["source"],
+            confidence=classify_text_capture(
+                source=result["source"],
+                text=result["text"],
+                selected_range=result["selected_range"],
+            ),
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            role=result["role"],
+            subrole=result["subrole"],
+            selected_range=result["selected_range"],
+            probes=tuple(probes),
+        )
+    except Exception as e:
+        return FocusedTextSnapshot(
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            probes=(FocusedTextProbe("inspect", False, detail=str(e)),),
+        )
+
+
+def inspect_screen_text(
+    *,
+    reference_text: str = "",
+    max_chars: int = 4000,
+) -> FocusedTextSnapshot:
+    """Return screen OCR text plus capture diagnostics for correction learning."""
+    app = current_application()
+    try:
+        from agent.screen_ocr_capture import capture_screen_text
+
+        return capture_screen_text(
+            reference_text=reference_text,
+            max_chars=max_chars,
+        )
+    except Exception as e:
+        return FocusedTextSnapshot(
+            source="ocr_error",
+            confidence="unsupported",
+            app_name=app.name,
+            bundle_id=app.bundle_id,
+            pid=app.pid,
+            probes=(FocusedTextProbe("ScreenOCR", False, detail=str(e)),),
+        )
+
+
+def get_full_focused_text_snapshot(max_chars: int = 2000):
+    from agent.correction_memory import CorrectionTextSnapshot
+
+    snapshot = inspect_focused_text(max_chars=max_chars)
+    detail = f"confidence={snapshot.confidence}"
+    if snapshot.role:
+        detail += f" role={snapshot.role}"
+    return CorrectionTextSnapshot(snapshot.text, source=snapshot.source, detail=detail)
+
+
+def get_screen_text_snapshot(expected_text: str = ""):
+    from agent.correction_memory import CorrectionTextSnapshot
+
+    snapshot = inspect_screen_text(reference_text=expected_text)
+    detail = f"confidence={snapshot.confidence}"
+    return CorrectionTextSnapshot(snapshot.text, source=snapshot.source, detail=detail)
+
+
+def probe_full_text_via_clipboard(max_chars: int = 4000):
+    from agent.correction_memory import CorrectionTextSnapshot
+
+    if _OS != "Windows":
+        return CorrectionTextSnapshot("", source="clipboard_probe_unsupported")
+    if _foreground_window_is_console():
+        return CorrectionTextSnapshot(
+            "",
+            source="clipboard_probe_skipped",
+            detail="console",
+        )
+    old_clip = ""
+    try:
+        old_clip = _get_clipboard()
+        _set_clipboard(_SENTINEL)
+        time.sleep(0.03)
+        _press_select_all()
+        _copy_selection()
+        time.sleep(0.12)
+        copied = _get_clipboard()
+        if copied and copied != _SENTINEL:
+            return CorrectionTextSnapshot(
+                copied[-max_chars:],
+                source="clipboard_probe",
+                detail=f"chars={len(copied)}",
+            )
+        return CorrectionTextSnapshot(
+            "",
+            source="clipboard_probe",
+            detail="empty_or_unchanged",
+        )
+    except Exception as e:
+        return CorrectionTextSnapshot(
+            "",
+            source="clipboard_probe_error",
+            detail=str(e),
+        )
+    finally:
+        try:
+            _collapse_selection_to_end()
+        except Exception:
+            pass
+        try:
+            _set_clipboard(old_clip)
+        except Exception:
+            pass
+
+
+def _fallback_accessibility_text_element() -> tuple[object | None, str]:
+    if _OS != "Darwin":
+        return None, "unsupported_platform"
+    stats = _new_window_scan_stats()
+    try:
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        pid = app.processIdentifier() if app is not None else None
+        if not pid:
+            return None, "no_pid"
+        root = ApplicationServices.AXUIElementCreateApplication(pid)
+    except Exception:
+        return None, "app_root_failed"
+
+    roots = []
+    focused_window = _ax_attribute(root, "AXFocusedWindow")
+    stats["focused_window"] = "yes" if focused_window is not None else "no"
+    if focused_window is not None:
+        roots.append(("AXFocusedWindow", focused_window))
+    windows = _ax_iterable_attribute(root, "AXWindows")
+    stats["window_count"] = len(windows)
+    for window in windows:
+        roots.append(("AXWindows", window))
+    if not roots:
+        roots.append(("AXApplication", root))
+    stats["roots"] = [source for source, _element in roots]
+
+    seen: set[int] = set()
+    for source, element in roots:
+        found = _find_accessibility_text_element(element, seen=seen, stats=stats)
+        if found is not None:
+            return found, source
+    return None, _format_window_scan_stats(stats)
+
+
+def _find_accessibility_text_element(
+    element,
+    *,
+    seen: set[int],
+    stats: dict | None = None,
+    depth: int = 0,
+    max_depth: int = 8,
+):
+    if element is None:
+        return None
+    marker = id(element)
+    if marker in seen:
+        return None
+    seen.add(marker)
+    role = str(_ax_attribute(element, "AXRole") or "")
+    _record_window_scan_element(stats, role, depth)
+    if _accessibility_role_looks_editable(role):
+        return element
+    text = _read_accessibility_text_from_element(element)
+    if text:
+        return element
+    if depth >= max_depth:
+        return None
+    for child in _accessibility_children(element):
+        found = _find_accessibility_text_element(
+            child,
+            seen=seen,
+            stats=stats,
+            depth=depth + 1,
+            max_depth=max_depth,
+        )
+        if found is not None:
+            return found
+    return None
+
+
+def _new_window_scan_stats() -> dict:
+    return {
+        "focused_window": "unknown",
+        "window_count": "unknown",
+        "roots": [],
+        "visited": 0,
+        "max_depth": 0,
+        "roles": {},
+    }
+
+
+def _record_window_scan_element(stats: dict | None, role: str, depth: int) -> None:
+    if stats is None:
+        return
+    stats["visited"] = int(stats.get("visited", 0)) + 1
+    stats["max_depth"] = max(int(stats.get("max_depth", 0)), depth)
+    roles = stats.setdefault("roles", {})
+    role_name = role or "-"
+    roles[role_name] = int(roles.get(role_name, 0)) + 1
+
+
+def _format_window_scan_stats(stats: dict) -> str:
+    roots = ",".join(stats.get("roots") or ["-"])
+    roles = stats.get("roles") or {}
+    role_counts = ",".join(
+        f"{role}:{count}"
+        for role, count in sorted(
+            roles.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:8]
+    )
+    return (
+        "not_found "
+        f"focusedWindow={stats.get('focused_window', 'unknown')} "
+        f"windows={stats.get('window_count', 'unknown')} "
+        f"roots={roots} "
+        f"visited={stats.get('visited', 0)} "
+        f"maxDepth={stats.get('max_depth', 0)} "
+        f"roles={role_counts or '-'}"
+    )
+
+
+def _accessibility_role_looks_editable(role: str) -> bool:
+    return role in {"AXTextArea", "AXTextField", "AXComboBox", "AXSearchField"}
+
+
+def _read_accessibility_text(element, *, depth: int = 0, max_depth: int = 3) -> str:
+    result = _inspect_accessibility_text(
+        element,
+        depth=depth,
+        max_depth=max_depth,
+    )
+    return result["text"]
+
+
+def _inspect_accessibility_text(
+    element,
+    *,
+    depth: int = 0,
+    max_depth: int = 3,
+    max_chars: int = 2000,
+) -> dict:
+    probes: list[FocusedTextProbe] = []
+    role = str(_ax_attribute(element, "AXRole") or "")
+    subrole = str(_ax_attribute(element, "AXSubrole") or "")
+    selected_range = _get_accessibility_selected_range(element)
+    text, source = _read_accessibility_text_from_element_with_probes(
+        element,
+        probes,
+    )
+    if text:
+        if len(text) > max_chars:
+            text = text[-max_chars:]
+        return {
+            "text": text,
+            "source": source,
+            "role": role,
+            "subrole": subrole,
+            "selected_range": selected_range,
+            "probes": probes,
+        }
+    if depth < max_depth:
+        children = _accessibility_children(element)
+        probes.append(FocusedTextProbe("AXChildren", bool(children), detail=str(len(children))))
+        for child in children:
+            child_result = _inspect_accessibility_text(
+                child,
+                depth=depth + 1,
+                max_depth=max_depth,
+                max_chars=max_chars,
+            )
+            probes.extend(child_result["probes"])
+            if child_result["text"]:
+                source = f"child:{child_result['source']}"
+                return {
+                    "text": child_result["text"],
+                    "source": source,
+                    "role": role,
+                    "subrole": subrole,
+                    "selected_range": selected_range,
+                    "probes": probes,
+                }
+    else:
+        probes.append(FocusedTextProbe("AXChildren", False, detail="max_depth"))
+    return {
+        "text": "",
+        "source": "unsupported",
+        "role": role,
+        "subrole": subrole,
+        "selected_range": selected_range,
+        "probes": probes,
+    }
+
+
+def _read_accessibility_text_from_element(element) -> str:
+    text, _source = _read_accessibility_text_from_element_with_probes(element, [])
+    return text
+
+
+def _read_accessibility_text_from_element_with_probes(
+    element,
+    probes: list[FocusedTextProbe],
+) -> tuple[str, str]:
+    value = _ax_attribute(element, "AXValue")
+    if isinstance(value, str) and value:
+        probes.append(FocusedTextProbe("AXValue", True, _preview_text(value)))
+        return value, "AXValue"
+    probes.append(
+        FocusedTextProbe(
+            "AXValue",
+            False,
+            detail="empty" if value == "" else "missing",
+        )
+    )
+    text = _read_accessibility_string_for_full_range(element, probes)
+    if text:
+        return text, "AXStringForRange"
+    return "", "unsupported"
+
+
+def _read_accessibility_string_for_full_range(
+    element,
+    probes: list[FocusedTextProbe] | None = None,
+) -> str:
+    length_value = _ax_attribute(element, "AXNumberOfCharacters")
+    try:
+        length = int(length_value)
+    except (TypeError, ValueError):
+        if probes is not None:
+            probes.append(FocusedTextProbe("AXNumberOfCharacters", False, detail="missing"))
+        return ""
+    if length <= 0:
+        if probes is not None:
+            probes.append(FocusedTextProbe("AXNumberOfCharacters", False, detail=str(length)))
+        return ""
+    if probes is not None:
+        probes.append(FocusedTextProbe("AXNumberOfCharacters", True, detail=str(length)))
+    try:
+        cf_range = ApplicationServices.CFRangeMake(0, length)
+        ax_range = ApplicationServices.AXValueCreate(
+            ApplicationServices.kAXValueCFRangeType,
+            cf_range,
+        )
+        result = ApplicationServices.AXUIElementCopyParameterizedAttributeValue(
+            element,
+            "AXStringForRange",
+            ax_range,
+            None,
+        )
+    except Exception:
+        if probes is not None:
+            probes.append(FocusedTextProbe("AXStringForRange", False, detail="exception"))
+        return ""
+    if not isinstance(result, tuple) or len(result) < 2:
+        if probes is not None:
+            probes.append(FocusedTextProbe("AXStringForRange", False, detail="bad_result"))
+        return ""
+    err, value = result[0], result[1]
+    if err != 0 or value is None:
+        if probes is not None:
+            probes.append(FocusedTextProbe("AXStringForRange", False, detail=f"err={err}"))
+        return ""
+    if probes is not None:
+        probes.append(FocusedTextProbe("AXStringForRange", True, _preview_text(str(value))))
+    return str(value)
+
+
+def _accessibility_children(element) -> tuple:
+    for attr in ("AXChildren", "AXVisibleChildren", "AXRows", "AXContents"):
+        value = _ax_attribute(element, attr)
+        if isinstance(value, (list, tuple)) and value:
+            return tuple(value)
+    return ()
+
+
+def _ax_attribute(element, attr: str):
+    try:
+        err, value = ApplicationServices.AXUIElementCopyAttributeValue(
+            element,
+            attr,
+            None,
+        )
+        if err == 0 and value is not None:
+            return value
+    except Exception:
+        return None
+    return None
+
+
+def _ax_iterable_attribute(element, attr: str) -> tuple:
+    value = _ax_attribute(element, attr)
+    if isinstance(value, (list, tuple)):
+        return tuple(item for item in value if item is not None)
+    return ()
+
+
+def _preview_text(text: str, limit: int = 80) -> str:
+    value = str(text or "").replace("\n", "\\n")
+    suffix = "..." if len(value) > limit else ""
+    return value[:limit] + suffix
 
 
 _SENTENCE_BOUNDARIES = frozenset("。！？!?…\n")
@@ -977,6 +2187,37 @@ def _copy_selection() -> None:
             finally:
                 _kb.release(Key.ctrl)
         time.sleep(0.05)  # 等 pynput 监听线程处理完这批模拟事件
+    finally:
+        _simulating = False
+
+
+def _press_select_all() -> None:
+    global _simulating
+    _simulating = True
+    try:
+        if _OS == "Darwin":
+            _kb.press(Key.cmd)
+            try:
+                _press_key(KeyCode.from_char("a"))
+            finally:
+                _kb.release(Key.cmd)
+        else:
+            _kb.press(Key.ctrl)
+            try:
+                _press_key(KeyCode.from_char("a"))
+            finally:
+                _kb.release(Key.ctrl)
+        time.sleep(0.05)
+    finally:
+        _simulating = False
+
+
+def _collapse_selection_to_end() -> None:
+    global _simulating
+    _simulating = True
+    try:
+        _press_key(Key.right)
+        time.sleep(0.03)
     finally:
         _simulating = False
 

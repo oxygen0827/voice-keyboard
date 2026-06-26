@@ -10,7 +10,7 @@ tkinter_dir = python_root / "Lib" / "tkinter"
 dll_dir = python_root / "DLLs"
 
 a = Analysis(
-    [str(root / "agent" / "windows_tray.py")],
+    [str(root / "agent" / "windows" / "tray.py")],
     pathex=[str(root)],
     binaries=[
         (str(dll_dir / "_tkinter.pyd"), "."),
@@ -24,6 +24,11 @@ a = Analysis(
         (str(tkinter_dir), "tkinter"),
     ],
     hiddenimports=[
+        "agent.windows.tray",
+        "agent.windows.status_window",
+        "agent.windows.main_window",
+        "agent.windows.action_card",
+        "agent.windows.window_actions",
         "agent.status_window_win",
         "agent.windows_tray",
         "agent.windows_main_window",
@@ -40,6 +45,7 @@ a = Analysis(
         "pystray._win32",
         "PIL.Image",
         "PIL.ImageDraw",
+        "uiautomation",
         "sounddevice",
         "serial.tools.list_ports",
         "websocket",

@@ -8,6 +8,7 @@ from agent.input_environment import (
     TextTarget,
     TyperInputEnvironment,
 )
+from agent.correction_memory import CorrectionTextSnapshot
 from agent.text_buffer import TextBuffer
 from agent.text_io import CaretTextWindow
 from agent.text_io import ShortcutCatalogEntry
@@ -207,6 +208,28 @@ class InputEnvironmentTests(unittest.TestCase):
 
         self.assertIn(("type_text", "dictated"), text_io.calls)
         self.assertEqual(buf.current_segment, "dictated")
+
+    def test_correction_learning_snapshot_keeps_focused_capture_diagnostics_on_fallback(self):
+        class NoFocusedTextIO(FakeTextIO):
+            def get_full_focused_text_snapshot(self):
+                self.calls.append(("get_full_focused_text_snapshot",))
+                return CorrectionTextSnapshot(
+                    "",
+                    source="unsupported",
+                    detail="confidence=unsupported;role=QtWindow",
+                )
+
+        buf = TextBuffer()
+        buf.push("文静，文静，文静")
+        text_io = NoFocusedTextIO()
+        env = TyperInputEnvironment(buf, text_io=text_io)
+
+        snapshot = env.current_text_snapshot_for_correction_learning()
+
+        self.assertEqual(snapshot.text, "文静，文静，文静")
+        self.assertEqual(snapshot.source, "tracked_segment")
+        self.assertIn("fallback_after=unsupported", snapshot.detail)
+        self.assertIn("role=QtWindow", snapshot.detail)
 
     def test_insert_dictation_ignores_focus_probe_and_types_directly(self):
         buf = TextBuffer()

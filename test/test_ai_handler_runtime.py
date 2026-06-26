@@ -1,9 +1,14 @@
 import time
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock
 
+from agent.ai_command_plan import AICommandPlan
 from agent.ai_handler import AIHandler
-from agent.input_environment import TextTarget
+from agent.input_environment import TargetChangeResult, TextTarget
+from agent.local_learning import LocalLearningRecorder
+from agent.voice_text_operation import VoiceTextOperation
 
 
 class FakeSTT:
@@ -28,6 +33,18 @@ class FakeEnv:
         return ()
 
 
+class FakeCorrectionEnv(FakeEnv):
+    def __init__(self):
+        self.replacements = []
+
+    def target_for_instruction(self):
+        return TextTarget(tracked_segment="wrong name")
+
+    def apply_replacement_plan(self, window, plan):
+        self.replacements.append((window.text, plan.target_text, plan.replacement_text))
+        return TargetChangeResult.changed(window.text, plan.replacement_text)
+
+
 class FakeHistory:
     def __init__(self):
         self.entries = []
@@ -40,12 +57,17 @@ class FakeStatus:
     def __init__(self):
         self.messages = []
         self.states = []
+        self.action_cards = []
 
     def show_message(self, text: str, seconds: float = 6.0):
         self.messages.append((text, seconds))
 
     def set_state(self, state: str):
         self.states.append(state)
+
+    def show_action_card(self, **kwargs):
+        self.action_cards.append(kwargs)
+        return True
 
 
 class AIHandlerRuntimeTests(unittest.TestCase):
@@ -142,6 +164,44 @@ class AIHandlerRuntimeTests(unittest.TestCase):
             "[AI]: 正在理解指令",
             "[AI]: 准备生成文字",
         ])
+
+    def test_local_correction_can_learn_from_shared_dictation_output(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            learning = LocalLearningRecorder(
+                events_path=root / "events.jsonl",
+                dictionary_path=root / "dictionary.json",
+            )
+            learning.remember_output(
+                "hello wrong name",
+                mode="dictate",
+                operation_kind="dictation",
+            )
+            env = FakeCorrectionEnv()
+            history = FakeHistory()
+            handler = AIHandler(
+                FakeSTT("不是 wrong name，是 right name"),
+                MagicMock(),
+                MagicMock(),
+                history=history,
+                input_environment=env,
+                learning=learning,
+            )
+
+            handler._run_inner(b"pcm")
+
+            self.assertEqual(env.replacements, [
+                ("hello wrong name", "hello wrong name", "hello right name"),
+            ])
+            self.assertTrue((root / "events.jsonl").exists())
+            self.assertIn(
+                "right name",
+                (root / "dictionary.json").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                history.entries[-1],
+                ("ai", "不是 wrong name，是 right name", "ok", "local_correction"),
+            )
 
 
 if __name__ == "__main__":

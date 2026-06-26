@@ -7,6 +7,8 @@ import threading
 from typing import Callable, ContextManager
 
 from agent.input_environment import OperationWindow, ReplacementPlan, TextTarget
+from agent.ai_command_plan import AICommandPlan
+from agent.ai_risk_policy import deny_feedback
 from agent.punctuation import normalize_spoken_punctuation
 from agent.memo import MemoOperationResult, Memo
 from agent.ai_intent import looks_like_whole_delete_instruction
@@ -38,6 +40,7 @@ class InstructionModeExecutor:
         set_status: Callable[[str], None] | None = None,
         text_io: ContextManager | None = None,
         provider_call_timeout: float = _PROVIDER_CALL_TIMEOUT_SECONDS,
+        confirm_operation: Callable[[str, str], bool] | None = None,
     ):
         self._llm = llm_editor
         self._env = input_environment
@@ -46,7 +49,36 @@ class InstructionModeExecutor:
         self._set_status = set_status or (lambda state: None)
         self._text_io = text_io
         self._provider_call_timeout = provider_call_timeout
+        self._confirm_operation = confirm_operation or (lambda name, reason: False)
         self.last_status: tuple[str, str] = ("ok", "")
+        self.last_output_text: str = ""
+        self.last_operation_risk: str = ""
+        self.last_confirmation_triggered: bool | None = None
+        self.last_user_cancelled: bool | None = None
+
+    def execute_plan(
+        self,
+        plan: AICommandPlan,
+        instruction: str,
+        selected: str,
+        target: TextTarget | None = None,
+        *,
+        confirmed: bool = False,
+    ) -> bool:
+        self.last_output_text = ""
+        if plan.output_policy == "deny":
+            self._show_failure(deny_feedback(), plan.risk_reason or "denied")
+            return True
+        if plan.output_policy == "confirm" and not confirmed:
+            self.last_status = ("pending_confirmation", plan.risk_reason)
+            return True
+        return self.execute(
+            plan.operation,
+            instruction,
+            selected,
+            target,
+            confirmed=confirmed,
+        )
 
     def execute(
         self,
@@ -54,17 +86,41 @@ class InstructionModeExecutor:
         instruction: str,
         selected: str,
         target: TextTarget | None = None,
+        *,
+        confirmed: bool = False,
     ) -> bool:
+        self.last_output_text = ""
         self.last_status = ("ok", operation.kind)
+        self.last_operation_risk = ""
+        self.last_confirmation_triggered = None
+        self.last_user_cancelled = None
         if operation.kind == "shortcut":
             policy = self._env.shortcut_policy_for_invocation(operation.name)
+            self.last_operation_risk = policy.risk
             if not policy.found:
                 self._show_failure(
                     f"没有找到快捷键：{operation.name}",
                     f"shortcut_missing:{operation.name}",
                 )
                 return True
-            elif policy.allowed:
+            if (not policy.allowed) or policy.risk == "high":
+                self.last_confirmation_triggered = True
+                if confirmed:
+                    self.last_user_cancelled = False
+                    self.last_status = ("ok", f"shortcut_confirmed:{operation.name}")
+                elif not self._confirm_operation(
+                    operation.name,
+                    "high_risk_requires_confirmation",
+                ):
+                    self.last_user_cancelled = True
+                    self._show_failure(
+                        f"快捷键已取消：{operation.name}",
+                        f"shortcut_cancelled:{operation.name}",
+                    )
+                    return True
+                self.last_user_cancelled = False
+                self.last_status = ("ok", f"shortcut_confirmed:{operation.name}")
+            if policy.allowed or self.last_user_cancelled is False:
                 if not self._env.send_shortcut(operation.name):
                     self._show_failure(
                         f"快捷键执行失败：{operation.name}",
@@ -116,6 +172,8 @@ class InstructionModeExecutor:
     def _handle_memo_result(self, result: MemoOperationResult, selected: str = "") -> bool:
         if result.action == "insert":
             insertion = self._env.insert_generated_text(result.text)
+            if insertion.ok:
+                self.last_output_text = result.text
             if insertion.failure == "no_focused_input":
                 self._show_failure("未点击到输入框，已取消输出", "no_focused_input")
             elif insertion.failure == "copied_to_clipboard":
@@ -193,6 +251,7 @@ class InstructionModeExecutor:
         with self._io():
             result = self._env.apply_replacement_plan(window, plan)
         if result.ok:
+            self.last_output_text = result.replacement_text
             return
         elif result.failure in {"target_not_found", "ambiguous_target", "low_confidence"}:
             self._show_failure("没有找到明确可替换的内容", f"edit_{result.failure}")
@@ -281,6 +340,8 @@ class InstructionModeExecutor:
             self._show_failure("AI 没有生成内容，请重试", "write_empty")
             return False
         insertion = self._env.insert_generated_text(text)
+        if insertion.ok:
+            self.last_output_text = text
         if insertion.failure == "no_focused_input":
             self._show_failure("未点击到输入框，已取消输出", "no_focused_input")
             return False
@@ -317,6 +378,7 @@ class InstructionModeExecutor:
                 plan,
             )
         if result.ok:
+            self.last_output_text = result.replacement_text
             return
         elif result.failure in {"target_not_found", "ambiguous_target", "low_confidence"}:
             self._show_failure("没有找到明确可删除的内容", f"delete_{result.failure}")
