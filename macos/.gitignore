@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+outputs/
+tmp/
+.DS_Store
+*.spec
+config.yaml
+.env
+.local/
+
+# User runtime data. These files may contain private snippets, credentials,
+# dictation history, or local logs and must never be committed.
+memo.json
+memos.json
+reusable_text_memory.json
+history.jsonl
+agent.log
+.voice-keyboard/
+intent_training.db
+*.sqlite
+*.sqlite3

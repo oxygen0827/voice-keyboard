@@ -1,0 +1,271 @@
+# Voice Keyboard Agent 配置文件
+# 复制为 config.yaml 并填入你的配置（config.yaml 不会被提交到 git）
+#
+# 快速开始（无需任何硬件）：
+#   1. cp config.yaml.example config.yaml
+#   2. 选择下方任意一个 stt provider，填写对应凭据
+#   3. python -m agent.main --no-serial
+#
+# 也可以用 .env 文件代替 config.yaml（参考 .env.example），
+# 适合部署、Docker、CI/CD 等不便管理 YAML 的场景。
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 方案一：智谱 AI GLM-4-Voice（推荐，一个 Key 搞定 STT + LLM）
+# 参考：transmission_assistant 项目的智谱 AI 集成方式
+# 控制台：https://open.bigmodel.cn/
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# stt:
+#   provider: zhipuai
+#   api_key: "..."                       # 智谱 AI API Key
+#   model: glm-4-voice                   # 默认值，可省略
+#   language: zh                         # zh（中文）/ en（英文）
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 方案二：阿里云 NLS（中文最优，支持方言）
+# 控制台：https://nls-portal.console.aliyun.com/
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+stt:
+  provider: aliyun
+  access_key_id: "<ALIYUN_ACCESS_KEY_ID>"          # 阿里云 AccessKey ID
+  access_key_secret: "..."             # 阿里云 AccessKey Secret
+  app_key: "..."                       # NLS 项目的 Appkey
+  region: cn-shanghai                  # cn-shanghai 或 cn-beijing
+  language: zh                         # zh（中文）/ en（英文）
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 方案三：火山引擎 ASR（字节跳动，中文优化）
+# 控制台：https://console.volcengine.com/speech/service/16
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# stt:
+#   provider: volcengine
+#   app_id: "..."                      # 应用 ID
+#   token: "..."                       # 访问令牌（控制台生成）
+#   cluster: volcengine_streaming_common
+#   language: zh-CN
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 方案四：OpenAI Whisper（多语言，国际场景）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# stt:
+#   provider: openai
+#   api_key: "<API_KEY>"                  # https://platform.openai.com/api-keys
+#   model: whisper-1
+#   language: zh
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 方案五：TypeUp 后端代理（由 TypeUp Desktop 自动写入）
+# 账号、权益、额度和模型 Key 都由 TypeUp 后端处理，本机只保存登录 token。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# stt:
+#   provider: typeup_backend
+#   api_base_url: http://localhost:8000
+#   access_token: "..."
+#   refresh_token: "..."
+#   cloud_bridge_path: "/path/to/cloud-bridge.json"
+#   model: glm-asr-2512
+#   language: zh
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 音频设置
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+audio:
+  # 推荐：
+  #   购买了 Voice Keyboard 硬件 → mode: vad（全程免手动，开口即唤醒）
+  #   使用普通麦克风 / 内置麦克风 → mode: ptt（按住说话，避免背景噪音误触发）
+  mode: ptt                 # ptt（按住说话）或 vad（常开，自动检测语音）
+
+  # 听写热键（按住说话，原样转文字）
+  # macOS:   shift_r              右 Shift（无系统冲突；避开 Ctrl+Space 输入法切换）
+  # Windows: [alt_r]               右 Alt（或 alt_gr，中文键盘）
+  # Linux:   [alt_r]               右 Alt
+  # 不推荐 ctrl：会和 Ctrl+Space（macOS 切换输入法）、Ctrl+A/E/K（编辑光标）冲突
+  ptt_key: shift_r
+
+  # AI 键（快捷键/编辑/写作/撤回/聊天）
+  # macOS:   alt_r                 右 Option（不和系统 Cmd 快捷键冲突）
+  # Windows: [ctrl_r]               右 Ctrl（左 Ctrl 占用太多系统快捷键）
+  # Linux:   [ctrl_r]               右 Ctrl
+  # 不推荐 cmd / cmd_r：按住的瞬间所有 Cmd+X 系统快捷键都会被劫持
+  ai_key: alt_r
+
+  # 启停热键：按一下关闭 Dictation Mode / Instruction Mode 录音，再按一下恢复。
+  # 用于临时避开系统热键冲突或敏感词错误后的快速恢复。
+  toggle_key: f8
+
+  device: auto              # auto = 自动查找 ESP32 UAC 麦克风，找不到用系统默认
+                            # 其他示例：
+                            #   device: xiao_ble        # XIAO nRF52840 Sense（PsyGuard BLE 固件）
+                            #   device: xiao_ble:PsyGuard # 指定 BLE 名称/地址片段
+                            #   device: "MacBook"        # 内置麦克风
+                            #   device: "Insta360"       # Insta360 麦克风
+                            #   device: "DJI"            # 大疆麦克风
+                            #   device: "Yeti"           # Blue Yeti USB 麦克风
+                            #   device: 2                # 直接填序号（用 --list-devices 查）
+  xiao_ble:
+    trim_silence: false     # 当前 XIAO 稳定基线：不裁剪，避免误切短句开头
+    normalize_gain: false   # 当前 XIAO 稳定基线：不自动增益，避免放大 BLE 噪声
+  vad_aggressiveness: 2     # VAD 灵敏度 0~3（仅 mode: vad 时生效）
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LLM 文字编辑（语音修改上一句话）
+# 与 stt 可以用同一个 provider，也可以分开配置
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+llm:
+  provider: openai          # openai | aliyun（通义千问）| volcengine（豆包）| zhipuai（智谱 GLM）| typeup_backend
+  api_key: "<API_KEY>"         # 与 stt 用同一个 key 即可（OpenAI 通用）
+  model: gpt-4o-mini        # 推荐 gpt-4o-mini（快且便宜）
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# AI 键专用 STT（可选）
+# 普通听写可继续使用上面的 stt provider；按住 ai_key 时单独用 GLM-ASR-2512。
+# 这样 AI 键无需先走讯飞/阿里云，直接用智谱语音转文本后交给 LLM 意图处理。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ai_stt:
+#   provider: glm_asr_2512
+#   api_key: "..."           # 智谱 AI API Key，也可用 .env 的 GLM_API_KEY
+#   model: glm-asr-2512
+#   hotwords: ["Voice Keyboard", "备忘", "撤回"]
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 微润色专用 STT（可选）
+# 普通听写可继续使用上面的 stt provider；微润色模式可直接用智谱 ASR，
+# 避免先走讯飞/阿里云再润色。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# polish_stt:
+#   provider: glm_asr_2512
+#   api_key: "..."           # 智谱 AI API Key，也可用 .env 的 GLM_API_KEY
+#   model: glm-asr-2512
+#   hotwords: ["Voice Keyboard", "TypeUp"]
+
+# 智谱 AI GLM 示例（与 stt.zhipuai 搭配，只需一个 API Key）：
+# llm:
+#   provider: zhipuai
+#   api_key: "..."          # 智谱 AI API Key（同上方 stt 的 key）
+#   model: glm-4-flash      # 推荐 glm-4-flash（快且便宜）
+
+# 阿里云通义千问示例：
+# llm:
+#   provider: aliyun
+#   api_key: "<API_KEY>"       # DashScope API Key
+#   model: qwen-turbo
+
+# 火山引擎豆包示例：
+# llm:
+#   provider: volcengine
+#   api_key: "..."          # ARK API Key
+#   model: doubao-lite-4k
+
+# TypeUp 后端代理示例（由 TypeUp Desktop 自动写入）：
+# llm:
+#   provider: typeup_backend
+#   api_base_url: http://localhost:8000
+#   access_token: "..."
+#   refresh_token: "..."
+#   cloud_bridge_path: "/path/to/cloud-bridge.json"
+#   model: glm-4-flash
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Dictation Mode 个人词典 / 纠错记忆
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+correction_memory:
+  enabled: true
+  path: ~/.voice-keyboard/correction_memory.json
+  # 同一类“错词 -> 正词”至少观察到几次，才自动加入词典。
+  confirm_threshold: 2
+  # 只在语音输入后短时间内观察用户手动修改，避免学习无关输入。
+  observe_window_seconds: 30
+  # 高开销兜底：AX/IME 都读不到真实输入框时，尝试 macOS 屏幕 OCR。
+  # 默认关闭，避免普通语音输入时加载 macOS Vision/OCR 导致 CPU/内存峰值。
+  # 只有确实需要从不支持 Accessibility 的输入框里学习词典时再手动打开。
+  # 需要给运行 Voice Keyboard Engine 的终端/Python 授予 Screen Recording 权限。
+  screen_ocr_fallback: false
+  screen_ocr_after_edit_seconds: 0.8
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Instruction Mode
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+instruction_mode:
+  intent_fallbacks:
+    # 安全类兜底：当前运行时不自动执行多步骤指令。
+    multi_step_guard: true
+    # 目标明确兜底：已有 Explicit Selection 且语音明显是翻译/润色/改写时，
+    # 即使模型误判成写作/聊天，也按编辑当前选区处理。
+    selected_edit_override: true
+    # 备忘录触发词：保存必须先选中文本；查询必须包含查询动作词 + 记忆唤醒词。
+    memo_fuzzy_recall: true
+    memo_triggers:
+      save_words: ["记住", "记一下", "记下", "备忘"]
+      lookup_actions: ["查一下", "查询", "查找", "找一下", "调出", "调取", "读取", "打开", "打出", "输入", "填入", "贴出"]
+      wake_words: ["记忆", "记忆库", "备忘", "备忘录", "我记住的", "我记下的", "之前记的", "上次记的", "保存过的", "存过的"]
+      delete_words: ["忘记", "忘掉", "删除备忘", "删掉备忘", "删除记忆", "删掉记忆", "不要记"]
+    # 本地修正覆盖：意图诊断里保存的“修正”会先于模型生效。
+    intent_overrides: true
+    intent_overrides_path: ~/.voice-keyboard/intent_overrides.jsonl
+    # 本地轻量意图模型：由 corrected_intent 样本训练出来，在 LLM 之前做精确文本命中。
+    intent_model: false
+    intent_model_path: ~/.voice-keyboard/intent_models/current.json
+    # 相似命中阈值。1.0 = 只精确命中；0.8 = 允许轻微前后缀/口语变体。
+    intent_model_min_similarity: 1.0
+
+  # Intent training sample collection. Default is off and local-only.
+  # It stores sanitized instruction metadata for later rule tuning or model training.
+  intent_training:
+    enabled: false
+    path: ~/.voice-keyboard/intent_samples.jsonl
+    capture_text: true
+    max_text_length: 240
+    server: http://127.0.0.1:8000
+    token: ""
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 打字与自定义快捷键
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+typing:
+  method: unicode            # unicode 或 clip
+  shortcuts:
+    # 全局快捷键：语音说“刷新”时向当前活动应用发送 Cmd+R。
+    # 普通用户优先在菜单栏 Voice Keyboard -> 快捷键... 里修改。
+    刷新: cmd+r
+
+  # 如果某个应用快捷键被系统或截图工具等全局热键抢占，可以在这里屏蔽。
+  # 被屏蔽的动作不会进入 Shortcut Catalog，也不会被 Instruction Mode 执行。
+  blocked_shortcuts:
+    # - 多维表格居中
+  blocked_shortcut_keys:
+    # - cmd+shift+e
+
+  # 活动应用快捷键。
+  # Instruction Mode 会识别当前活动应用，并优先使用这里的映射。
+  # 当前内置应用快捷键预设为空；应用特定快捷键需要显式写在本机配置里。
+  # 旧字段 experimental_app_shortcuts / app_shortcuts 仍会被读取，建议迁移到 application_shortcuts。
+  # key 可以写 bundle id（推荐）或应用名。macOS bundle id 可从日志里的活动应用信息确认。
+  application_shortcuts:
+    # com.example.ProductivityApp:
+    #   自定义动作: cmd+enter
+
+  # 应用启动动作：语音说“打开飞书”“打开Word”等时启动本地 app。
+  # macOS 会自动发现 /Applications、~/Applications、/System/Applications 里的 .app。
+  # 这里用于补充别名或覆盖自动发现结果。
+  app_launches:
+    # 打开Obsidian:
+    #   macos_bundle_id: md.obsidian
+    #   macos_name: Obsidian
+
+  # macOS 系统窗口动作是内置系统动作，执行时通过 Accessibility 直接调整当前窗口 frame。
+  # 当前内置动作：窗口左半屏、窗口右半屏、窗口左移、窗口右移、窗口最大化、窗口居中。
+  # 如果某个动作不想让 Instruction Mode 执行，可写入 blocked_shortcuts。
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Claude Code AI 编程模式（可选）
+# 按住 ai_key 说出编程指令，松开后直接驱动 Claude Code 修改代码
+#
+# 前提：已安装 Claude Code CLI
+#   npm install -g @anthropic-ai/claude-code
+#   claude  （首次运行完成登录）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# claude_session:
+#   enabled: true
+#   working_dir: "/path/to/your/project"  # Claude Code 工作目录（你的代码仓库路径）
+#   ai_key: right_shift                   # AI 编程热键（按住说指令，松开执行）
+#   allowed_tools: "Read,Edit,Write,Bash,Glob,Grep"  # 允许 Claude 使用的工具
+#   max_turns: 10                         # 单次指令最多执行几轮

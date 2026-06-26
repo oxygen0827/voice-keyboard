@@ -1,0 +1,558 @@
+"""Windows floating status HUD implemented with Win32 APIs via ctypes."""
+
+from __future__ import annotations
+
+import ctypes
+import queue
+import threading
+import time
+from ctypes import wintypes
+
+from agent import config as app_config
+
+
+_STATE_TEXT: dict[str, dict[str, str]] = {
+    "zh": {
+        "idle": "\u5f85\u547d",
+        "recording": "\u5f55\u97f3\u4e2d",
+        "polish_recording": "\u5f55\u97f3\u4e2d - \u5fae\u6da6\u8272",
+        "ai_recording": "AI \u6307\u4ee4\u5f55\u97f3\u4e2d",
+        "recognizing": "\u8bc6\u522b\u4e2d",
+        "empty_stt": "\u672a\u8bc6\u522b\u5230\u8bed\u53e5",
+        "polishing": "\u6da6\u8272\u4e2d",
+        "ai_processing": "AI \u5904\u7406\u4e2d",
+        "error_stt": "\u8bc6\u522b\u5931\u8d25",
+        "error_typing": "\u6253\u5b57\u5931\u8d25",
+        "error_llm": "LLM \u5931\u8d25",
+        "error_perm": "\u6743\u9650\u672a\u6388\u4e88",
+        "dictation_disabled": "\u8bed\u97f3\u8f6c\u5199\u5df2\u5173\u95ed",
+        "dictation_enabled": "\u8bed\u97f3\u8f6c\u5199\u5df2\u5f00\u542f",
+        "dictation_mode": "\u5df2\u5207\u6362\u5230\u539f\u6587\u8f6c\u6587\u5b57",
+        "polish_mode": "\u5df2\u5207\u6362\u5230\u5fae\u6da6\u8272\u8f6c\u6587\u5b57",
+    },
+    "en": {
+        "idle": "Idle",
+        "recording": "Recording",
+        "polish_recording": "Recording - polish",
+        "ai_recording": "AI command recording",
+        "recognizing": "Recognizing",
+        "empty_stt": "No speech recognized",
+        "polishing": "Polishing",
+        "ai_processing": "AI processing",
+        "error_stt": "Recognition failed",
+        "error_typing": "Typing failed",
+        "error_llm": "LLM failed",
+        "error_perm": "Permission missing",
+        "dictation_disabled": "Dictation disabled",
+        "dictation_enabled": "Dictation enabled",
+        "dictation_mode": "Dictation mode",
+        "polish_mode": "Polish mode",
+    },
+}
+_STATE_COLORS: dict[str, int] = {
+    "idle": 0x999999,
+    "recording": 0x5252F0,
+    "polish_recording": 0x78C931,
+    "ai_recording": 0xF755A8,
+    "recognizing": 0x0B9EF5,
+    "empty_stt": 0x0B9EF5,
+    "polishing": 0xD4B606,
+    "ai_processing": 0xF6823B,
+    "error_stt": 0x4444EF,
+    "error_typing": 0x4444EF,
+    "error_llm": 0x4444EF,
+    "error_perm": 0x4444EF,
+    "dictation_disabled": 0x999999,
+    "dictation_enabled": 0x78C931,
+    "dictation_mode": 0x5252F0,
+    "polish_mode": 0x78C931,
+}
+
+
+def _language() -> str:
+    try:
+        ui = app_config.load().get("ui", {})
+    except Exception:
+        return "zh"
+    language = str(ui.get("language", "zh")).lower()
+    return "en" if language.startswith("en") else "zh"
+
+
+def _state_info(state: str) -> tuple[str, int] | None:
+    text = _STATE_TEXT.get(_language(), _STATE_TEXT["zh"]).get(state)
+    color = _STATE_COLORS.get(state)
+    if text is None or color is None:
+        return None
+    return text, color
+
+
+_ERROR_STATES = {
+    "error_stt", "error_typing", "error_llm", "error_perm", "empty_stt",
+    "dictation_disabled", "dictation_enabled", "dictation_mode", "polish_mode",
+}
+_WM_APP_STATE = 0x8001
+_WM_APP_STOP = 0x8002
+_WM_APP_MESSAGE = 0x8003
+_TIMER_POLL = 1
+_TIMER_HIDE = 2
+_SPI_GETWORKAREA = 0x0030
+_HWND_TOPMOST = wintypes.HWND(-1)
+_SWP_NOACTIVATE = 0x0010
+_BOTTOM_MARGIN = 48
+_CORNER_RADIUS = 18
+_AI_PROGRESS_COLOR = 0xF6823B
+_AI_DONE_COLOR = 0x78C931
+_AI_ERROR_COLOR = 0x4444EF
+_DT_SINGLELINE = 0x00000020
+_DT_VCENTER = 0x00000004
+_DT_END_ELLIPSIS = 0x00008000
+
+_user32 = ctypes.windll.user32
+_gdi32 = ctypes.windll.gdi32
+_kernel32 = ctypes.windll.kernel32
+
+_user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+_user32.DefWindowProcW.restype = ctypes.c_ssize_t
+_user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+_user32.PostMessageW.restype = wintypes.BOOL
+_user32.SetWindowPos.argtypes = [
+    wintypes.HWND,
+    wintypes.HWND,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.UINT,
+]
+_user32.SetWindowPos.restype = wintypes.BOOL
+_user32.SystemParametersInfoW.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
+_user32.SystemParametersInfoW.restype = wintypes.BOOL
+_user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
+_user32.SetWindowRgn.restype = ctypes.c_int
+_gdi32.CreateRoundRectRgn.argtypes = [
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+]
+_gdi32.CreateRoundRectRgn.restype = wintypes.HRGN
+
+
+class WNDCLASS(ctypes.Structure):
+    _fields_ = [
+        ("style", wintypes.UINT),
+        ("lpfnWndProc", ctypes.c_void_p),
+        ("cbClsExtra", ctypes.c_int),
+        ("cbWndExtra", ctypes.c_int),
+        ("hInstance", wintypes.HINSTANCE),
+        ("hIcon", wintypes.HICON),
+        ("hCursor", wintypes.HCURSOR),
+        ("hbrBackground", wintypes.HBRUSH),
+        ("lpszMenuName", wintypes.LPCWSTR),
+        ("lpszClassName", wintypes.LPCWSTR),
+    ]
+
+
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+_user32.FillRect.argtypes = [wintypes.HDC, ctypes.POINTER(RECT), wintypes.HBRUSH]
+_user32.FillRect.restype = ctypes.c_int
+
+
+class PAINTSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("hdc", wintypes.HDC),
+        ("fErase", wintypes.BOOL),
+        ("rcPaint", RECT),
+        ("fRestore", wintypes.BOOL),
+        ("fIncUpdate", wintypes.BOOL),
+        ("rgbReserved", ctypes.c_byte * 32),
+    ]
+
+
+class SIZE(ctypes.Structure):
+    _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+
+WNDPROC = ctypes.WINFUNCTYPE(
+    ctypes.c_ssize_t,
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.WPARAM,
+    wintypes.LPARAM,
+)
+
+
+class StatusWindow:
+    def __init__(self):
+        self._q: queue.Queue[str] = queue.Queue()
+        self._extra_setup = []
+        self._hwnd = None
+        self._state = "idle"
+        self._text = ""
+        self._color = 0xFFFFFF
+        self._message_token = 0
+        self._width_text = ""
+        self._ai_heard = ""
+        self._ai_stage = ""
+        self._ai_kind = "progress"
+        self._wndproc = WNDPROC(self._handle_message)
+        self._hinst = _kernel32.GetModuleHandleW(None)
+        self._class_name = "VoiceKeyboardStatusWindow"
+
+    def set_state(self, state: str) -> None:
+        self._q.put(("state", state))
+        if self._hwnd:
+            _user32.PostMessageW(self._hwnd, _WM_APP_STATE, 0, 0)
+
+    def show_message(self, text: str, seconds: float = 6.0) -> None:
+        self._message_token += 1
+        token = self._message_token
+        self._q.put(("message", text, token))
+        if self._hwnd:
+            _user32.PostMessageW(self._hwnd, _WM_APP_MESSAGE, 0, 0)
+        threading.Timer(seconds, self._hide_message, args=(token,)).start()
+
+    def show_ai_progress(self, heard: str, progress: str) -> None:
+        self._message_token += 1
+        token = self._message_token
+        self._q.put(("ai_message", heard, progress, token, "progress"))
+        if self._hwnd:
+            _user32.PostMessageW(self._hwnd, _WM_APP_MESSAGE, 0, 0)
+
+    def show_ai_result(
+        self,
+        heard: str,
+        result: str,
+        seconds: float = 6.0,
+        kind: str = "done",
+    ) -> None:
+        self._message_token += 1
+        token = self._message_token
+        self._q.put(("ai_message", heard, result, token, kind))
+        if self._hwnd:
+            _user32.PostMessageW(self._hwnd, _WM_APP_MESSAGE, 0, 0)
+        threading.Timer(seconds, self._hide_message, args=(token,)).start()
+
+    def show_typing_message(self, text: str, seconds: float = 6.0, interval: float = 0.016) -> None:
+        self._message_token += 1
+        token = self._message_token
+
+        def run() -> None:
+            if not text:
+                self.show_message(text, seconds)
+                return
+            # The STT result arrives as a complete string, so make the HUD animation
+            # catch up quickly instead of pretending to stream at a fixed slow rate.
+            target_duration = min(0.9, max(0.18, len(text) * 0.006))
+            chars_per_second = max(80.0, len(text) / target_duration)
+            started = time.monotonic()
+            last_len = 0
+            while True:
+                if token != self._message_token:
+                    return
+                elapsed = time.monotonic() - started
+                next_len = min(len(text), max(1, int(elapsed * chars_per_second)))
+                if next_len != last_len:
+                    self._q.put(("message", text[:next_len], token, text))
+                    if self._hwnd:
+                        _user32.PostMessageW(self._hwnd, _WM_APP_MESSAGE, 0, 0)
+                    last_len = next_len
+                if next_len >= len(text):
+                    break
+                time.sleep(interval)
+            threading.Timer(seconds, self._hide_message, args=(token,)).start()
+
+        threading.Thread(target=run, daemon=True, name="StatusTypingMessage").start()
+
+    def _hide_message(self, token: int) -> None:
+        self._q.put(("hide_message", token))
+        if self._hwnd:
+            _user32.PostMessageW(self._hwnd, _WM_APP_MESSAGE, 0, 0)
+
+    def add_main_thread_setup(self, fn) -> None:
+        self._extra_setup.append(fn)
+
+    def stop(self) -> None:
+        if self._hwnd:
+            _user32.PostMessageW(self._hwnd, _WM_APP_STOP, 0, 0)
+
+    def run(self) -> None:
+        self._register_class()
+        ex_style = 0x00000008 | 0x00000080 | 0x00080000 | 0x00000020
+        style = 0x80000000
+        self._hwnd = _user32.CreateWindowExW(
+            ex_style,
+            self._class_name,
+            "Voice Keyboard",
+            style,
+            0,
+            0,
+            260,
+            44,
+            None,
+            None,
+            self._hinst,
+            None,
+        )
+        if not self._hwnd:
+            raise ctypes.WinError()
+
+        _user32.SetLayeredWindowAttributes(self._hwnd, 0, 235, 0x00000002)
+        _user32.SetTimer(self._hwnd, _TIMER_POLL, 40, None)
+        self._apply("idle")
+
+        for fn in self._extra_setup:
+            try:
+                fn()
+            except Exception as e:
+                print(f"[status] main thread initialization failed: {e}")
+
+        msg = wintypes.MSG()
+        while _user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+            _user32.TranslateMessage(ctypes.byref(msg))
+            _user32.DispatchMessageW(ctypes.byref(msg))
+
+    def _register_class(self) -> None:
+        wc = WNDCLASS()
+        wc.lpfnWndProc = ctypes.cast(self._wndproc, ctypes.c_void_p).value
+        wc.hInstance = self._hinst
+        wc.lpszClassName = self._class_name
+        wc.hbrBackground = _gdi32.CreateSolidBrush(0x272322)
+        _user32.RegisterClassW(ctypes.byref(wc))
+
+    def _handle_message(self, hwnd, msg, wparam, lparam):
+        if msg == 0x000F:
+            self._paint(hwnd)
+            return 0
+        if msg == 0x0113:
+            if wparam == _TIMER_POLL:
+                self._poll()
+            elif wparam == _TIMER_HIDE:
+                _user32.KillTimer(hwnd, _TIMER_HIDE)
+                _user32.ShowWindow(hwnd, 0)
+            return 0
+        if msg == _WM_APP_STATE:
+            self._poll()
+            return 0
+        if msg == _WM_APP_MESSAGE:
+            self._poll()
+            return 0
+        if msg == _WM_APP_STOP:
+            _user32.DestroyWindow(hwnd)
+            return 0
+        if msg == 0x0002:
+            _user32.PostQuitMessage(0)
+            return 0
+        return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _poll(self) -> None:
+        try:
+            while True:
+                item = self._q.get_nowait()
+                if isinstance(item, tuple) and item and item[0] == "message":
+                    _, text, token, *rest = item
+                    width_text = rest[0] if rest else text
+                    self._apply_message(text, token, width_text)
+                elif isinstance(item, tuple) and item and item[0] == "ai_message":
+                    _, heard, stage, token, kind = item
+                    self._apply_ai_message(heard, stage, token, kind)
+                elif isinstance(item, tuple) and item and item[0] == "hide_message":
+                    _, token = item
+                    self._hide_message_now(token)
+                else:
+                    state = item[1] if isinstance(item, tuple) else item
+                    self._apply(state)
+        except queue.Empty:
+            pass
+
+    def _apply(self, state: str) -> None:
+        if not self._hwnd:
+            return
+        info = _state_info(state)
+        if info is None or state == "idle":
+            self._state = "idle"
+            self._width_text = ""
+            self._ai_heard = ""
+            self._ai_stage = ""
+            _user32.ShowWindow(self._hwnd, 0)
+            return
+        self._state = state
+        self._width_text = ""
+        self._text, self._color = info
+        _user32.KillTimer(self._hwnd, _TIMER_HIDE)
+        self._position()
+        _user32.ShowWindow(self._hwnd, 8)
+        _user32.InvalidateRect(self._hwnd, None, True)
+        if state in _ERROR_STATES:
+            _user32.SetTimer(self._hwnd, _TIMER_HIDE, 1500, None)
+
+    def _apply_message(self, text: str, token: int, width_text: str | None = None) -> None:
+        if not self._hwnd or token != self._message_token:
+            return
+        was_message = self._state == "message"
+        previous_width_text = self._width_text
+        next_width_text = width_text or text
+        self._state = "message"
+        self._text = text
+        self._width_text = next_width_text
+        self._color = 0xF6823B
+        _user32.KillTimer(self._hwnd, _TIMER_HIDE)
+        if not was_message or next_width_text != previous_width_text:
+            self._position()
+        _user32.ShowWindow(self._hwnd, 8)
+        _user32.InvalidateRect(self._hwnd, None, False)
+
+    def _apply_ai_message(self, heard: str, stage: str, token: int, kind: str) -> None:
+        if not self._hwnd or token != self._message_token:
+            return
+        self._state = "ai_message"
+        self._text = ""
+        self._width_text = ""
+        self._ai_heard = str(heard or "")
+        self._ai_stage = str(stage or "")
+        self._ai_kind = kind if kind in {"progress", "done", "error"} else "done"
+        self._color = {
+            "progress": _AI_PROGRESS_COLOR,
+            "done": _AI_DONE_COLOR,
+            "error": _AI_ERROR_COLOR,
+        }.get(self._ai_kind, _AI_DONE_COLOR)
+        _user32.KillTimer(self._hwnd, _TIMER_HIDE)
+        self._position()
+        _user32.ShowWindow(self._hwnd, 8)
+        _user32.InvalidateRect(self._hwnd, None, False)
+
+    def _hide_message_now(self, token: int) -> None:
+        if (
+            not self._hwnd
+            or token != self._message_token
+            or self._state not in {"message", "ai_message"}
+        ):
+            return
+        self._state = "idle"
+        self._width_text = ""
+        self._ai_heard = ""
+        self._ai_stage = ""
+        _user32.ShowWindow(self._hwnd, 0)
+
+    def _position(self) -> None:
+        hdc = _user32.GetDC(self._hwnd)
+        font = self._font()
+        old_font = _gdi32.SelectObject(hdc, font)
+        size = SIZE()
+        if self._state == "ai_message":
+            heard_text = f"\u6211\u542c\u5230\uff1a{self._ai_heard}"
+            stage_text = self._ai_stage
+            heard_size = SIZE()
+            stage_size = SIZE()
+            _gdi32.GetTextExtentPoint32W(hdc, heard_text, len(heard_text), ctypes.byref(heard_size))
+            _gdi32.GetTextExtentPoint32W(hdc, stage_text, len(stage_text), ctypes.byref(stage_size))
+            size.cx = max(heard_size.cx, stage_size.cx)
+            height = 58
+        else:
+            measure_text = self._width_text or self._text
+            _gdi32.GetTextExtentPoint32W(hdc, measure_text, len(measure_text), ctypes.byref(size))
+            height = 40
+        _gdi32.SelectObject(hdc, old_font)
+        _gdi32.DeleteObject(font)
+        _user32.ReleaseDC(self._hwnd, hdc)
+
+        work = RECT()
+        if _user32.SystemParametersInfoW(_SPI_GETWORKAREA, 0, ctypes.byref(work), 0):
+            if self._state == "ai_message":
+                max_width = max(220, (work.right - work.left) - 160)
+                width = max(220, min(size.cx + 54, min(620, max_width)))
+            else:
+                width = max(130, size.cx + 54)
+            x = int(work.left + ((work.right - work.left - width) / 2))
+            y = int(work.bottom - height - _BOTTOM_MARGIN)
+        else:
+            if self._state == "ai_message":
+                max_width = max(220, _user32.GetSystemMetrics(0) - 160)
+                width = max(220, min(size.cx + 54, min(620, max_width)))
+            else:
+                width = max(130, size.cx + 54)
+            screen_w = _user32.GetSystemMetrics(0)
+            screen_h = _user32.GetSystemMetrics(1)
+            x = int((screen_w - width) / 2)
+            y = int(screen_h - height - _BOTTOM_MARGIN)
+        if not _user32.SetWindowPos(self._hwnd, _HWND_TOPMOST, x, y, width, height, _SWP_NOACTIVATE):
+            raise ctypes.WinError()
+        region = _gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, _CORNER_RADIUS, _CORNER_RADIUS)
+        if region:
+            _user32.SetWindowRgn(self._hwnd, region, True)
+
+    def _paint(self, hwnd) -> None:
+        ps = PAINTSTRUCT()
+        hdc = _user32.BeginPaint(hwnd, ctypes.byref(ps))
+        rect = RECT()
+        _user32.GetClientRect(hwnd, ctypes.byref(rect))
+
+        bg = _gdi32.CreateSolidBrush(0x272322)
+        _user32.FillRect(hdc, ctypes.byref(rect), bg)
+        _gdi32.DeleteObject(bg)
+
+        dot = _gdi32.CreateSolidBrush(self._color)
+        _gdi32.SelectObject(hdc, dot)
+        dot_y = int((rect.bottom - 10) / 2)
+        _gdi32.Ellipse(hdc, 16, dot_y, 26, dot_y + 10)
+        _gdi32.DeleteObject(dot)
+
+        font = self._font()
+        old_font = _gdi32.SelectObject(hdc, font)
+        _gdi32.SetBkMode(hdc, 1)
+        if self._state == "ai_message":
+            _gdi32.SetTextColor(hdc, 0xFAFAF9)
+            heard_text = f"\u6211\u542c\u5230\uff1a{self._ai_heard}"
+            heard_rect = RECT(36, 7, rect.right - 12, 30)
+            _user32.DrawTextW(
+                hdc,
+                heard_text,
+                -1,
+                ctypes.byref(heard_rect),
+                _DT_SINGLELINE | _DT_VCENTER | _DT_END_ELLIPSIS,
+            )
+            _gdi32.SetTextColor(hdc, 0xD6D3D1)
+            stage_rect = RECT(36, 29, rect.right - 12, 52)
+            _user32.DrawTextW(
+                hdc,
+                self._ai_stage,
+                -1,
+                ctypes.byref(stage_rect),
+                _DT_SINGLELINE | _DT_VCENTER | _DT_END_ELLIPSIS,
+            )
+        else:
+            _gdi32.SetTextColor(hdc, 0xFAFAF9)
+            text_rect = RECT(36, 10, rect.right - 12, rect.bottom)
+            _user32.DrawTextW(hdc, self._text, -1, ctypes.byref(text_rect), 0)
+        _gdi32.SelectObject(hdc, old_font)
+        _gdi32.DeleteObject(font)
+
+        _user32.EndPaint(hwnd, ctypes.byref(ps))
+
+    def _font(self):
+        return _gdi32.CreateFontW(
+            -15,
+            0,
+            0,
+            0,
+            500,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            "Microsoft YaHei UI",
+        )
